@@ -70,4 +70,4 @@ data ApiError m r = ApiError
   , cookieOut :: (CookieOut m r)
   }
 
-data OtherError = OtherError { exception :: SomeException }
+data OtherError = OtherError { exception :: Text }

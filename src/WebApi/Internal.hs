@@ -11,6 +11,7 @@ import           Http.Param
 import           Network.HTTP.Types hiding (Query)
 import           Network.URI (URI (..))
 import qualified Network.Wai as Wai
+import qualified Network.Wai.Parse as Wai
 import           WebApi.Contract
 
 data RouteResult a = NotMatched | Matched a
@@ -33,11 +34,12 @@ fromWaiRequest :: ( FromParam (QueryParam m r) 'QueryParam
                  -> PathParam m r
                  -> IO (Validation [ParamErr] (Request m r))
 fromWaiRequest waiReq pathPar = do
+  (formPar, filePar) <- Wai.parseRequestBody Wai.lbsBackEnd waiReq
   return $ Req <$> pure pathPar
     <*> (fromQueryParam $ Wai.queryString waiReq)
-    <*> (fromFormParam $ undefined)
-    <*> (fromFileParam undefined)
-    <*> (fromHeader undefined)
+    <*> (fromFormParam $ formPar)
+    <*> (fromFileParam undefined) --TODO:
+    <*> (fromHeader undefined) --TODO:
     <*> pure () -- TODO: FixMe
     <*> (pure $ decodeUtf8 $ Wai.requestMethod waiReq)
 

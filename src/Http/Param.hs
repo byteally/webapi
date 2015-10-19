@@ -1,4 +1,16 @@
-{-# LANGUAGE DeriveGeneric, TypeFamilies, DataKinds, OverloadedStrings, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts, ScopedTypeVariables, UndecidableInstances, DeriveFunctor, DeriveAnyClass #-}
+{-# LANGUAGE DataKinds             #-}
+{-# LANGUAGE DeriveAnyClass        #-}
+{-# LANGUAGE DeriveFunctor         #-}
+{-# LANGUAGE DeriveGeneric         #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE UndecidableInstances  #-}
+{-# LANGUAGE DefaultSignatures     #-}
+{-# LANGUAGE TypeOperators         #-}
 module Http.Param
        ( ParamK (..)
        , JsonOf (..)
@@ -19,29 +31,38 @@ module Http.Param
        , fromHeader
        , nest
        , lookupParam
+       , toNonNestedParam
+       , fromNonNestedParam
        ) where
 
 
-import           Data.Aeson (FromJSON (..), ToJSON (..))
-import qualified Data.Aeson as A (encode, decodeStrict')
-import           Data.Binary (encode)
-import           Data.ByteString as SB
-import           Data.ByteString.Builder (toLazyByteString, byteString, char7)
-import           Data.ByteString.Char8 as ASCII (pack, unpack, readInteger, split)
-import           Data.ByteString.Lazy (toStrict)
+import           Data.Aeson                     (FromJSON (..), ToJSON (..))
+import qualified Data.Aeson                     as A (decodeStrict', encode)
+import           Data.ByteString                as SB
+import           Data.ByteString.Builder        (byteString, char7,
+                                                 toLazyByteString)
+import           Data.ByteString.Char8          as ASCII (pack, readInteger,
+                                                          split, unpack)
+import           Data.ByteString.Lazy           (toStrict)
+import qualified Data.ByteString.Lex.Fractional as LexF
 import           Data.ByteString.Lex.Integral
-import           Data.CaseInsensitive as CI
-import           Data.Foldable as Fold (foldl')
-import           Data.Proxy
-import           Data.Text as T (Text)
-import           Data.Text.Encoding (encodeUtf8, decodeUtf8')
-import           Data.Trie as Trie
-import           Network.HTTP.Types
-import           Network.HTTP.Types as Http (QueryItem, Header)
+import           Data.CaseInsensitive           as CI
+import           Data.Foldable                  as Fold (foldl')
 import           Data.Int
+import           Data.Monoid                    ((<>))
+import           Data.Proxy
+import           Data.Text                      as T (Text)
+import           Data.Text.Encoding             (decodeUtf8', encodeUtf8)
+import           Data.Time.Calendar             (Day)
+import           Data.Time.Clock                (UTCTime)
+import           Data.Time.Format               (FormatTime, formatTime, parseTime, defaultTimeLocale, dateTimeFmt)
+import           Data.Trie                      as Trie
 import           Data.Word
-import           Data.Time.Calendar (Day)
-import           Data.Monoid ((<>))
+import           Debug.Trace
+import           Network.HTTP.Types
+import           Network.HTTP.Types             as Http (Header, QueryItem)
+import           GHC.Generics
+import           Data.Typeable
 
 data ParamK = QueryParam
             | FormParam
@@ -74,7 +95,7 @@ type family DeSerializedData (par :: ParamK) where
   DeSerializedData 'FormParam  = ByteString
   DeSerializedData 'FileParam  = FilePath
   DeSerializedData 'Header     = ByteString
-  
+
 newtype Validation e a = Validation { getValidation :: Either e a }
                        deriving Functor
 
@@ -83,7 +104,7 @@ instance Monoid e => Applicative (Validation e) where
   Validation a <*> Validation b = Validation $
     case a of
       Right va -> fmap va b
-      Left ea -> either (Left . mappend ea) (const $ Left ea) b           
+      Left ea -> either (Left . mappend ea) (const $ Left ea) b
 
 toQueryParam :: (ToParam a 'QueryParam) => a -> Query
 toQueryParam = toParam (Proxy :: Proxy 'QueryParam) ""
@@ -123,63 +144,80 @@ class HttpParam (t :: *) where
   toHttpParam :: t -> ByteString
   fromHttpParam :: ByteString -> Maybe t
 
+  default toHttpParam :: (Generic t, GHttpParam (Rep t)) => t -> ByteString
+  toHttpParam = gToHttpParam . from
+  default fromHttpParam :: (Generic t, GHttpParam (Rep t)) => ByteString -> Maybe t
+  fromHttpParam = (fmap to) . gFromHttpParam
+
 instance HttpParam Int where
-  toHttpParam i = toStrict $ encode i
+  toHttpParam i = ASCII.pack $ show i
   fromHttpParam str = case readDecimal str of
     Just (v, "") -> Just v
     _            -> Nothing
 
 instance HttpParam Int8 where
-  toHttpParam i = toStrict $ encode i
+  toHttpParam i = ASCII.pack $ show i
   fromHttpParam str = case readDecimal str of
     Just (v, "") -> Just v
     _            -> Nothing
 
 instance HttpParam Int16 where
-  toHttpParam i = toStrict $ encode i
+  toHttpParam i = ASCII.pack $ show i
   fromHttpParam str = case readDecimal str of
     Just (v, "") -> Just v
     _            -> Nothing
 
 instance HttpParam Int32 where
-  toHttpParam i = toStrict $ encode i
+  toHttpParam i = ASCII.pack $ show i
   fromHttpParam str = case readDecimal str of
     Just (v, "") -> Just v
     _            -> Nothing
 
 instance HttpParam Int64 where
-  toHttpParam i = toStrict $ encode i
+  toHttpParam i = ASCII.pack $ show i
   fromHttpParam str = case readDecimal str of
     Just (v, "") -> Just v
     _            -> Nothing
 
 instance HttpParam Word where
-  toHttpParam i = toStrict $ encode i
+  toHttpParam i = ASCII.pack $ show i
   fromHttpParam str = case readDecimal str of
     Just (v, "") -> Just v
     _            -> Nothing
 
 instance HttpParam Word8 where
-  toHttpParam i = toStrict $ encode i
+  toHttpParam i = ASCII.pack $ show i
   fromHttpParam str = case readDecimal str of
     Just (v, "") -> Just v
     _            -> Nothing
 
 instance HttpParam Word16 where
-  toHttpParam i = toStrict $ encode i
+  toHttpParam i = ASCII.pack $ show i
   fromHttpParam str = case readDecimal str of
     Just (v, "") -> Just v
     _            -> Nothing
 
 instance HttpParam Word32 where
-  toHttpParam i = toStrict $ encode i
+  toHttpParam i = ASCII.pack $ show i
   fromHttpParam str = case readDecimal str of
     Just (v, "") -> Just v
     _            -> Nothing
 
 instance HttpParam Word64 where
-  toHttpParam i = toStrict $ encode i
+  toHttpParam i = ASCII.pack $ show i
   fromHttpParam str = case readDecimal str of
+    Just (v, "") -> Just v
+    _            -> Nothing
+
+instance HttpParam Float where
+  toHttpParam d = ASCII.pack $ show d
+  fromHttpParam str = case LexF.readExponential str of
+    Just (v, "") -> Just v
+    _            -> Nothing
+
+instance HttpParam Double where
+  toHttpParam d = ASCII.pack $ show d
+  fromHttpParam str = case LexF.readExponential str of
     Just (v, "") -> Just v
     _            -> Nothing
 
@@ -195,9 +233,20 @@ instance HttpParam Day where
     [(a,"")] -> Just a
     _        -> Nothing
 
+instance HttpParam UTCTime where
+  toHttpParam t = ASCII.pack $ formatTime defaultTimeLocale format t
+    where
+      format = "%FT%T." ++ formatSubseconds t ++ "Z"
+  fromHttpParam str = case parseTime defaultTimeLocale "%FT%T%QZ" (ASCII.unpack str) of
+    Just d -> Just d
+    _      -> Nothing
+    
+formatSubseconds :: (FormatTime t) => t -> String
+formatSubseconds = formatTime defaultTimeLocale "%q"
+
 instance (HttpParam a, HttpParam b) => HttpParam (a,b) where
-  toHttpParam (a,b) = toStrict $ toLazyByteString $ byteString (toHttpParam a) 
-                                                  <> char7 ',' 
+  toHttpParam (a,b) = toStrict $ toLazyByteString $ byteString (toHttpParam a)
+                                                  <> char7 ','
                                                   <> byteString (toHttpParam b)
   fromHttpParam str = case ASCII.split ',' str of
     [str1, str2] -> (,) <$> fromHttpParam str1 <*> fromHttpParam str2
@@ -210,7 +259,7 @@ instance HttpParam Bool where
                     | otherwise     = Nothing
 
 instance HttpParam Integer where
-  toHttpParam i = toStrict $ encode i
+  toHttpParam i = ASCII.pack $ show i
   fromHttpParam str = case ASCII.readInteger str of
     Just (i, "") -> Just i
     _            -> Nothing
@@ -219,9 +268,74 @@ instance (ToJSON a, FromJSON a) => HttpParam (JsonOf a) where
   toHttpParam (JsonOf a) = toStrict $ A.encode a
   fromHttpParam str = A.decodeStrict' str
 
+class GHttpParam f where
+  gToHttpParam   :: f a -> ByteString
+  gFromHttpParam :: ByteString -> Maybe (f a)
+
+instance (GHttpParam f) => GHttpParam (D1 c f) where
+  gToHttpParam (M1 c) = gToHttpParam c
+  gFromHttpParam str  = M1 <$> (gFromHttpParam str)
+  
+instance (GHttpParam f, GHttpParam g) => GHttpParam (f :+: g) where
+  gToHttpParam (L1 l) = gToHttpParam l
+  gToHttpParam (R1 r) = gToHttpParam r
+  gFromHttpParam str  = case L1 <$> gFromHttpParam str of
+    l1@(Just _) -> l1
+    _           -> R1 <$> gFromHttpParam str
+  
+instance (GHttpParam f, Constructor c) => GHttpParam (C1 c f) where
+  gToHttpParam con@(M1 c) = const (ASCII.pack $ conName con) $ gToHttpParam c
+  gFromHttpParam str = if (ASCII.pack $ conName (undefined :: (C1 c f) a)) == str
+                       then M1 <$> gFromHttpParam str
+                       else Nothing
+  
+instance GHttpParam U1 where
+  gToHttpParam U1    = error "Panic! Unreacheable code @ GHttpParam U1"
+  gFromHttpParam _   = Just U1 
+
+
+newtype NonNested a = NonNested { getNonNestedParam :: a }
+                    deriving (Show, Eq, Read)
+
+toNonNestedParam :: (ToParam (NonNested a) parK, HttpParam a) => Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
+toNonNestedParam par pfx a = toParam par pfx (NonNested a)
+
+fromNonNestedParam :: (FromParam (NonNested a) parK, HttpParam a) => Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
+fromNonNestedParam par pfx kvs = getNonNestedParam <$> fromParam par pfx kvs
+
+instance (HttpParam a) => ToParam (NonNested a) 'QueryParam where
+  toParam _ pfx (NonNested val) = [(pfx, Just $ toHttpParam val)]
+
+instance (HttpParam a) => ToParam (NonNested a) 'FormParam where
+  toParam _ pfx (NonNested val) = [(pfx, toHttpParam val)]
+
+instance (HttpParam a) => ToParam (NonNested a) 'Header where
+  toParam _ pfx (NonNested val) = [(mk pfx, toHttpParam val)]
+
+instance (HttpParam a, Typeable a) => FromParam (NonNested a) 'QueryParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just (Just par) -> case fromHttpParam par of
+         Just v -> Validation $ Right $ NonNested v
+         _      -> Validation $ Left [ParseErr key $ ASCII.pack $ "Unable to cast to " ++ (show $ typeOf (Proxy :: Proxy a))]
+   _ ->  Validation $ Left [NotFound key]
+
+instance (HttpParam a, Typeable a) => FromParam (NonNested a) 'FormParam where  
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case fromHttpParam par of
+         Just v -> Validation $ Right $ NonNested v
+         _      -> Validation $ Left [ParseErr key $ ASCII.pack $ "Unable to cast to " ++ (show $ typeOf (Proxy :: Proxy a))]
+   _ ->  Validation $ Left [NotFound key]
+
+instance (HttpParam a, Typeable a) => FromParam (NonNested a) 'Header where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case fromHttpParam par of
+         Just v -> Validation $ Right $ NonNested v
+         _      -> Validation $ Left [ParseErr key $ ASCII.pack $ "Unable to cast to " ++ (show $ typeOf (Proxy :: Proxy a))]
+   _ ->  Validation $ Left [NotFound key]
+  
 instance ToParam () par where
   toParam _ _ _ = []
-  
+
 instance ToParam Int 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ toHttpParam val)]
 
@@ -229,6 +343,15 @@ instance ToParam Int 'FormParam where
   toParam _ pfx val = [(pfx, toHttpParam val)]
 
 instance ToParam Int 'Header where
+  toParam _ pfx val = [(mk pfx, toHttpParam val)]
+
+instance ToParam Text 'QueryParam where
+  toParam _ pfx val = [(pfx, Just $ toHttpParam val)]
+
+instance ToParam Text 'FormParam where
+  toParam _ pfx val = [(pfx, toHttpParam val)]
+
+instance ToParam Text 'Header where
   toParam _ pfx val = [(mk pfx, toHttpParam val)]
 
 instance (HttpParam a) => ToParam (OptValue a) 'QueryParam where
@@ -257,10 +380,73 @@ instance ToParam a par => ToParam (Maybe a) par where
   toParam _ _ Nothing      = []
 
 instance ToParam a par => ToParam [a] par where
-  toParam pt pfx vals = Prelude.concatMap (\(ix, v) -> toParam pt (pfx `nest` (toStrict $ encode ix)) v) $ Prelude.zip [(0 :: Word)..] vals
+  toParam pt pfx vals = Prelude.concatMap (\(ix, v) -> toParam pt (pfx `nest` (ASCII.pack $ show ix)) v) $ Prelude.zip [(0 :: Word)..] vals
 
 instance FromParam () par where
   fromParam _ _ _ = pure ()
+
+instance FromParam Bool 'QueryParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just (Just par) -> case fromHttpParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Bool"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam Bool 'FormParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case fromHttpParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Bool"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam Bool 'Header where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case fromHttpParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Bool"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam Word 'QueryParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just (Just par) -> case fromHttpParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Word"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam Word 'FormParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case fromHttpParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Word"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam Word 'Header where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case fromHttpParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Word"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam UTCTime 'QueryParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just (Just par) -> case fromHttpParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to UTCTime (ISO-8601)"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam UTCTime 'FormParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case fromHttpParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to UTCTime (ISO-8601)"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam UTCTime 'Header where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case fromHttpParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to UTCTime (ISO-8601)"]
+   _ ->  Validation $ Left [NotFound key]
 
 instance FromParam Int 'QueryParam where
   fromParam pt key kvs = case lookupParam pt key kvs of
@@ -270,6 +456,7 @@ instance FromParam Int 'QueryParam where
    _ ->  Validation $ Left [NotFound key]
 
 instance FromParam Int 'FormParam where
+  fromParam pt key kvs | traceShow (key, kvs, lookupParam pt key kvs) False = error "Unable trace code"
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case readDecimal par of
      Just (v, "") -> Validation $ Right v
@@ -283,11 +470,61 @@ instance FromParam Int 'Header where
      _            -> Validation $ Left [ParseErr key "Unable to cast to Int"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Word 'QueryParam where
+instance FromParam Double 'QueryParam where
   fromParam pt key kvs = case lookupParam pt key kvs of
-   Just (Just par) -> case readDecimal par of
-     Just (v, "") -> Validation $ Right v
-     _            -> Validation $ Left [ParseErr key "Unable to cast to Word"]
+   Just (Just par) -> case fromHttpParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam Double 'FormParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case fromHttpParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam Double 'Header where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case fromHttpParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam Float 'QueryParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just (Just par) -> case fromHttpParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam Float 'FormParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case fromHttpParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam Float 'Header where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case fromHttpParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam SB.ByteString 'QueryParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just (Just par) -> Validation $ Right par
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam SB.ByteString 'FormParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> Validation $ Right par
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam SB.ByteString 'Header where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> Validation $ Right par
    _ ->  Validation $ Left [NotFound key]
 
 instance FromParam a par => FromParam (Maybe a) par where
@@ -298,14 +535,38 @@ instance FromParam a par => FromParam (Maybe a) par where
       Validation (Left errs) -> Validation $ Left errs
     where kvs' = submap key kvs
 
-instance FromParam a par => FromParam [a] par where
+instance FromParam Text 'QueryParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just (Just par) -> case fromHttpParam par of
+     Just v -> Validation $ Right v
+     _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam Text 'FormParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case fromHttpParam par of
+     Just v -> Validation $ Right v
+     _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam Text 'Header where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case fromHttpParam par of
+     Just v -> Validation $ Right v
+     _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance (Show (DeSerializedData par), FromParam a par) => FromParam [a] par where
+  fromParam pt key kvs | traceShow ("==>", key, Trie.null $ submap key kvs) False = error "Unreachable trace code"
   fromParam pt key kvs = case Trie.null kvs' of
     True  ->  Validation $ Right []
-    False -> 
-      let pars = Prelude.map (\kv -> fromParam pt key kv :: Validation [ParamErr] a) kvitems
+    False ->
+      let pars = Prelude.map (\(nkey, kv) -> fromParam pt nkey kv :: Validation [ParamErr] a) (traceShow ("=>filtered kv", kvitems) kvitems)
       in Fold.foldl' accRes (Validation $ Right []) pars
     where kvs' = submap key kvs
-          kvitems = Prelude.takeWhile (not . Prelude.null)  (Prelude.map (\ix -> submap (key `nest` (toStrict $ encode ix)) kvs') [(0 :: Word) .. 2000])
+          kvitems = Prelude.takeWhile (not . Prelude.null . snd)  (Prelude.map (\ix ->
+            let ixkey = key `nest` (ASCII.pack $ show ix)
+            in (ixkey, submap ixkey kvs')) [(0 :: Word) .. 2000])
           accRes acc elemt = case (acc, elemt) of
             (Validation (Right as), Validation (Right e)) -> Validation $ Right (e:as)
             (Validation (Left as), Validation (Right _)) -> Validation $ Left as
@@ -355,7 +616,7 @@ instance ( HttpParam a
          , HttpParam c
          , HttpParam d
          ) => ToParam (a, b, c, d) 'PathParam where
-  toParam _ _ (a, b, c, d) 
+  toParam _ _ (a, b, c, d)
     = [ toHttpParam a
       , toHttpParam b
       , toHttpParam c
@@ -368,7 +629,7 @@ instance ( HttpParam a
          , HttpParam d
          , HttpParam e
          ) => ToParam (a, b, c, d, e) 'PathParam where
-  toParam _ _ (a, b, c, d, e) 
+  toParam _ _ (a, b, c, d, e)
     = [ toHttpParam a
       , toHttpParam b
       , toHttpParam c
@@ -383,7 +644,7 @@ instance ( HttpParam a
          , HttpParam e
          , HttpParam f
          ) => ToParam (a, b, c, d, e, f) 'PathParam where
-  toParam _ _ (a, b, c, d, e, f) 
+  toParam _ _ (a, b, c, d, e, f)
     = [ toHttpParam a
       , toHttpParam b
       , toHttpParam c
@@ -401,7 +662,7 @@ instance ( HttpParam a
          , HttpParam g
          , HttpParam h
          ) => ToParam (a, b, c, d, e, f, g, h) 'PathParam where
-  toParam _ _ (a, b, c, d, e, f, g, h) 
+  toParam _ _ (a, b, c, d, e, f, g, h)
     = [ toHttpParam a
       , toHttpParam b
       , toHttpParam c
@@ -422,7 +683,7 @@ instance ( HttpParam a
          , HttpParam h
          , HttpParam i
          ) => ToParam (a, b, c, d, e, f, g, h, i) 'PathParam where
-  toParam _ _ (a, b, c, d, e, f, g, h, i) 
+  toParam _ _ (a, b, c, d, e, f, g, h, i)
     = [ toHttpParam a
       , toHttpParam b
       , toHttpParam c
@@ -445,7 +706,7 @@ instance ( HttpParam a
          , HttpParam i
          , HttpParam j
          ) => ToParam (a, b, c, d, e, f, g, h, i, j) 'PathParam where
-  toParam _ _ (a, b, c, d, e, f, g, h, i, j) 
+  toParam _ _ (a, b, c, d, e, f, g, h, i, j)
     = [ toHttpParam a
       , toHttpParam b
       , toHttpParam c
@@ -458,7 +719,7 @@ instance ( HttpParam a
       , toHttpParam j
       ]
 
-data ParamErr = NotFound ByteString 
+data ParamErr = NotFound ByteString
               | ParseErr ByteString ByteString
                 deriving (Show)
 
