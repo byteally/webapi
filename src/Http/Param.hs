@@ -52,6 +52,8 @@ import           Data.Int
 import           Data.Monoid                    ((<>))
 import           Data.Proxy
 import           Data.Text                      as T (Text)
+import qualified Data.Vector                    as V
+import           Data.Vector                    (Vector)
 import           Data.Text.Encoding             (decodeUtf8', encodeUtf8)
 import           Data.Time.Calendar             (Day)
 import           Data.Time.Clock                (UTCTime)
@@ -382,6 +384,9 @@ instance ToParam a par => ToParam (Maybe a) par where
 instance ToParam a par => ToParam [a] par where
   toParam pt pfx vals = Prelude.concatMap (\(ix, v) -> toParam pt (pfx `nest` (ASCII.pack $ show ix)) v) $ Prelude.zip [(0 :: Word)..] vals
 
+instance ToParam a par => ToParam (Vector a) par where
+  toParam pt pfx vals = toParam pt pfx (V.toList vals)
+  
 instance FromParam () par where
   fromParam _ _ _ = pure ()
 
@@ -573,7 +578,11 @@ instance (Show (DeSerializedData par), FromParam a par) => FromParam [a] par whe
             (Validation (Right _), Validation (Left es)) -> Validation $ Left es
             (Validation (Left as), Validation (Left es)) -> Validation $ Left (es ++ as)
 
-
+instance (Show (DeSerializedData par), FromParam a par) => FromParam (Vector a) par where
+  fromParam pt key kvs = case fromParam pt key kvs of
+    Validation (Right v)  -> Validation $ Right (V.fromList v)
+    Validation (Left err) -> Validation (Left err)
+    
 instance (HttpParam a) => FromParam (OptValue a) 'QueryParam where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case fromHttpParam par of
