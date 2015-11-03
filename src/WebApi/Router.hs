@@ -6,6 +6,10 @@ module WebApi.Router
        , Route
        , Router (..)
        , router
+
+       , MkFormatStr (..)
+       , ToPieces
+       , PathSegment (..)  
        ) where
 
 import           Data.Aeson (ToJSON)
@@ -20,6 +24,8 @@ import           Network.Wai (requestMethod, pathInfo)
 import           WebApi.Contract
 import           WebApi.Internal
 
+import           Blaze.ByteString.Builder (toByteString)
+import           Data.ByteString.Char8 as B (unpack)
 
 data Route (m :: *) (r :: *)
 
@@ -295,3 +301,18 @@ snocParsedRoute nil@Nil{} (DPiece val) = val `ConsDynamicPiece` nil
 snocParsedRoute (ConsStaticPiece sym routes) symOrVal = (ConsStaticPiece sym $ snocParsedRoute routes symOrVal)
 snocParsedRoute (ConsDynamicPiece sym routes) symOrVal = (ConsDynamicPiece sym $ snocParsedRoute routes symOrVal)
 
+data PathSegment = StaticSegment Text
+                 | Hole
+                 deriving Show   
+
+class MkFormatStr (xs :: [*]) where
+  mkFormatStr :: Proxy xs -> [PathSegment]
+
+instance (KnownSymbol s, MkFormatStr xs) => MkFormatStr (StaticPiece s ': xs) where
+  mkFormatStr _ = StaticSegment (T.pack (symbolVal (Proxy :: Proxy s))) : mkFormatStr (Proxy :: Proxy xs)
+
+instance (MkFormatStr xs) => MkFormatStr (DynamicPiece s ': xs) where
+  mkFormatStr _ = Hole : mkFormatStr (Proxy :: Proxy xs)
+
+instance MkFormatStr '[] where
+  mkFormatStr _ = []
