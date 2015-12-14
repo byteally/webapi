@@ -20,6 +20,7 @@ module Http.Param
        , ToParam (..)
        , FromParam (..)
        , ParamErr (..)
+       , ParamErrToApiErr (..)
        , toQueryParam
        , toFormParam
        , toFileParam
@@ -37,7 +38,7 @@ module Http.Param
 
 
 import           Data.Aeson                     (FromJSON (..), ToJSON (..))
-import qualified Data.Aeson                     as A (decodeStrict', encode)
+import qualified Data.Aeson                     as A
 import           Data.ByteString                as SB
 import           Data.ByteString.Builder        (byteString, char7,
                                                  toLazyByteString)
@@ -51,7 +52,7 @@ import           Data.Foldable                  as Fold (foldl')
 import           Data.Int
 import           Data.Monoid                    ((<>))
 import           Data.Proxy
-import           Data.Text                      as T (Text)
+import           Data.Text                      as T (Text, pack)
 import qualified Data.Vector                    as V
 import           Data.Vector                    (Vector)
 import           Data.Text.Encoding             (decodeUtf8', encodeUtf8)
@@ -318,21 +319,21 @@ instance (HttpParam a, Typeable a) => FromParam (NonNested a) 'QueryParam where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case fromHttpParam par of
          Just v -> Validation $ Right $ NonNested v
-         _      -> Validation $ Left [ParseErr key $ ASCII.pack $ "Unable to cast to " ++ (show $ typeOf (Proxy :: Proxy a))]
+         _      -> Validation $ Left [ParseErr key $ T.pack $ "Unable to cast to " ++ (show $ typeOf (Proxy :: Proxy a))]
    _ ->  Validation $ Left [NotFound key]
 
 instance (HttpParam a, Typeable a) => FromParam (NonNested a) 'FormParam where  
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case fromHttpParam par of
          Just v -> Validation $ Right $ NonNested v
-         _      -> Validation $ Left [ParseErr key $ ASCII.pack $ "Unable to cast to " ++ (show $ typeOf (Proxy :: Proxy a))]
+         _      -> Validation $ Left [ParseErr key $ T.pack $ "Unable to cast to " ++ (show $ typeOf (Proxy :: Proxy a))]
    _ ->  Validation $ Left [NotFound key]
 
 instance (HttpParam a, Typeable a) => FromParam (NonNested a) 'Header where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case fromHttpParam par of
          Just v -> Validation $ Right $ NonNested v
-         _      -> Validation $ Left [ParseErr key $ ASCII.pack $ "Unable to cast to " ++ (show $ typeOf (Proxy :: Proxy a))]
+         _      -> Validation $ Left [ParseErr key $ T.pack $ "Unable to cast to " ++ (show $ typeOf (Proxy :: Proxy a))]
    _ ->  Validation $ Left [NotFound key]
   
 instance ToParam () par where
@@ -479,42 +480,42 @@ instance FromParam Double 'QueryParam where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case fromHttpParam par of
          Just v -> Validation $ Right v
-         _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Double"]
    _ ->  Validation $ Left [NotFound key]
 
 instance FromParam Double 'FormParam where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case fromHttpParam par of
          Just v -> Validation $ Right v
-         _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Double"]
    _ ->  Validation $ Left [NotFound key]
 
 instance FromParam Double 'Header where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case fromHttpParam par of
          Just v -> Validation $ Right v
-         _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Double"]
    _ ->  Validation $ Left [NotFound key]
 
 instance FromParam Float 'QueryParam where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case fromHttpParam par of
          Just v -> Validation $ Right v
-         _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Float"]
    _ ->  Validation $ Left [NotFound key]
 
 instance FromParam Float 'FormParam where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case fromHttpParam par of
          Just v -> Validation $ Right v
-         _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Float"]
    _ ->  Validation $ Left [NotFound key]
 
 instance FromParam Float 'Header where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case fromHttpParam par of
          Just v -> Validation $ Right v
-         _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+         _      -> Validation $ Left [ParseErr key "Unable to cast to Float"]
    _ ->  Validation $ Left [NotFound key]
 
 instance FromParam SB.ByteString 'QueryParam where
@@ -544,21 +545,21 @@ instance FromParam Text 'QueryParam where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case fromHttpParam par of
      Just v -> Validation $ Right v
-     _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+     _      -> Validation $ Left [ParseErr key "Unable to cast to Text"]
    _ ->  Validation $ Left [NotFound key]
 
 instance FromParam Text 'FormParam where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case fromHttpParam par of
      Just v -> Validation $ Right v
-     _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+     _      -> Validation $ Left [ParseErr key "Unable to cast to Text"]
    _ ->  Validation $ Left [NotFound key]
 
 instance FromParam Text 'Header where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case fromHttpParam par of
      Just v -> Validation $ Right v
-     _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
+     _      -> Validation $ Left [ParseErr key "Unable to cast to Text"]
    _ ->  Validation $ Left [NotFound key]
 
 instance (Show (DeSerializedData par), FromParam a par) => FromParam [a] par where
@@ -729,9 +730,30 @@ instance ( HttpParam a
       ]
 
 data ParamErr = NotFound ByteString
-              | ParseErr ByteString ByteString
+              | ParseErr ByteString Text
                 deriving (Show)
 
+utf8DecodeError :: String -> String -> a
+utf8DecodeError src msg = error $ "Error decoding Bytes into UTF8 string at: " ++ src ++ " Message: " ++ msg
+
+instance ToJSON ParamErr where
+  toJSON (NotFound bs) = case decodeUtf8' bs of
+    Left ex   -> utf8DecodeError "ToJSON ParamErr" (show ex)
+    Right bs' -> A.object ["NotFound" A..= bs']
+  toJSON (ParseErr bs msg) = case decodeUtf8' bs of
+    Left ex -> utf8DecodeError "ToJSON ParamErr" (show ex)
+    Right bs' -> A.object ["ParseErr" A..= [bs', msg]]
+    
+
+class ParamErrToApiErr apiErr where
+  toApiErr :: [ParamErr] -> apiErr
+
+instance ParamErrToApiErr () where
+  toApiErr = const ()
+
+instance ParamErrToApiErr A.Value where
+  toApiErr errs = toJSON errs
+  
 nest :: ByteString -> ByteString -> ByteString
 nest s1 s2 | SB.null s1 = s2
            | otherwise = SB.concat [s1, ".", s2]

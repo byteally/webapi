@@ -174,6 +174,7 @@ instance ( KnownSymbol piece, Server s m (Static piece)
          , ToJSON (ApiErr m (Static piece))
          , PathParam m (Static piece) ~ ()
          , CookieIn m (Static piece) ~ ()
+         , ParamErrToApiErr (ApiErr m (Static piece))
          ) => Router s (Static piece) '(m, pp) where
   route _ serv _ request respond =
     case pathInfo request of
@@ -184,7 +185,7 @@ instance ( KnownSymbol piece, Server s m (Static piece)
             apiReq' <- fromWaiRequest request ()
             response <- case apiReq' of
               Validation (Right apiReq) -> handler serv (Proxy :: Proxy '[]) (apiReq :: Request m (Static piece))
-              Validation (Left _) -> return $ Failure $ Left $ ApiError badRequest400 (error "TODO: @173") (error "TODO: @173") (error "TODO: @173")
+              Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) (error "TODO: @173") (error "TODO: @173")
             return $ toWaiResponse response
 
 instance ( KnownSymbol lpiece
@@ -202,6 +203,7 @@ instance ( KnownSymbol lpiece
          , ToJSON (ApiOut m route)
          , ToParam (HeaderOut m route) 'Header  
          , CookieIn m route ~ () -- TODO: Fix this
+         , ParamErrToApiErr (ApiErr m route)  
          ) => Router s ((lpiece :: Symbol) :/ (rpiece :: Symbol)) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
@@ -216,7 +218,7 @@ instance ( KnownSymbol lpiece
             apiReq' <- fromWaiRequest request pathPar
             response <- case apiReq' of
               Validation (Right apiReq) -> handler serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
-              Validation (Left _) -> return $ Failure $ Left $ ApiError badRequest400 (error "TODO: @173") (error "TODO: @205") (error "TODO: @205")
+              Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) (error "TODO: @205") (error "TODO: @205")
             return $ toWaiResponse response
 
 instance ( KnownSymbol rpiece
@@ -234,6 +236,7 @@ instance ( KnownSymbol rpiece
          , ToParam (HeaderOut m route) 'Header  
          , CookieIn m route ~ () -- TODO: Fix this
          , HttpParam lpiece
+         , ParamErrToApiErr (ApiErr m route)  
          ) => Router s ((lpiece :: *) :/ (rpiece :: Symbol)) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
@@ -248,7 +251,7 @@ instance ( KnownSymbol rpiece
             apiReq' <- fromWaiRequest request (fromParsedRoute pRoute)
             response <- case apiReq' of
               Validation (Right apiReq) -> handler serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
-              Validation (Left _) -> return $ Failure $ Left $ ApiError badRequest400 (error "TODO: @173") (error "TODO: @205") (error "TODO: @205")
+              Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) (error "TODO: @205") (error "TODO: @205")
             return $ toWaiResponse response
 
 
@@ -264,6 +267,7 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
          , ToParam (HeaderOut m route) 'Header  
          , CookieIn m route ~ () -- TODO: Fix this
          , HttpParam t
+         , ParamErrToApiErr (ApiErr m route)  
          ) => Router s (DynamicPiece t) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
@@ -277,7 +281,7 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
             apiReq' <- fromWaiRequest request (fromParsedRoute pRoute)
             response <- case apiReq' of
               Validation (Right apiReq) -> handler serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
-              Validation (Left _) -> return $ Failure $ Left $ ApiError badRequest400 (error "TODO: @173") (error "TODO: @205") (error "TODO: @205")
+              Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) (error "TODO: @205") (error "TODO: @205")
             return $ toWaiResponse response
 
 
