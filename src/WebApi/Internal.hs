@@ -1,11 +1,14 @@
-{-# LANGUAGE TypeFamilies, KindSignatures, MultiParamTypeClasses, DataKinds, FlexibleContexts, OverloadedStrings, ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies, KindSignatures, MultiParamTypeClasses, DataKinds, FlexibleContexts, OverloadedStrings, ScopedTypeVariables , ConstraintKinds #-}
 module WebApi.Internal where
 
 import           Blaze.ByteString.Builder (toByteString)
 import           Data.Aeson (ToJSON, toJSON)
 import           Data.Aeson.Encode (encodeToByteStringBuilder)
+import           Data.ByteString (ByteString)
 import           Data.ByteString.Char8 (unpack)
 import           Data.Proxy
+import           Data.List (foldl')
+import           Data.Text (Text)
 import           Data.Text.Encoding (decodeUtf8)
 import           Http.Param
 import           Network.HTTP.Types hiding (Query)
@@ -34,7 +37,7 @@ fromWaiRequest :: ( FromParam (QueryParam m r) 'QueryParam
                  -> PathParam m r
                  -> IO (Validation [ParamErr] (Request m r))
 fromWaiRequest waiReq pathPar = do
-  (formPar, filePar) <- Wai.parseRequestBody Wai.lbsBackEnd waiReq
+  (formPar, _filePar) <- Wai.parseRequestBody Wai.lbsBackEnd waiReq
   return $ Req <$> pure pathPar
     <*> (fromQueryParam $ Wai.queryString waiReq)
     <*> (fromFormParam $ formPar)
@@ -52,8 +55,8 @@ toWaiResponse resp = case resp of
   Failure (Left (ApiError status errs hdrs _)) -> Wai.responseBuilder status (toHeader hdrs) (encodeToByteStringBuilder $ toJSON errs)
   Failure (Right _ex) -> Prelude.error "TODO: @ toWaiResponse"
 
-
 link :: ( ToParam (QueryParam m r) 'QueryParam
+        , MkPathFormatString r
         , ToParam (PathParam m r) 'PathParam
         ) =>
           route m r
@@ -61,16 +64,30 @@ link :: ( ToParam (QueryParam m r) 'QueryParam
         -> PathParam m r
         -> Maybe (QueryParam m r)
         -> URI
-link _ base paths query = base
-                          { uriPath = renderPaths paths
+link r base paths query = base
+                          { uriPath = unpack $ renderPaths paths r
                           , uriQuery = maybe "" renderQuery' query
                           }
-  where renderPaths :: ToParam path 'PathParam => path -> String
-        renderPaths p = unpack $ toByteString
-                               $ encodePathSegments $ map decodeUtf8 (toPathParam p)
-        renderQuery' :: (ToParam query 'QueryParam) => query -> String
+  where renderQuery' :: (ToParam query 'QueryParam) => query -> String
         renderQuery' q = unpack $ renderQuery False $ toQueryParam q
 
+renderPaths :: ( ToParam path 'PathParam
+                , MkPathFormatString r
+                ) => path -> route m r -> ByteString
+renderPaths p r = toByteString
+                  $ encodePathSegments $ uriPathPieces (toPathParam p)
+
+  where uriPathPieces :: [ByteString] -> [Text]
+        uriPathPieces dynVs = reverse $ fst $ foldl' (flip fillHoles) ([], dynVs) (mkPathFormatString (toRoute r))
+
+        fillHoles :: PathSegment -> ([Text], [ByteString]) -> ([Text], [ByteString])
+        fillHoles (StaticSegment t) (segs, dynVs)    = (t : segs, dynVs)
+        fillHoles  Hole             (segs, dynV: xs) = (decodeUtf8 dynV : segs, xs)
+        fillHoles  Hole             (_segs, [])      = error "Panic: fewer pathparams than holes"
+
+        toRoute :: (MkPathFormatString r) => route m r -> Proxy r
+        toRoute = const Proxy
+                  
 type family ApiInterface (p :: *) :: *
 
 class (API (ApiInterface p) m r) => Server (p :: *) (m :: *) (r :: *) where
@@ -97,3 +114,9 @@ data ServerSettings = ServerSettings
 serverSettings :: ServerSettings
 serverSettings = ServerSettings
 
+data PathSegment = StaticSegment Text
+                 | Hole
+                 deriving Show   
+
+class MkPathFormatString r where
+  mkPathFormatString :: Proxy r -> [PathSegment]

@@ -24,9 +24,6 @@ import           Network.Wai (requestMethod, pathInfo)
 import           WebApi.Contract
 import           WebApi.Internal
 
-import           Blaze.ByteString.Builder (toByteString)
-import           Data.ByteString.Char8 as B (unpack)
-
 data Route (m :: *) (r :: *)
 
 data StaticPiece (s :: Symbol)
@@ -305,9 +302,11 @@ snocParsedRoute nil@Nil{} (DPiece val) = val `ConsDynamicPiece` nil
 snocParsedRoute (ConsStaticPiece sym routes) symOrVal = (ConsStaticPiece sym $ snocParsedRoute routes symOrVal)
 snocParsedRoute (ConsDynamicPiece sym routes) symOrVal = (ConsDynamicPiece sym $ snocParsedRoute routes symOrVal)
 
-data PathSegment = StaticSegment Text
-                 | Hole
-                 deriving Show   
+instance (MkFormatStr (ToPieces (a :/ b))) => MkPathFormatString (a :/ b) where
+  mkPathFormatString _ = mkFormatStr (Proxy :: Proxy (ToPieces (a :/ b)))
+
+instance (KnownSymbol s) => MkPathFormatString (Static s) where
+  mkPathFormatString _ = mkFormatStr (Proxy :: Proxy (ToPieces (Static s)))
 
 class MkFormatStr (xs :: [*]) where
   mkFormatStr :: Proxy xs -> [PathSegment]

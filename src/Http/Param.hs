@@ -21,6 +21,8 @@ module Http.Param
        , FromParam (..)
        , ParamErr (..)
        , ParamErrToApiErr (..)
+       , SerializedData
+       , DeSerializedData  
        , toQueryParam
        , toFormParam
        , toFileParam
@@ -39,7 +41,7 @@ module Http.Param
 
 import           Data.Aeson                     (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson                     as A
-import           Data.ByteString                as SB
+import           Data.ByteString                as SB hiding (index)
 import           Data.ByteString.Builder        (byteString, char7,
                                                  toLazyByteString)
 import           Data.ByteString.Char8          as ASCII (pack, readInteger,
@@ -58,7 +60,7 @@ import           Data.Vector                    (Vector)
 import           Data.Text.Encoding             (decodeUtf8', encodeUtf8)
 import           Data.Time.Calendar             (Day)
 import           Data.Time.Clock                (UTCTime)
-import           Data.Time.Format               (FormatTime, formatTime, parseTime, defaultTimeLocale, dateTimeFmt)
+import           Data.Time.Format               (FormatTime, formatTime, parseTimeM, defaultTimeLocale)
 import           Data.Trie                      as Trie
 import           Data.Word
 import           Debug.Trace
@@ -100,7 +102,7 @@ type family DeSerializedData (par :: ParamK) where
   DeSerializedData 'Header     = ByteString
 
 newtype Validation e a = Validation { getValidation :: Either e a }
-                       deriving Functor
+                       deriving (Functor, Show)
 
 instance Monoid e => Applicative (Validation e) where
   pure = Validation . Right
@@ -140,8 +142,14 @@ fromHeader _par = fromParam (Proxy :: Proxy 'Header) "" $ error "TODO"
 class ToParam a (parK :: ParamK) where
   toParam :: Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
 
+  default toParam :: (Generic a, GToParam (Rep a) parK) => Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
+  toParam pt pfx = gtoParam pt pfx (ParamAcc 0 False) ParamSettings . from
+
 class FromParam a (parK :: ParamK) where
   fromParam :: Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
+
+  default fromParam :: (Generic a, GFromParam (Rep a) parK) => Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
+  fromParam pt pfx = (fmap to) . gfromParam pt pfx (ParamAcc 0 False) ParamSettings
 
 class HttpParam (t :: *) where
   toHttpParam :: t -> ByteString
@@ -240,7 +248,7 @@ instance HttpParam UTCTime where
   toHttpParam t = ASCII.pack $ formatTime defaultTimeLocale format t
     where
       format = "%FT%T." ++ formatSubseconds t ++ "Z"
-  fromHttpParam str = case parseTime defaultTimeLocale "%FT%T%QZ" (ASCII.unpack str) of
+  fromHttpParam str = case parseTimeM True defaultTimeLocale "%FT%T%QZ" (ASCII.unpack str) of
     Just d -> Just d
     _      -> Nothing
     
@@ -563,11 +571,10 @@ instance FromParam Text 'Header where
    _ ->  Validation $ Left [NotFound key]
 
 instance (Show (DeSerializedData par), FromParam a par) => FromParam [a] par where
-  fromParam pt key kvs | traceShow ("==>", key, Trie.null $ submap key kvs) False = error "Unreachable trace code"
   fromParam pt key kvs = case Trie.null kvs' of
     True  ->  Validation $ Right []
     False ->
-      let pars = Prelude.map (\(nkey, kv) -> fromParam pt nkey kv :: Validation [ParamErr] a) (traceShow ("=>filtered kv", kvitems) kvitems)
+      let pars = Prelude.map (\(nkey, kv) -> fromParam pt nkey kv :: Validation [ParamErr] a) kvitems
       in Fold.foldl' accRes (Validation $ Right []) pars
     where kvs' = submap key kvs
           kvitems = Prelude.takeWhile (not . Prelude.null . snd)  (Prelude.map (\ix ->
@@ -744,7 +751,6 @@ instance ToJSON ParamErr where
     Left ex -> utf8DecodeError "ToJSON ParamErr" (show ex)
     Right bs' -> A.object ["ParseErr" A..= [bs', msg]]
     
-
 class ParamErrToApiErr apiErr where
   toApiErr :: [ParamErr] -> apiErr
 
@@ -758,6 +764,80 @@ nest :: ByteString -> ByteString -> ByteString
 nest s1 s2 | SB.null s1 = s2
            | otherwise = SB.concat [s1, ".", s2]
 
-
 lookupParam :: Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Maybe (DeSerializedData parK)
 lookupParam _ key kvs = Trie.lookup key kvs
+
+data ParamAcc = ParamAcc { index :: Int, isSum :: Bool }
+              deriving (Show, Eq)
+
+data ParamSettings = ParamSettings
+                   deriving (Show, Eq)
+
+
+class GFromParam f (parK :: ParamK) where
+  gfromParam :: Proxy (parK :: ParamK) -> ByteString -> ParamAcc -> ParamSettings -> Trie (DeSerializedData parK) -> Validation [ParamErr] (f a)
+
+instance (GFromParam f parK, GFromParam g parK) => GFromParam (f :*: g) parK where
+  gfromParam pt pfx pa psett kvs = (:*:) <$> gfromParam pt pfx pa psett kvs
+                                         <*> gfromParam pt pfx (pa { index = index pa + 1 }) psett kvs
+
+instance (GFromParam f parK, GFromParam g parK) => GFromParam (f :+: g) parK where
+  gfromParam pt pfx pa psett kvs = case L1 <$> gfromParam pt pfx (pa { isSum = True }) psett kvs of
+    l1@(Validation (Right _)) -> l1
+    Validation (Left []) -> R1 <$> gfromParam pt pfx (pa { isSum = True }) psett kvs
+    l1 -> l1
+
+instance (GFromParam f parK, Constructor t) => GFromParam (M1 C t f) parK where
+  gfromParam pt pfx pa psett kvs =
+    let conN = ASCII.pack (conName (undefined :: (M1 C t f) a))
+    in case isSum pa of
+      True -> case Trie.null $ submap (pfx `nest` conN) kvs of
+        False  -> M1 <$> gfromParam pt (pfx `nest` conN) pa psett kvs
+        True -> Validation $ Left []
+      False -> M1 <$> gfromParam pt pfx pa psett kvs
+
+instance (GFromParam f parK, Datatype t) => GFromParam (M1 D t f) parK where
+  gfromParam pt pfx pa psett kvs = case M1 <$> gfromParam pt pfx pa psett kvs of
+    Validation (Left []) -> Validation (Left [ParseErr pfx ("Unable to cast to SumType: " <> dtN)])
+    v                    -> v
+
+    where dtN = T.pack $ datatypeName (undefined :: (M1 D t f) a)
+
+instance (GFromParam f parK, Selector t) => GFromParam (M1 S t f) parK where
+  gfromParam pt pfx pa psett kvs = let fldN = (ASCII.pack $ (selName (undefined :: (M1 S t f) a)))
+                                   in case fldN of
+                                     "" -> M1 <$> gfromParam pt (pfx `nest` numberedFld pa) pa psett (submap pfx kvs)
+                                     _  -> M1 <$> gfromParam pt (pfx `nest` fldN) pa psett (submap pfx kvs)
+                              
+instance (FromParam c parK) => GFromParam (K1 i c) parK where
+  gfromParam pt pfx _ _ kvs = K1 <$> fromParam pt pfx kvs
+
+class GToParam f (parK :: ParamK) where
+  gtoParam :: Proxy (parK :: ParamK) -> ByteString -> ParamAcc -> ParamSettings -> f a -> [SerializedData parK]
+
+instance (GToParam f parK, GToParam g parK) => GToParam (f :*: g) parK where
+  gtoParam pt pfx pa psett (x :*: y) = gtoParam pt pfx pa psett x ++ gtoParam pt pfx (pa { index = index pa + 1 }) psett y
+
+instance (GToParam f parK, GToParam g parK) => GToParam (f :+: g) parK where
+  gtoParam pt pfx pa psett(L1 x) = gtoParam pt pfx (pa { isSum = True }) psett x 
+  gtoParam pt pfx pa psett (R1 y) = gtoParam pt pfx (pa { isSum = True }) psett y 
+
+instance (ToParam c parK) => GToParam (K1 i c) parK where
+  gtoParam pt pfx _ _ (K1 x) = toParam pt pfx x
+
+instance (GToParam f parK, Constructor t) => GToParam (M1 C t f) parK where
+  gtoParam pt pfx pa psett con@(M1 x) = case isSum pa of
+    True  -> gtoParam pt (pfx `nest` ASCII.pack (conName con)) (pa { index = 0 }) psett x
+    False -> gtoParam pt pfx (pa { index = 0 }) psett x
+
+instance (GToParam f parK) => GToParam (M1 D t f) parK where
+  gtoParam pt pfx pa psett (M1 x) = gtoParam pt pfx pa psett x
+
+instance (GToParam f parK, Selector t) => GToParam (M1 S t f) parK where
+  gtoParam pt pfx pa psett  m@(M1 x) = let fldN = ASCII.pack (selName m)
+                                       in case fldN of
+                                         "" -> gtoParam pt (pfx `nest` numberedFld pa) pa psett x
+                                         _  -> gtoParam pt (pfx `nest` fldN) pa psett x
+
+numberedFld :: ParamAcc -> ByteString
+numberedFld pa = ASCII.pack $ show (index pa)

@@ -12,7 +12,7 @@ module WebApi.Contract
        , module Http.Method
        ) where
 
-import Control.Exception
+-- import Control.Exception
 import Data.Text
 import Http.Method
 import Network.HTTP.Types
