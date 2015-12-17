@@ -1,5 +1,5 @@
 {-# LANGUAGE KindSignatures, DataKinds, ScopedTypeVariables #-}
-module Http.Method where
+module WebApi.Method where
 
 import Data.ByteString.Char8 (pack)
 import Data.Proxy

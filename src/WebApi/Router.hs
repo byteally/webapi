@@ -12,17 +12,17 @@ module WebApi.Router
        , PathSegment (..)  
        ) where
 
-import           Data.Aeson (ToJSON)
 import           Data.Proxy
 import           Data.Text as T
 import           Data.Text.Encoding (encodeUtf8)
 import           GHC.TypeLits
-import           Http.Method
-import           Http.Param
+import           WebApi.Method
+import           WebApi.Param
 import           Network.HTTP.Types hiding (Query)
 import           Network.Wai (requestMethod, pathInfo)
 import           WebApi.Contract
 import           WebApi.Internal
+import           WebApi.ContentTypes
 
 data Route (m :: *) (r :: *)
 
@@ -167,8 +167,8 @@ instance ( KnownSymbol piece, Server s m (Static piece)
          , FromParam (FormParam m (Static piece)) 'FormParam
          , FromParam (FileParam m (Static piece)) 'FileParam
          , FromParam (HeaderIn m (Static piece)) 'Header  
-         , ToJSON (ApiOut m (Static piece))
-         , ToJSON (ApiErr m (Static piece))
+         , Encodings (ContentTypes m (Static piece)) (ApiOut m (Static piece))
+         , Encodings (ContentTypes m (Static piece)) (ApiErr m (Static piece))
          , PathParam m (Static piece) ~ ()
          , CookieIn m (Static piece) ~ ()
          , ParamErrToApiErr (ApiErr m (Static piece))
@@ -183,7 +183,7 @@ instance ( KnownSymbol piece, Server s m (Static piece)
             response <- case apiReq' of
               Validation (Right apiReq) -> handler serv (Proxy :: Proxy '[]) (apiReq :: Request m (Static piece))
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) (error "TODO: @173") (error "TODO: @173")
-            return $ toWaiResponse response
+            return $ toWaiResponse request response
 
 instance ( KnownSymbol lpiece
          , KnownSymbol rpiece
@@ -196,8 +196,8 @@ instance ( KnownSymbol lpiece
          , FromParam (FormParam m route) 'FormParam
          , FromParam (FileParam m route) 'FileParam
          , FromParam (HeaderIn m route) 'Header
-         , ToJSON (ApiErr m route)
-         , ToJSON (ApiOut m route)
+         , Encodings (ContentTypes m route) (ApiErr m route)
+         , Encodings (ContentTypes m route) (ApiOut m route)
          , ToParam (HeaderOut m route) 'Header  
          , CookieIn m route ~ () -- TODO: Fix this
          , ParamErrToApiErr (ApiErr m route)  
@@ -216,7 +216,7 @@ instance ( KnownSymbol lpiece
             response <- case apiReq' of
               Validation (Right apiReq) -> handler serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) (error "TODO: @205") (error "TODO: @205")
-            return $ toWaiResponse response
+            return $ toWaiResponse request response
 
 instance ( KnownSymbol rpiece
          , paths ~ (pp :++ '[DynamicPiece lpiece, StaticPiece rpiece])
@@ -228,8 +228,8 @@ instance ( KnownSymbol rpiece
          , FromParam (FormParam m route) 'FormParam
          , FromParam (FileParam m route) 'FileParam
          , FromParam (HeaderIn m route) 'Header
-         , ToJSON (ApiErr m route)
-         , ToJSON (ApiOut m route)
+         , Encodings (ContentTypes m route) (ApiErr m route)
+         , Encodings (ContentTypes m route) (ApiOut m route)
          , ToParam (HeaderOut m route) 'Header  
          , CookieIn m route ~ () -- TODO: Fix this
          , HttpParam lpiece
@@ -249,7 +249,7 @@ instance ( KnownSymbol rpiece
             response <- case apiReq' of
               Validation (Right apiReq) -> handler serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) (error "TODO: @205") (error "TODO: @205")
-            return $ toWaiResponse response
+            return $ toWaiResponse request response
 
 
 instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
@@ -259,8 +259,8 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
          , FromParam (FormParam m route) 'FormParam
          , FromParam (FileParam m route) 'FileParam
          , FromParam (HeaderIn m route) 'Header
-         , ToJSON (ApiErr m route)
-         , ToJSON (ApiOut m route)
+         , Encodings (ContentTypes m route) (ApiErr m route)
+         , Encodings (ContentTypes m route) (ApiOut m route)
          , ToParam (HeaderOut m route) 'Header  
          , CookieIn m route ~ () -- TODO: Fix this
          , HttpParam t
@@ -279,7 +279,7 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
             response <- case apiReq' of
               Validation (Right apiReq) -> handler serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) (error "TODO: @205") (error "TODO: @205")
-            return $ toWaiResponse response
+            return $ toWaiResponse request response
 
 
 router :: ( iface ~ (ApiInterface server)

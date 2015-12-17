@@ -1,10 +1,18 @@
-{-# LANGUAGE TypeFamilies, KindSignatures, MultiParamTypeClasses, DataKinds, FlexibleContexts, GADTs, TypeOperators, PolyKinds, UndecidableInstances, FlexibleInstances, DefaultSignatures, ScopedTypeVariables, ConstraintKinds, TemplateHaskell, OverloadedStrings #-}
+{-# LANGUAGE TypeFamilies, KindSignatures, MultiParamTypeClasses, DataKinds, FlexibleContexts, GADTs, TypeOperators, PolyKinds, UndecidableInstances, FlexibleInstances, DefaultSignatures, ScopedTypeVariables, ConstraintKinds, TemplateHaskell, OverloadedStrings, DeriveGeneric #-}
 module Main where
 
 import qualified Network.Wai as Wai
 
 import WebApi
 import WebApi.Internal
+import GHC.Generics
+import Data.Int
+import Data.Word
+import Data.Text (Text)
+import Data.ByteString (ByteString)
+import Data.Time.Calendar (Day)
+import Data.Vector (Vector)
+import Data.Time.Clock (UTCTime)
 import Network.Wai.Handler.Warp (run)
 import Network.HTTP.Types
 import Network.Wai.Test (defaultRequest, request,
@@ -14,7 +22,8 @@ import Test.Hspec (Spec, describe, it, shouldBe)
 import Test.Hspec.Wai ( get, liftIO, matchHeaders,
                         matchStatus, post, request,
                         shouldRespondWith, with, (<:>))
-
+import Test.QuickCheck
+import WebApi.RouteSpec
 
 data FourSquare = FourSquare
 data FourSquareImpl = FourSquareImpl
@@ -87,9 +96,142 @@ spec1 = do
     it "should be 200 ok" $ do
       get "users/10/photos/1" `shouldRespondWith` 200
 
-      
+data U   = U | V
+         deriving (Show, Eq, Generic)
+
+data Foo = Foo { bar :: Bool, baz :: Char }
+         deriving (Show, Generic, Eq)
+
+data Bar = Bar1 { barr :: Foo, other :: Either Int Bool }
+         | Bar2 { barr :: Foo, otherOne :: Int }
+         deriving (Show, Generic, Eq)
+
+data Zap = Zap { zap :: Foo, paz :: Bar , nullary :: U}
+         deriving (Show, Generic, Eq)
+
+data PrimTys = PrimTys { pInt        :: Int
+                       , pInt8       :: Int8  
+                       , pInt16      :: Int16
+                       , pInt32      :: Int32
+                       , pInt64      :: Int64
+                       , pInteger    :: Integer  
+                       , pWord       :: Word  
+                       , pWord8      :: Word8
+                       , pWord16     :: Word16
+                       , pWord32     :: Word32
+                       , pWord64     :: Word64
+                       --, pFloat      :: Float
+                       --, pDouble     :: Double
+                       , pChar       :: Char
+                       , pText       :: Text
+                       --, pDay        :: Day
+                       --, pUTCTime    :: UTCTime
+                       , pBool       :: Bool
+                       , pEither     :: Either Int Bool
+                       , pMaybe      :: Maybe Bool
+                       , pList       :: [Char]
+                       --, pVector     :: Vector Text
+                       --, pByteString :: ByteString
+                       } deriving (Generic, Show, Eq)
+
+instance Arbitrary PrimTys where
+  arbitrary = PrimTys <$> arbitrary
+                      <*> arbitrary
+                      <*> arbitrary
+                      <*> arbitrary
+                      <*> arbitrary
+                      <*> arbitrary
+                      <*> arbitrary
+                      <*> arbitrary
+                      <*> arbitrary
+                      <*> arbitrary
+                      <*> arbitrary
+                      -- <*> arbitrary
+                      -- <*> arbitrary
+                      <*> arbitrary
+                      <*> elements ["foo", "Ελλάδα", "français"]
+                      -- <*> elements [
+                      -- <*> arbitrary
+                      <*> arbitrary
+                      <*> arbitrary
+                      <*> arbitrary
+                      <*> arbitrary
+                      -- <*> arbitrary
+                      -- <*> arbitrary
+
+instance ToParam PrimTys 'QueryParam where
+instance ToParam PrimTys 'FormParam where  
+instance FromParam PrimTys 'QueryParam where
+instance FromParam PrimTys 'FormParam where
+
+
+instance ToParam U 'QueryParam where
+instance ToParam U 'FormParam where  
+instance FromParam U 'QueryParam where
+instance FromParam U 'FormParam where
+
+instance ToParam Foo 'QueryParam where
+instance ToParam Foo 'FormParam where
+instance FromParam Foo 'QueryParam where  
+instance FromParam Foo 'FormParam where  
+
+instance ToParam Bar 'QueryParam where
+instance ToParam Bar 'FormParam where  
+instance FromParam Bar 'QueryParam where
+instance FromParam Bar 'FormParam where
+
+instance ToParam Zap 'QueryParam where
+instance ToParam Zap 'FormParam where  
+instance FromParam Zap 'QueryParam where
+instance FromParam Zap 'FormParam where
+
+propParamsPrimSpec :: Spec
+propParamsPrimSpec = do
+  describe "Params for prims : QueryParams" $ do
+    it "works for all prims" $ do
+      property $ \v -> fromQueryParam (toQueryParam v) == Validation (Right (v :: PrimTys))
+
+paramsGenericSpec :: Spec
+paramsGenericSpec = do
+  describe "Generic derivation for params QueryParams" $ do
+    it "works for unit type" $ do
+      let v = U
+      fromQueryParam (toQueryParam v) `shouldBe` (Validation (Right v))
+    it "works for product types" $ do
+      let v = Foo True 'c'
+      fromQueryParam (toQueryParam v) `shouldBe` (Validation (Right v))
+    it "works for sum types 1" $ do
+      let v = Bar1 (Foo False 'd') (Left 8)
+      fromQueryParam (toQueryParam v) `shouldBe` (Validation (Right v))
+    it "works for sum types 2" $ do
+      let v = Bar2 (Foo False 'd') 7
+      fromQueryParam (toQueryParam v) `shouldBe` (Validation (Right v))
+    it "works for a complex type" $ do
+      let v = Zap (Foo False 'f') (Bar2 (Foo False 'f') 7) U
+      fromQueryParam (toQueryParam v) `shouldBe` (Validation (Right v))
+  describe "Generic derivation for params FormParams" $ do
+    it "works for unit type" $ do
+      let v = U
+      fromFormParam (toFormParam v) `shouldBe` (Validation (Right v))
+    it "works for product types" $ do
+      let v = Foo False 'f'
+      fromFormParam (toFormParam v) `shouldBe` (Validation (Right v))
+    it "works for sum types 1" $ do
+      let v = Bar1 (Foo False 'f') (Right True)
+      fromFormParam (toFormParam v) `shouldBe` (Validation (Right v))
+    it "works for sum types 2" $ do
+      let v = Bar2 (Foo False 'f') 7
+      fromFormParam (toFormParam v) `shouldBe` (Validation (Right v))
+    it "works for a complex type" $ do
+      let v = Zap (Foo False 'f') (Bar2 (Foo False 'f') 7) U
+      fromFormParam (toFormParam v) `shouldBe` (Validation (Right v))
+
+
 main :: IO ()
 main = do
 --  run 8000 app
   hspec spec1
+--  hspec paramsGenericSpec
+--  hspec propParamsPrimSpec
+  hspec routeSpec
   return ()

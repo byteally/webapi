@@ -1,4 +1,10 @@
-{-# LANGUAGE TypeFamilies, KindSignatures, MultiParamTypeClasses, DataKinds, PolyKinds, FlexibleContexts, ExistentialQuantification #-}
+{-# LANGUAGE DataKinds                 #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE FlexibleContexts          #-}
+{-# LANGUAGE KindSignatures            #-}
+{-# LANGUAGE MultiParamTypeClasses     #-}
+{-# LANGUAGE PolyKinds                 #-}
+{-# LANGUAGE TypeFamilies              #-}
 module WebApi.Contract
        (
          API (..)
@@ -9,14 +15,15 @@ module WebApi.Contract
        , Api (..)
        , ApiError (..)
        , OtherError (..)
-       , module Http.Method
+       , module WebApi.Method
        ) where
 
 -- import Control.Exception
-import Data.Text
-import Http.Method
-import Network.HTTP.Types
-import WebApi.Versioning
+import           Data.Text
+import           Network.HTTP.Types
+import           WebApi.ContentTypes
+import           WebApi.Method
+import           WebApi.Versioning
 
 class (OrdVersion (Version p)) => WebApi (p :: *) where
   type Version p :: *
@@ -33,16 +40,18 @@ class (SingMethod m, WebApi p) => API (p :: *) (m :: *) (r :: *) where
   type ApiErr m r
   type HeaderOut m r
   type CookieOut m r
+  type ContentTypes m r :: [*]
 
-  type PathParam m r  = PathParam' m r
-  type QueryParam m r = ()
-  type FormParam m r  = ()
-  type FileParam m r  = ()
-  type HeaderIn m r   = ()
-  type CookieIn m r   = ()
-  type CookieOut m r  = ()
-  type HeaderOut m r  = ()
-  type ApiErr m r     = ()
+  type PathParam m r    = PathParam' m r
+  type QueryParam m r   = ()
+  type FormParam m r    = ()
+  type FileParam m r    = ()
+  type HeaderIn m r     = ()
+  type CookieIn m r     = ()
+  type CookieOut m r    = ()
+  type HeaderOut m r    = ()
+  type ApiErr m r       = ()
+  type ContentTypes m r = '[JSON]
 
 type family PathParam' m r :: *
 
@@ -56,11 +65,11 @@ data Request m r = Req
   , method     :: Text
   }
 
-   
+
 data Response m r = Success Status (ApiOut m r) (HeaderOut m r) (CookieOut m r)
                   | Failure (Either (ApiError m r) OtherError)
 
-data Api m r = forall handM.(Monad handM) => Api 
+data Api m r = forall handM.(Monad handM) => Api
                { runApi :: Request m r -> handM (Response m r) }
 
 data ApiError m r = ApiError

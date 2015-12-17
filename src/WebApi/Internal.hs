@@ -1,21 +1,22 @@
 {-# LANGUAGE TypeFamilies, KindSignatures, MultiParamTypeClasses, DataKinds, FlexibleContexts, OverloadedStrings, ScopedTypeVariables , ConstraintKinds #-}
 module WebApi.Internal where
 
-import           Blaze.ByteString.Builder (toByteString)
-import           Data.Aeson (ToJSON, toJSON)
-import           Data.Aeson.Encode (encodeToByteStringBuilder)
+import           Blaze.ByteString.Builder (toByteString, Builder)
 import           Data.ByteString (ByteString)
 import           Data.ByteString.Char8 (unpack)
 import           Data.Proxy
-import           Data.List (foldl')
+import           Data.List (foldl', find)
 import           Data.Text (Text)
 import           Data.Text.Encoding (decodeUtf8)
-import           Http.Param
+import           WebApi.Param
+import qualified Network.HTTP.Client as HC
+import           Network.HTTP.Media (mapAcceptMedia)
 import           Network.HTTP.Types hiding (Query)
 import           Network.URI (URI (..))
 import qualified Network.Wai as Wai
 import qualified Network.Wai.Parse as Wai
 import           WebApi.Contract
+import           WebApi.ContentTypes
 
 data RouteResult a = NotMatched | Matched a
 
@@ -26,7 +27,6 @@ toApplication app request respond =
   app request $ \routeResult -> case routeResult of
     Matched result -> respond result
     NotMatched -> respond (Wai.responseLBS notFound404 [] "")
-
 
 fromWaiRequest :: ( FromParam (QueryParam m r) 'QueryParam
                    , FromParam (FormParam m r) 'FormParam
@@ -41,19 +41,34 @@ fromWaiRequest waiReq pathPar = do
   return $ Req <$> pure pathPar
     <*> (fromQueryParam $ Wai.queryString waiReq)
     <*> (fromFormParam $ formPar)
-    <*> (fromFileParam undefined) --TODO:
+    <*> (fromFileParam $ undefined) --TODO:
     <*> (fromHeader undefined) --TODO:
     <*> pure () -- TODO: FixMe
     <*> (pure $ decodeUtf8 $ Wai.requestMethod waiReq)
 
 toWaiResponse :: ( ToParam (HeaderOut m r) 'Header
-                  , ToJSON (ApiOut m r)
-                  , ToJSON (ApiErr m r)
-                  ) => Response m r -> Wai.Response
-toWaiResponse resp = case resp of
-  Success status out hdrs _ -> Wai.responseBuilder status (toHeader hdrs) (encodeToByteStringBuilder $ toJSON out)
-  Failure (Left (ApiError status errs hdrs _)) -> Wai.responseBuilder status (toHeader hdrs) (encodeToByteStringBuilder $ toJSON errs)
+                  , Encodings (ContentTypes m r) (ApiOut m r)
+                  , Encodings (ContentTypes m r) (ApiErr m r) 
+                  ) => Wai.Request -> Response m r -> Wai.Response
+toWaiResponse wreq resp = case resp of
+  Success status out hdrs _ -> case encode resp out of
+    Just o' -> Wai.responseBuilder status (toHeader hdrs) o'
+    Nothing -> Prelude.error "TODO: @ toWaiResponse"
+  Failure (Left (ApiError status errs hdrs _)) -> case encode resp errs of
+    Just errs' -> Wai.responseBuilder status (toHeader hdrs) errs'
+    Nothing -> Prelude.error "TODO: @ toWaiResponse"
   Failure (Right _ex) -> Prelude.error "TODO: @ toWaiResponse"
+
+  where encode :: ( Encodings (ContentTypes m r) a
+                 ) => apiRes m r -> a -> Maybe Builder
+        encode r o = case getAccept wreq of
+          Just acc -> mapAcceptMedia (encodings (reproxy r) o) acc
+          Nothing  -> case encodings (reproxy r) o of
+            (x : _)  -> Just (snd x)
+            _        -> Nothing
+
+        reproxy :: apiRes m r -> Proxy (ContentTypes m r)
+        reproxy = const Proxy
 
 link :: ( ToParam (QueryParam m r) 'QueryParam
         , MkPathFormatString r
@@ -120,3 +135,9 @@ data PathSegment = StaticSegment Text
 
 class MkPathFormatString r where
   mkPathFormatString :: Proxy r -> [PathSegment]
+
+getAccept :: Wai.Request -> Maybe ByteString
+getAccept = fmap snd . find ((== hAccept) . fst) . Wai.requestHeaders
+
+getContentType :: HC.Response a -> Maybe ByteString
+getContentType = fmap snd . find ((== hContentType) . fst) . HC.responseHeaders

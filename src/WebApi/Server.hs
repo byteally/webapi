@@ -16,7 +16,7 @@ module WebApi.Server
        ) where
 
 import           Data.Proxy
-import           Http.Method
+import           WebApi.Method
 import           Network.HTTP.Types hiding (Query)
 import qualified Network.Wai as Wai
 import           WebApi.Contract
