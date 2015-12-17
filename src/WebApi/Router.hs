@@ -1,4 +1,19 @@
-{-# LANGUAGE TypeFamilies, KindSignatures, MultiParamTypeClasses, DataKinds, FlexibleContexts, GADTs, TypeOperators, PolyKinds, UndecidableInstances, FlexibleInstances, DefaultSignatures, ScopedTypeVariables, ConstraintKinds, TemplateHaskell, OverloadedStrings, LambdaCase #-}
+{-# LANGUAGE ConstraintKinds       #-}
+{-# LANGUAGE DataKinds             #-}
+{-# LANGUAGE DefaultSignatures     #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE GADTs                 #-}
+{-# LANGUAGE KindSignatures        #-}
+{-# LANGUAGE LambdaCase            #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE PolyKinds             #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TemplateHaskell       #-}
+{-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE TypeOperators         #-}
+{-# LANGUAGE UndecidableInstances  #-}
 module WebApi.Router
        ( Static
        , Root
@@ -9,20 +24,19 @@ module WebApi.Router
 
        , MkFormatStr (..)
        , ToPieces
-       , PathSegment (..)  
+       , PathSegment (..)
        ) where
 
 import           Data.Proxy
-import           Data.Text as T
-import           Data.Text.Encoding (encodeUtf8)
+import           Data.Text           as T
+import           Data.Text.Encoding  (encodeUtf8)
 import           GHC.TypeLits
-import           WebApi.Method
-import           WebApi.Param
-import           Network.HTTP.Types hiding (Query)
-import           Network.Wai (requestMethod, pathInfo)
+import           Network.HTTP.Types  hiding (Query)
+import           Network.Wai         (pathInfo, requestMethod)
+import           WebApi.ContentTypes
 import           WebApi.Contract
 import           WebApi.Internal
-import           WebApi.ContentTypes
+import           WebApi.Param
 
 data Route (m :: *) (r :: *)
 
@@ -142,7 +156,7 @@ instance (Router s route pr, Router s routes pr) => Router s ((route :: *) ': ro
 instance Router s '[] pr where
   route _ _s _ _ respond = respond NotMatched
 
-instance (Router s (MarkDyn rest) '(m, (pp :++ '[DynamicPiece piece])), HttpParam piece) 
+instance (Router s (MarkDyn rest) '(m, (pp :++ '[DynamicPiece piece])), HttpParam piece)
                       => Router s ((piece :: *) :/ (rest :: *)) '(m, pp) where
   route _ _s parsedRoute request respond =
     case pathInfo request of
@@ -151,7 +165,7 @@ instance (Router s (MarkDyn rest) '(m, (pp :++ '[DynamicPiece piece])), HttpPara
         Nothing -> respond NotMatched
       _ -> respond $ NotMatched
 
-instance (Router s (MarkDyn rest) '(m, (pp :++ '[StaticPiece piece])), KnownSymbol piece) 
+instance (Router s (MarkDyn rest) '(m, (pp :++ '[StaticPiece piece])), KnownSymbol piece)
   => Router s ((piece :: Symbol) :/ (rest :: *)) '(m, pp) where
   route _ _s parsedRoute request respond =
     case pathInfo request of
@@ -166,7 +180,7 @@ instance ( KnownSymbol piece, Server s m (Static piece)
          , FromParam (QueryParam m (Static piece)) 'QueryParam
          , FromParam (FormParam m (Static piece)) 'FormParam
          , FromParam (FileParam m (Static piece)) 'FileParam
-         , FromParam (HeaderIn m (Static piece)) 'Header  
+         , FromParam (HeaderIn m (Static piece)) 'Header
          , Encodings (ContentTypes m (Static piece)) (ApiOut m (Static piece))
          , Encodings (ContentTypes m (Static piece)) (ApiErr m (Static piece))
          , PathParam m (Static piece) ~ ()
@@ -198,9 +212,9 @@ instance ( KnownSymbol lpiece
          , FromParam (HeaderIn m route) 'Header
          , Encodings (ContentTypes m route) (ApiErr m route)
          , Encodings (ContentTypes m route) (ApiOut m route)
-         , ToParam (HeaderOut m route) 'Header  
+         , ToParam (HeaderOut m route) 'Header
          , CookieIn m route ~ () -- TODO: Fix this
-         , ParamErrToApiErr (ApiErr m route)  
+         , ParamErrToApiErr (ApiErr m route)
          ) => Router s ((lpiece :: Symbol) :/ (rpiece :: Symbol)) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
@@ -220,7 +234,7 @@ instance ( KnownSymbol lpiece
 
 instance ( KnownSymbol rpiece
          , paths ~ (pp :++ '[DynamicPiece lpiece, StaticPiece rpiece])
-         , paths ~ ((pp :++ '[DynamicPiece lpiece]) :++ '[StaticPiece rpiece])       
+         , paths ~ ((pp :++ '[DynamicPiece lpiece]) :++ '[StaticPiece rpiece])
          , route ~ (FromPieces paths)
          , Server s m route
          , PathParam m route ~ HListToTuple (FilterDynP paths)
@@ -230,10 +244,10 @@ instance ( KnownSymbol rpiece
          , FromParam (HeaderIn m route) 'Header
          , Encodings (ContentTypes m route) (ApiErr m route)
          , Encodings (ContentTypes m route) (ApiOut m route)
-         , ToParam (HeaderOut m route) 'Header  
+         , ToParam (HeaderOut m route) 'Header
          , CookieIn m route ~ () -- TODO: Fix this
          , HttpParam lpiece
-         , ParamErrToApiErr (ApiErr m route)  
+         , ParamErrToApiErr (ApiErr m route)
          ) => Router s ((lpiece :: *) :/ (rpiece :: Symbol)) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
@@ -261,10 +275,10 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
          , FromParam (HeaderIn m route) 'Header
          , Encodings (ContentTypes m route) (ApiErr m route)
          , Encodings (ContentTypes m route) (ApiOut m route)
-         , ToParam (HeaderOut m route) 'Header  
+         , ToParam (HeaderOut m route) 'Header
          , CookieIn m route ~ () -- TODO: Fix this
          , HttpParam t
-         , ParamErrToApiErr (ApiErr m route)  
+         , ParamErrToApiErr (ApiErr m route)
          ) => Router s (DynamicPiece t) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
@@ -274,7 +288,7 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
       _           -> respond NotMatched
     where getResponse dynVal = do
             let pRoute :: ParsedRoute '(m, (pp :++ '[DynamicPiece t]))
-                pRoute = snocParsedRoute parsedRoute $ DPiece dynVal        
+                pRoute = snocParsedRoute parsedRoute $ DPiece dynVal
             apiReq' <- fromWaiRequest request (fromParsedRoute pRoute)
             response <- case apiReq' of
               Validation (Right apiReq) -> handler serv (Proxy :: Proxy '[]) (apiReq :: Request m route)

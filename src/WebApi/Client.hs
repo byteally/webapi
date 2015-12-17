@@ -1,26 +1,40 @@
-{-# LANGUAGE TypeFamilies, KindSignatures, MultiParamTypeClasses, DataKinds, FlexibleContexts, GADTs, TypeOperators, PolyKinds, UndecidableInstances, FlexibleInstances, DefaultSignatures, ScopedTypeVariables, ConstraintKinds, TemplateHaskell, OverloadedStrings, LambdaCase #-}
+{-# LANGUAGE ConstraintKinds       #-}
+{-# LANGUAGE DataKinds             #-}
+{-# LANGUAGE DefaultSignatures     #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE GADTs                 #-}
+{-# LANGUAGE KindSignatures        #-}
+{-# LANGUAGE LambdaCase            #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE PolyKinds             #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TemplateHaskell       #-}
+{-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE TypeOperators         #-}
+{-# LANGUAGE UndecidableInstances  #-}
 module WebApi.Client
        ( ClientSettings (..)
        , fromClientResponse
        , toClientRequest
-       , client  
+       , client
        ) where
 
+import           Data.ByteString                       (ByteString)
+import           Data.Either                           (isRight)
+import           Data.List                             (find)
 import           Data.Proxy
-import           Data.List (find)
-import           Data.Either (isRight)
-import qualified Data.Text as T (pack)
-import           Data.Text.Encoding (decodeUtf8)
-import           WebApi.Method
-import           WebApi.Param
-import qualified Network.HTTP.Client as HC
+import qualified Data.Text                             as T (pack)
+import           Data.Text.Encoding                    (decodeUtf8)
+import qualified Network.HTTP.Client                   as HC
 import qualified Network.HTTP.Client.MultipartFormData as HC
-import           Network.HTTP.Types hiding (Query)
+import           Network.HTTP.Media                    (mapContentMedia)
+import           Network.HTTP.Types                    hiding (Query)
+import           WebApi.ContentTypes
 import           WebApi.Contract
 import           WebApi.Internal
-import           WebApi.ContentTypes
-import           Data.ByteString (ByteString)
-import           Network.HTTP.Media (mapContentMedia)
+import           WebApi.Param
 
 data ClientSettings = ClientSettings { baseUrl           :: String
                                      , connectionManager :: HC.Manager
@@ -67,7 +81,7 @@ toClientRequest :: forall m r.( ToParam (PathParam m r) 'PathParam
                           , ToParam (HeaderIn m r) 'Header
                           , ToParam (FileParam m r) 'FileParam
                           , SingMethod m
-                          , MkPathFormatString r  
+                          , MkPathFormatString r
                           ) => HC.Request -> Request m r -> IO HC.Request
 toClientRequest clientReq req = do
   let cReq' = clientReq

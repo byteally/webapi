@@ -1,16 +1,24 @@
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, OverloadedStrings, ConstraintKinds, TypeOperators, DataKinds, TypeFamilies, UndecidableInstances, ScopedTypeVariables #-}
+{-# LANGUAGE ConstraintKinds       #-}
+{-# LANGUAGE DataKinds             #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE TypeOperators         #-}
+{-# LANGUAGE UndecidableInstances  #-}
 module WebApi.ContentTypes where
 
-import Network.HTTP.Media.MediaType
-import Blaze.ByteString.Builder (Builder)
-import Data.ByteString (ByteString)
+import           Blaze.ByteString.Builder           (Builder)
 import qualified Blaze.ByteString.Builder.Char.Utf8 as Utf8 (fromText)
-import Data.Aeson.Encode (encodeToByteStringBuilder)
-import qualified Data.Text as TextS
-import Data.Aeson
-import Data.Proxy
-import GHC.Exts (Constraint)
-import Data.Text.Encoding (decodeUtf8)
+import           Data.Aeson
+import           Data.Aeson.Encode                  (encodeToByteStringBuilder)
+import           Data.ByteString                    (ByteString)
+import           Data.Proxy
+import qualified Data.Text                          as TextS
+import           Data.Text.Encoding                 (decodeUtf8)
+import           GHC.Exts                           (Constraint)
+import           Network.HTTP.Media.MediaType
 
 data JSON
 data PlainText
@@ -19,7 +27,7 @@ data OctetStream
 type family All1 (ctx :: * -> Constraint) (xs :: [*]) :: Constraint where
   All1 f (x ': xs) = (f x,  All1 f xs)
   All1 f '[]       = ()
-  
+
 type family MimeRenderCtx ms a :: Constraint where
   MimeRenderCtx (m ': ms) a = (MimeRender m a, MimeRenderCtx ms a)
   MimeRenderCtx '[] a       = ()
@@ -47,7 +55,7 @@ instance ( Accept ctype
 
 instance Decodings '[] a where
   decodings _ _ = []
-                         
+
 class Accept ctype where
   contentType :: Proxy ctype -> MediaType
 

@@ -1,4 +1,10 @@
-{-# LANGUAGE TypeFamilies, KindSignatures, MultiParamTypeClasses, DataKinds, PolyKinds, FlexibleInstances, FlexibleContexts #-}
+{-# LANGUAGE DataKinds             #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE KindSignatures        #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE PolyKinds             #-}
+{-# LANGUAGE TypeFamilies          #-}
 module WebApi.Versioning
        ( MajorMinor (..)
        , Major (..)
@@ -8,8 +14,8 @@ module WebApi.Versioning
        , compareVersion
        ) where
 
-import Data.Proxy
-import GHC.TypeLits
+import           Data.Proxy
+import           GHC.TypeLits
 
 class OrdVersion (ver :: *) where
   cmpVersion :: (ver ~ ((proxy :: k -> *) (v1 :: k)), ord ~ (VersionOrd (proxy v1) (proxy v2)), SingOrd ord) =>  proxy v1 -> proxy (v2 :: k) -> Proxy ord

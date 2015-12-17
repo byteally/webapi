@@ -1,10 +1,12 @@
-{-# LANGUAGE KindSignatures, DataKinds, ScopedTypeVariables #-}
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE KindSignatures      #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module WebApi.Method where
 
-import Data.ByteString.Char8 (pack)
-import Data.Proxy
-import GHC.TypeLits
-import Network.HTTP.Types
+import           Data.ByteString.Char8 (pack)
+import           Data.Proxy
+import           GHC.TypeLits
+import           Network.HTTP.Types
 
 
 data GET
@@ -17,7 +19,7 @@ data OPTIONS
 data TRACE
 data CONNECT
 data CUSTOM (m :: Symbol)
-  
+
 class SingMethod (meth :: *) where
   singMethod :: Proxy meth -> Method
 
@@ -49,4 +51,4 @@ instance SingMethod CONNECT where
   singMethod = const methodConnect
 
 instance KnownSymbol m => SingMethod (CUSTOM m) where
-  singMethod = const $ pack $ symbolVal (Proxy :: Proxy m) 
+  singMethod = const $ pack $ symbolVal (Proxy :: Proxy m)

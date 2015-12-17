@@ -18,7 +18,6 @@ module WebApi.Contract
        , module WebApi.Method
        ) where
 
--- import Control.Exception
 import           Data.Text
 import           Network.HTTP.Types
 import           WebApi.ContentTypes

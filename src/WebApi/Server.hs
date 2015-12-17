@@ -1,4 +1,8 @@
-{-# LANGUAGE TypeFamilies, KindSignatures, MultiParamTypeClasses, DataKinds, FlexibleContexts #-}
+{-# LANGUAGE DataKinds             #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE KindSignatures        #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeFamilies          #-}
 module WebApi.Server
        ( respond
        , respondWith
@@ -16,9 +20,8 @@ module WebApi.Server
        ) where
 
 import           Data.Proxy
-import           WebApi.Method
 import           Network.HTTP.Types hiding (Query)
-import qualified Network.Wai as Wai
+import qualified Network.Wai        as Wai
 import           WebApi.Contract
 import           WebApi.Internal
 import           WebApi.Router

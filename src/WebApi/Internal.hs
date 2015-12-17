@@ -1,22 +1,29 @@
-{-# LANGUAGE TypeFamilies, KindSignatures, MultiParamTypeClasses, DataKinds, FlexibleContexts, OverloadedStrings, ScopedTypeVariables , ConstraintKinds #-}
+{-# LANGUAGE ConstraintKinds       #-}
+{-# LANGUAGE DataKinds             #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE KindSignatures        #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TypeFamilies          #-}
 module WebApi.Internal where
 
-import           Blaze.ByteString.Builder (toByteString, Builder)
-import           Data.ByteString (ByteString)
-import           Data.ByteString.Char8 (unpack)
+import           Blaze.ByteString.Builder (Builder, toByteString)
+import           Data.ByteString          (ByteString)
+import           Data.ByteString.Char8    (unpack)
+import           Data.List                (find, foldl')
 import           Data.Proxy
-import           Data.List (foldl', find)
-import           Data.Text (Text)
-import           Data.Text.Encoding (decodeUtf8)
-import           WebApi.Param
-import qualified Network.HTTP.Client as HC
-import           Network.HTTP.Media (mapAcceptMedia)
-import           Network.HTTP.Types hiding (Query)
-import           Network.URI (URI (..))
-import qualified Network.Wai as Wai
-import qualified Network.Wai.Parse as Wai
-import           WebApi.Contract
+import           Data.Text                (Text)
+import           Data.Text.Encoding       (decodeUtf8)
+import qualified Network.HTTP.Client      as HC
+import           Network.HTTP.Media       (mapAcceptMedia)
+import           Network.HTTP.Types       hiding (Query)
+import           Network.URI              (URI (..))
+import qualified Network.Wai              as Wai
+import qualified Network.Wai.Parse        as Wai
 import           WebApi.ContentTypes
+import           WebApi.Contract
+import           WebApi.Param
 
 data RouteResult a = NotMatched | Matched a
 
@@ -48,7 +55,7 @@ fromWaiRequest waiReq pathPar = do
 
 toWaiResponse :: ( ToParam (HeaderOut m r) 'Header
                   , Encodings (ContentTypes m r) (ApiOut m r)
-                  , Encodings (ContentTypes m r) (ApiErr m r) 
+                  , Encodings (ContentTypes m r) (ApiErr m r)
                   ) => Wai.Request -> Response m r -> Wai.Response
 toWaiResponse wreq resp = case resp of
   Success status out hdrs _ -> case encode resp out of
@@ -102,7 +109,7 @@ renderPaths p r = toByteString
 
         toRoute :: (MkPathFormatString r) => route m r -> Proxy r
         toRoute = const Proxy
-                  
+
 type family ApiInterface (p :: *) :: *
 
 class (API (ApiInterface p) m r) => Server (p :: *) (m :: *) (r :: *) where
@@ -131,7 +138,7 @@ serverSettings = ServerSettings
 
 data PathSegment = StaticSegment Text
                  | Hole
-                 deriving Show   
+                 deriving Show
 
 class MkPathFormatString r where
   mkPathFormatString :: Proxy r -> [PathSegment]
