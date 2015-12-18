@@ -59,7 +59,7 @@ raiseWith :: ( Monad handM
                -> handM (Response m r)
 raiseWith status errs hdrs cook = return $ Failure
                                           $ Left
-                                          $ ApiError status errs hdrs cook
+                                          $ ApiError status errs (Just hdrs) (Just cook)
 
 serverApp :: ( iface ~ (ApiInterface server)
              , HandlerM iface ~ IO

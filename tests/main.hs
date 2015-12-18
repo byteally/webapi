@@ -24,6 +24,7 @@ import Test.Hspec.Wai ( get, liftIO, matchHeaders,
                         shouldRespondWith, with, (<:>))
 import Test.QuickCheck
 import WebApi.RouteSpec
+import WebApi.RequestSpec
 
 data FourSquare = FourSquare
 data FourSquareImpl = FourSquareImpl
@@ -233,5 +234,6 @@ main = do
   hspec spec1
 --  hspec paramsGenericSpec
 --  hspec propParamsPrimSpec
-  hspec routeSpec
-  return ()
+  -- hspec routeSpec
+  hspec reqSpec
+  -- return ()

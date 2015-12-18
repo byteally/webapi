@@ -18,6 +18,7 @@ module WebApi.Contract
        , module WebApi.Method
        ) where
 
+import           Control.Exception (SomeException)
 import           Data.Text
 import           Network.HTTP.Types
 import           WebApi.ContentTypes
@@ -74,8 +75,8 @@ data Api m r = forall handM.(Monad handM) => Api
 data ApiError m r = ApiError
   { code      :: Status
   , err       :: (ApiErr m r)
-  , headerOut :: (HeaderOut m r)
-  , cookieOut :: (CookieOut m r)
+  , headerOut :: Maybe (HeaderOut m r)
+  , cookieOut :: Maybe (CookieOut m r)
   }
 
-data OtherError = OtherError { exception :: Text }
+data OtherError = OtherError { exception :: SomeException }
