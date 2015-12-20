@@ -27,16 +27,18 @@ module WebApi.Router
        , PathSegment (..)
        ) where
 
-import           Data.Proxy
-import           Data.Text           as T
-import           Data.Text.Encoding  (encodeUtf8)
-import           GHC.TypeLits
-import           Network.HTTP.Types  hiding (Query)
-import           Network.Wai         (pathInfo, requestMethod)
-import           WebApi.ContentTypes
-import           WebApi.Contract
-import           WebApi.Internal
-import           WebApi.Param
+import Control.Exception (catches, Handler (..), SomeException (..))
+import Data.Proxy
+import Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
+import Data.Typeable (Typeable)
+import GHC.TypeLits
+import Network.HTTP.Types hiding (Query)
+import Network.Wai (pathInfo, requestMethod)
+import WebApi.ContentTypes
+import WebApi.Contract
+import WebApi.Internal
+import WebApi.Param
 
 data Route (m :: *) (r :: *)
 
@@ -187,6 +189,8 @@ instance ( KnownSymbol piece, Server s m (Static piece)
          , Encodings (ContentTypes m (Static piece)) (ApiErr m (Static piece))
          , PathParam m (Static piece) ~ ()
          , ParamErrToApiErr (ApiErr m (Static piece))
+         , Typeable m
+         , Typeable (Static piece)  
          ) => Router s (Static piece) '(m, pp) where
   route _ serv _ request respond =
     case pathInfo request of
@@ -196,7 +200,7 @@ instance ( KnownSymbol piece, Server s m (Static piece)
     where getResponse = do
             apiReq' <- fromWaiRequest request ()
             response <- case apiReq' of
-              Validation (Right apiReq) -> handler serv (Proxy :: Proxy '[]) (apiReq :: Request m (Static piece))
+              Validation (Right apiReq) -> serve serv (Proxy :: Proxy '[]) (apiReq :: Request m (Static piece))
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toWaiResponse request response
 
@@ -217,6 +221,8 @@ instance ( KnownSymbol lpiece
          , ToHeader (HeaderOut m route)
          , ToParam (CookieOut m route) 'Cookie
          , ParamErrToApiErr (ApiErr m route)
+         , Typeable m
+         , Typeable route  
          ) => Router s ((lpiece :: Symbol) :/ (rpiece :: Symbol)) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
@@ -230,7 +236,7 @@ instance ( KnownSymbol lpiece
           getResponse = do
             apiReq' <- fromWaiRequest request pathPar
             response <- case apiReq' of
-              Validation (Right apiReq) -> handler serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
+              Validation (Right apiReq) -> serve serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toWaiResponse request response
 
@@ -251,6 +257,8 @@ instance ( KnownSymbol rpiece
          , ToParam (CookieOut m route) 'Cookie
          , HttpParam lpiece
          , ParamErrToApiErr (ApiErr m route)
+         , Typeable m
+         , Typeable route  
          ) => Router s ((lpiece :: *) :/ (rpiece :: Symbol)) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
@@ -264,7 +272,7 @@ instance ( KnownSymbol rpiece
                 pRoute = snocParsedRoute (snocParsedRoute parsedRoute $ DPiece dynVal) $ SPiece (Proxy :: Proxy rpiece)
             apiReq' <- fromWaiRequest request (fromParsedRoute pRoute)
             response <- case apiReq' of
-              Validation (Right apiReq) -> handler serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
+              Validation (Right apiReq) -> serve serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toWaiResponse request response
 
@@ -283,6 +291,8 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
          , ToParam (CookieOut m route) 'Cookie
          , HttpParam t
          , ParamErrToApiErr (ApiErr m route)
+         , Typeable m
+         , Typeable route
          ) => Router s (DynamicPiece t) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
@@ -295,7 +305,7 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
                 pRoute = snocParsedRoute parsedRoute $ DPiece dynVal
             apiReq' <- fromWaiRequest request (fromParsedRoute pRoute)
             response <- case apiReq' of
-              Validation (Right apiReq) -> handler serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
+              Validation (Right apiReq) -> serve serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toWaiResponse request response
 
@@ -337,3 +347,15 @@ instance (MkFormatStr xs) => MkFormatStr (DynamicPiece s ': xs) where
 
 instance MkFormatStr '[] where
   mkFormatStr _ = []
+
+serve :: forall query p m r.
+       ( query ~ '[]
+       , HandlerM (ApiInterface p) ~ IO
+       , Server p m r
+       , Typeable m
+       , Typeable r) => p -> Proxy query -> Request m r -> (HandlerM (ApiInterface p)) (Query (Response m r) query)
+serve serv q req = catches (handler serv q req) dub
+  where dub :: [Handler (Query (Response m r) query)]
+        dub = [ Handler (\ (ex :: ApiException m r) -> handleApiException serv ex)
+              , Handler (\ (ex :: SomeException) -> handleSomeException serv ex) ]
+

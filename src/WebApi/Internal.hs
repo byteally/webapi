@@ -8,25 +8,26 @@
 {-# LANGUAGE TypeFamilies          #-}
 module WebApi.Internal where
 
-import           Blaze.ByteString.Builder     (Builder, toByteString)
+import           Blaze.ByteString.Builder (Builder, toByteString)
 import qualified Blaze.ByteString.Builder.Char.Utf8 as Utf8 (fromText)
 import           Control.Exception
-import           Control.Monad.Catch          (MonadThrow)
-import           Control.Monad.IO.Class       (MonadIO)
+import           Control.Monad.Catch (MonadThrow)
+import           Control.Monad.IO.Class (MonadIO)
 import           Control.Monad.Trans.Resource (runResourceT, withInternalState)
-import           Data.ByteString              (ByteString)
-import           Data.ByteString.Char8        (unpack)
-import           Data.List                    (find, foldl')
-import           Data.Monoid                  ((<>))
+import           Data.ByteString (ByteString)
+import           Data.ByteString.Char8 (unpack)
+import           Data.List (find, foldl')
+import           Data.Monoid ((<>))
 import           Data.Proxy
-import           Data.Text                    (Text, pack)
-import           Data.Text.Encoding           (decodeUtf8)
-import qualified Network.HTTP.Client          as HC
-import           Network.HTTP.Media           (mapAcceptMedia)
-import           Network.HTTP.Types           hiding (Query)
-import           Network.URI                  (URI (..))
-import qualified Network.Wai                  as Wai
-import qualified Network.Wai.Parse            as Wai
+import           Data.Text (Text, pack)
+import           Data.Text.Encoding (decodeUtf8)
+import           Data.Typeable (Typeable)
+import qualified Network.HTTP.Client as HC
+import           Network.HTTP.Media (mapAcceptMedia)
+import           Network.HTTP.Types hiding (Query)
+import           Network.URI (URI (..))
+import qualified Network.Wai as Wai
+import qualified Network.Wai.Parse as Wai
 import           Web.Cookie
 import           WebApi.ContentTypes
 import           WebApi.Contract
@@ -175,3 +176,16 @@ hSetCookie = "Set-Cookie"
 
 getContentType :: HC.Response a -> Maybe ByteString
 getContentType = fmap snd . find ((== hContentType) . fst) . HC.responseHeaders
+
+data ApiException m r = ApiException { apiException :: ApiError m r }
+
+instance Show (ApiException m r) where
+  show (ApiException _) = "ApiException"
+
+instance (Typeable m, Typeable r) => Exception (ApiException m r) where
+
+handleApiException :: (query ~ '[], HandlerM (ApiInterface p) ~ IO) => p -> ApiException m r -> (HandlerM (ApiInterface p)) (Query (Response m r) query)
+handleApiException _ = return . Failure . Left . apiException
+
+handleSomeException :: (query ~ '[], HandlerM (ApiInterface p) ~ IO) => p -> SomeException -> (HandlerM (ApiInterface p)) (Query (Response m r) query)
+handleSomeException _ = return . Failure . Right . OtherError 

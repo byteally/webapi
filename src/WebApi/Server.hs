@@ -16,12 +16,16 @@ module WebApi.Server
        , ServerSettings
        , Server (..)
        , ApiInterface
+       , ApiException (..)  
        , module WebApi.Router
        ) where
 
+import           Control.Exception
+import           Control.Monad.Catch
 import           Data.Proxy
+import           Data.Typeable
 import           Network.HTTP.Types hiding (Query)
-import qualified Network.Wai        as Wai
+import qualified Network.Wai as Wai
 import           WebApi.Contract
 import           WebApi.Internal
 import           WebApi.Router
@@ -43,23 +47,32 @@ respondWith :: ( Monad handM
 respondWith status out hdrs cook = return $ Success status out hdrs cook
 
 raise :: ( Monad handM
-         , (HeaderOut m r) ~ ()
-         , (CookieOut m r) ~ ()
+         , MonadThrow handM
+         , Typeable m
+         , Typeable r
          ) => Status
            -> ApiErr m r
            -> handM (Response m r)
-raise status errs = raiseWith status errs () ()
+raise status errs = raiseWith' (ApiError status errs Nothing Nothing)
 
 raiseWith :: ( Monad handM
-          --   , MonadThrow handM -- TODO: Short Circuit
+              , MonadThrow handM
+              , Typeable m
+              , Typeable r
              ) => Status
                -> ApiErr m r
                -> HeaderOut m r
                -> CookieOut m r
                -> handM (Response m r)
-raiseWith status errs hdrs cook = return $ Failure
-                                          $ Left
-                                          $ ApiError status errs (Just hdrs) (Just cook)
+raiseWith status errs hdrs cook = raiseWith' (ApiError status errs (Just hdrs) (Just cook))
+
+raiseWith' :: ( Monad handM
+              , MonadThrow handM
+              , Typeable m
+              , Typeable r  
+             ) => ApiError m r
+               -> handM (Response m r)
+raiseWith' = throw . ApiException
 
 serverApp :: ( iface ~ (ApiInterface server)
              , HandlerM iface ~ IO
