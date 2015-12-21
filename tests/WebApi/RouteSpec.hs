@@ -17,13 +17,13 @@ routingSpecApp = serverApp serverSettings RoutingSpecImpl
 data RoutingSpec     = RoutingSpec
 data RoutingSpecImpl = RoutingSpecImpl
 
-type StaticRoute1 = "this" :/ "is" :/ "a" :/ "static" :/ "route"
+type StaticRoute1 = "this":/"is":/"a":/"static":/"route"
 type StaticRoute2 = Static "static_route"
 
-type RouteWithParam        = "param" :/ Int
-type RouteWithParamAtBegin = Bool :/ "param"
-type RouteWithParams       = Text :/ "param1" :/ Int :/ "param2"
-type OverlappingRoute      = "foo" :/ "param1" :/ Int :/ "param2"
+type RouteWithParam        = "param":/Int
+type RouteWithParamAtBegin = Bool:/"param"
+type RouteWithParams       = Text:/"param1":/Int:/"param2"
+type OverlappingRoute      = "foo":/"param1":/Int:/"param2"
 
 instance WebApi RoutingSpec where
   type Version RoutingSpec = MajorMinor '(0, 1)
@@ -35,45 +35,45 @@ instance WebApi RoutingSpec where
                               , Route GET RouteWithParams
                               ]
 
-instance API RoutingSpec GET StaticRoute1 where
+instance ApiContract RoutingSpec GET StaticRoute1 where
   type ApiOut GET StaticRoute1 = ()
 
-instance API RoutingSpec GET StaticRoute2 where
+instance ApiContract RoutingSpec GET StaticRoute2 where
   type ApiOut GET StaticRoute2 = ()
 
-instance API RoutingSpec GET RouteWithParam where
+instance ApiContract RoutingSpec GET RouteWithParam where
   type ApiOut GET RouteWithParam = ()
 
-instance API RoutingSpec GET RouteWithParamAtBegin where
+instance ApiContract RoutingSpec GET RouteWithParamAtBegin where
   type ApiOut GET RouteWithParamAtBegin = Text
 
-instance API RoutingSpec GET RouteWithParams where
+instance ApiContract RoutingSpec GET RouteWithParams where
   type ApiOut GET RouteWithParams = Text
 
-instance API RoutingSpec GET OverlappingRoute where
+instance ApiContract RoutingSpec GET OverlappingRoute where
   type ApiOut GET OverlappingRoute = Text
 
-instance ApiProvider RoutingSpec where
-  type HandlerM RoutingSpec = IO
+instance WebApiImplementation RoutingSpecImpl where
+  type HandlerM RoutingSpecImpl = IO
+  type ApiInterface RoutingSpecImpl = RoutingSpec
 
-type instance ApiInterface RoutingSpecImpl = RoutingSpec
 
-instance Server RoutingSpecImpl GET StaticRoute1 where
+instance ApiHandler RoutingSpecImpl GET StaticRoute1 where
   handler _ _ _ = respond ()
 
-instance Server RoutingSpecImpl GET StaticRoute2 where
+instance ApiHandler RoutingSpecImpl GET StaticRoute2 where
   handler _ _ _ = respond ()
 
-instance Server RoutingSpecImpl GET RouteWithParam where
+instance ApiHandler RoutingSpecImpl GET RouteWithParam where
   handler _ _ _ = respond ()
 
-instance Server RoutingSpecImpl GET RouteWithParamAtBegin where
+instance ApiHandler RoutingSpecImpl GET RouteWithParamAtBegin where
   handler _ _ _ = respond "RouteWithParamAtBegin"
 
-instance Server RoutingSpecImpl GET RouteWithParams where
+instance ApiHandler RoutingSpecImpl GET RouteWithParams where
   handler _ _ _ = respond "RouteWithParams"
 
-instance Server RoutingSpecImpl GET OverlappingRoute where
+instance ApiHandler RoutingSpecImpl GET OverlappingRoute where
   handler _ _ _ = respond "OverlappingRoute"
 
 

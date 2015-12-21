@@ -78,16 +78,17 @@ instance WebApi ReqSpec where
                           -- , Route POST              QuickCheckR  
                           ]
 
-type instance ApiInterface ReqSpecImpl = ReqSpec
 
-instance ApiProvider ReqSpec where
-  type HandlerM ReqSpec = IO
 
-instance API ReqSpec GET ApiR where
+instance WebApiImplementation ReqSpecImpl where
+  type HandlerM ReqSpecImpl = IO
+  type ApiInterface ReqSpecImpl = ReqSpec
+
+instance ApiContract ReqSpec GET ApiR where
   type QueryParam GET ApiR  = QP
   type ApiOut GET ApiR      = ()
 
-instance API ReqSpec POST ApiR where
+instance ApiContract ReqSpec POST ApiR where
   type QueryParam POST ApiR  = QP
   -- type FileParam POST ApiR   = FiP
   -- type HeaderIn POST ApiR    = HP
@@ -96,7 +97,7 @@ instance API ReqSpec POST ApiR where
   type ApiOut POST ApiR      = ()
   type ApiErr POST ApiR      = Text
 
-instance API ReqSpec PUT ApiR where
+instance ApiContract ReqSpec PUT ApiR where
   -- type QueryParam PUT ApiR  = QP
   type HeaderIn PUT ApiR    = HP
   type CookieIn PUT ApiR    = CP
@@ -104,62 +105,62 @@ instance API ReqSpec PUT ApiR where
   type ApiOut PUT ApiR      = ()
   type ApiErr PUT ApiR      = Text
 
-instance API ReqSpec DELETE ApiR where
+instance ApiContract ReqSpec DELETE ApiR where
   -- type QueryParam DELETE ApiR  = QP
   -- type HeaderIn DELETE ApiR    = HP
   -- type CookieIn DELETE ApiR    = CP
   -- type FormParam DELETE ApiR   = FoP
   type ApiOut DELETE ApiR      = ()
 
-instance API ReqSpec HEAD ApiR where
+instance ApiContract ReqSpec HEAD ApiR where
   -- type QueryParam HEAD ApiR = QP
   type ApiOut HEAD ApiR     = ()
 
-instance API ReqSpec PATCH ApiR where
+instance ApiContract ReqSpec PATCH ApiR where
   -- type QueryParam PATCH ApiR  = QP
   -- type HeaderIn PATCH ApiR    = HP
   -- type CookieIn PATCH ApiR    = CP
   -- type FormParam PATCH ApiR   = FoP
   type ApiOut PATCH ApiR      = ()
 
-instance API ReqSpec TRACE ApiR where
+instance ApiContract ReqSpec TRACE ApiR where
   -- type QueryParam TRACE ApiR  = QP
   -- type HeaderIn TRACE ApiR    = HP
   -- type CookieIn TRACE ApiR    = CP
   -- type FormParam TRACE ApiR   = FoP
   type ApiOut TRACE ApiR      = ()
 
-instance API ReqSpec CONNECT ApiR where
+instance ApiContract ReqSpec CONNECT ApiR where
   -- type QueryParam CONNECT ApiR  = QP
   -- type HeaderIn CONNECT ApiR    = HP
   -- type CookieIn CONNECT ApiR    = CP
   -- type FormParam CONNECT ApiR   = FoP
   type ApiOut CONNECT ApiR      = ()
 
-instance API ReqSpec (CUSTOM "TEST") ApiR where
+instance ApiContract ReqSpec (CUSTOM "TEST") ApiR where
   -- type QueryParam (CUSTOM "TEST") ApiR = QP
   -- type HeaderIn (CUSTOM "TEST") ApiR   = HP
   -- type CookieIn (CUSTOM "TEST") ApiR   = CP
   -- type FormParam (CUSTOM "TEST") ApiR  = FoP
   type ApiOut (CUSTOM "TEST") ApiR     = ()
 
-instance Server ReqSpecImpl (CUSTOM "TEST") ApiR where
+instance ApiHandler ReqSpecImpl (CUSTOM "TEST") ApiR where
   handler _ _ _ = respond ()
-instance Server ReqSpecImpl CONNECT ApiR where
+instance ApiHandler ReqSpecImpl CONNECT ApiR where
   handler _ _ _ = respond ()
-instance Server ReqSpecImpl TRACE ApiR where
+instance ApiHandler ReqSpecImpl TRACE ApiR where
   handler _ _ _ = respond ()
-instance Server ReqSpecImpl HEAD ApiR where
+instance ApiHandler ReqSpecImpl HEAD ApiR where
   handler _ _ _ = respond ()
-instance Server ReqSpecImpl PATCH ApiR where
+instance ApiHandler ReqSpecImpl PATCH ApiR where
   handler _ _ _ = respond ()
-instance Server ReqSpecImpl GET ApiR where
+instance ApiHandler ReqSpecImpl GET ApiR where
   handler _ _ _ = respond ()
-instance Server ReqSpecImpl POST ApiR where
+instance ApiHandler ReqSpecImpl POST ApiR where
   handler _ _ _ = respond ()
-instance Server ReqSpecImpl PUT ApiR where
+instance ApiHandler ReqSpecImpl PUT ApiR where
   handler _ _ _ = respond ()
-instance Server ReqSpecImpl DELETE ApiR where
+instance ApiHandler ReqSpecImpl DELETE ApiR where
   handler _ _ _ = respond ()
 
 formHeaders :: [(ByteString, ByteString)] -> [(ByteString, ByteString)] -> [Header]

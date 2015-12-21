@@ -32,16 +32,17 @@ type UserPhotos   = "users":/Int:/"photos":/Int
 type UserCheckins = "users":/Int:/"checkins"
 type StaticT = Static ""
 
-instance ApiProvider FourSquare where
-  type HandlerM FourSquare = IO
+instance WebApiImplementation FourSquareImpl where
+  type HandlerM FourSquareImpl = IO
+  type ApiInterface FourSquareImpl = FourSquare
     
-instance API FourSquare GET UserPhotos where
+instance ApiContract FourSquare GET UserPhotos where
   type ApiOut GET UserPhotos = ()
 
-instance API FourSquare POST UserPhotos where
+instance ApiContract FourSquare POST UserPhotos where
   type ApiOut POST UserPhotos = ()
 
-instance API FourSquare GET UserCheckins where
+instance ApiContract FourSquare GET UserCheckins where
   type ApiOut GET UserCheckins = ()
 
 data QP1 = QP1
@@ -59,7 +60,7 @@ instance (FromParam Int par) => FromParam QP1 par where
   fromParam pt pfx kvs = QP1 <$> (fromParam  pt (pfx `nest` "query") kvs)
                              <*> (fromParam  pt (pfx `nest` "key") kvs)
                          
-instance API FourSquare GET StaticT where
+instance ApiContract FourSquare GET StaticT where
   type QueryParam GET StaticT = QP1
   type ApiOut GET StaticT = ()
 
@@ -70,18 +71,17 @@ instance WebApi FourSquare where
                              , Route GET UserCheckins
                              , Route GET StaticT
                              ]
-type instance ApiInterface FourSquareImpl = FourSquare
 
-instance Server FourSquareImpl GET UserPhotos where
+instance ApiHandler FourSquareImpl GET UserPhotos where
   handler _ _ req = print (pathParam req) >> respond ()
 
-instance Server FourSquareImpl POST UserPhotos where
+instance ApiHandler FourSquareImpl POST UserPhotos where
   handler _ _ = error "@ POST UserPhotos"
 
-instance Server FourSquareImpl GET UserCheckins where
+instance ApiHandler FourSquareImpl GET UserCheckins where
   handler _ _ _req = putStrLn "@UserCheckings" >> respond ()
 
-instance Server FourSquareImpl GET StaticT where
+instance ApiHandler FourSquareImpl GET StaticT where
   handler _ _ req = print (queryParam req) >> respond ()
 
 test :: Wai.Application  

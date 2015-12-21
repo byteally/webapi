@@ -1,22 +1,34 @@
+{-|
+Module      : WebApi.Server
+License     : BSD3
+Stability   : experimental
+-}
+
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE KindSignatures        #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeFamilies          #-}
 module WebApi.Server
-       ( respond
+       (
+       --  toApplication
+       -- , fromWaiRequest
+       -- , toWaiResponse
+       -- * Creating a WAI application  
+         serverApp
+       , serverSettings
+       , ServerSettings
+       -- * Implementation of Api 
+       , ApiHandler (..)
+       , ApiInterface  
+       , ApiException (..)
+       , WebApiImplementation (..)  
+       , respond
        , respondWith
        , raise
        , raiseWith
-       , toApplication
-       , fromWaiRequest
-       , toWaiResponse
-       , serverApp
-       , serverSettings
-       , ServerSettings
-       , Server (..)
-       , ApiInterface
-       , ApiException (..)  
+
+       -- * Routing  
        , module WebApi.Router
        ) where
 
@@ -30,7 +42,7 @@ import           WebApi.Contract
 import           WebApi.Internal
 import           WebApi.Router
 
-
+-- | Creates a successful response from its components. It is assumed that `HeaderOut m r` and `CookieOut m r` has default definitions.
 respond :: ( Monad handM
            , (HeaderOut m r) ~ ()
            , (CookieOut m r) ~ ()
@@ -38,6 +50,7 @@ respond :: ( Monad handM
              -> handM (Response m r)
 respond out = respondWith ok200 out () ()
 
+-- | Creates a successful response from its components.
 respondWith :: ( Monad handM
                 ) => Status
                   -> ApiOut m r
@@ -46,6 +59,7 @@ respondWith :: ( Monad handM
                   -> handM (Response m r)
 respondWith status out hdrs cook = return $ Success status out hdrs cook
 
+-- | This function short circuits returning an `ApiError`.It is assumed that `HeaderOut m r` and `CookieOut m r` has default definitions.
 raise :: ( Monad handM
          , MonadThrow handM
          , Typeable m
@@ -55,6 +69,7 @@ raise :: ( Monad handM
            -> handM (Response m r)
 raise status errs = raiseWith' (ApiError status errs Nothing Nothing)
 
+-- | This function short circuits returning an `ApiError`.
 raiseWith :: ( Monad handM
               , MonadThrow handM
               , Typeable m
@@ -74,8 +89,9 @@ raiseWith' :: ( Monad handM
                -> handM (Response m r)
 raiseWith' = throw . ApiException
 
+-- | Create a WAI application from the information specified in `WebApiImplementation`, `WebApi`, `ApiContract` and `ApiHandler` classes.
 serverApp :: ( iface ~ (ApiInterface server)
-             , HandlerM iface ~ IO
+             , HandlerM server ~ IO
              , Router server (Apis iface) '(CUSTOM "", '[])
              ) => ServerSettings -> server -> Wai.Application
 serverApp _ server = toApplication $ router (apis server) server

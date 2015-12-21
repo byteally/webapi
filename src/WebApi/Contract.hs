@@ -3,7 +3,6 @@
 Module      : WebApi.Contract
 License     : BSD3
 Stability   : experimental
-Description : Specification of an WebApi
 -}
 
 {-# LANGUAGE DataKinds                 #-}
@@ -14,9 +13,9 @@ Description : Specification of an WebApi
 {-# LANGUAGE PolyKinds                 #-}
 {-# LANGUAGE TypeFamilies              #-}
 module WebApi.Contract
-       (-- * API Specification
+       (-- * API Contract
          WebApi (..)
-       , API (..)
+       , ApiContract (..)
        -- * Request and Response
        , PathParam'
        , Request (..)
@@ -34,46 +33,48 @@ import           WebApi.ContentTypes
 import           WebApi.Method
 import           WebApi.Versioning
 
--- | Describes a WebApi
+-- | Describes a collection of web apis.
 class (OrdVersion (Version p)) => WebApi (p :: *) where
-  -- | Version of the WebApi
+  -- | Version of the WebApi.
   type Version p :: *
-  -- | List of all end points that this WebApi provides
+  -- | List of all end points that this WebApi provides.
   type Apis p :: [*]
 
--- | Describes a single end point
-class (SingMethod m, WebApi p) => API (p :: *) (m :: *) (r :: *) where
-  -- | Type of path param that this end point takes in
+  type Version p = Major 0     
+
+-- | Describes a contract for a single API end point.
+class (SingMethod m, WebApi p) => ApiContract (p :: *) (m :: *) (r :: *) where
+  -- | Type of path param that this end point takes in.
   type PathParam m r
   -- | Type of query param that this end point takes in
-  -- defaults to > ()
+  -- defaults to '()'
   type QueryParam m r
   -- | Type form params that this end point takes in
-  -- defaults to > ()   
+  -- defaults to '()'   
   type FormParam m r
   -- | Type of file params that this end point takes in
-  -- defaults to > ()   
+  -- defaults to '()'   
   type FileParam m r
   -- | Type of header params that this end point takes in
-  -- defaults to > ()   
+  -- defaults to '()'   
   type HeaderIn m r
   -- | Type of cookie params that this end point takes in
-  -- defaults to > ()   
+  -- defaults to '()'   
   type CookieIn m r
   -- | Type of result of this end point when successful
-  -- defaults to > ()   
+  -- defaults to '()'   
   type ApiOut m r
   -- | Type of result of this end point when a known failure occurs
-  -- defaults to > ()   
+  -- defaults to '()'   
   type ApiErr m r
   -- | Type of headers of this end point gives out
-  -- defaults to > ()   
+  -- defaults to '()'   
   type HeaderOut m r
   -- | Type of cookies of this end point gives out
-  -- defaults to > ()   
+  -- defaults to '()'   
   type CookieOut m r
   -- | List of Content Types that this end point can serve
-  -- defaults to > '[JSON]
+  -- defaults to '\'[JSON]'
   type ContentTypes m r :: [*]
 
   type PathParam m r    = PathParam' m r

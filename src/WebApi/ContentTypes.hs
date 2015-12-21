@@ -1,3 +1,9 @@
+{-|
+Module      : WebApi.ContentTypes
+License     : BSD3
+Stability   : experimental
+-}
+
 {-# LANGUAGE ConstraintKinds       #-}
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE FlexibleInstances     #-}
@@ -7,39 +13,46 @@
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
 {-# LANGUAGE UndecidableInstances  #-}
-module WebApi.ContentTypes where
+module WebApi.ContentTypes
+       (
+       -- * Predefined Content Types.
+         JSON
+       -- * Creating custom Content Types. 
+       , Accept (..)
+       , Encode (..)
+       , Decode (..)
+       -- * Internal classes.
+       , Encodings (..)
+       , Decodings (..)
+       ) where
 
 import           Blaze.ByteString.Builder           (Builder)
 import qualified Blaze.ByteString.Builder.Char.Utf8 as Utf8 (fromText)
-import           Data.Aeson
+import           Data.Aeson                         (ToJSON (..), FromJSON (..), eitherDecodeStrict)
 import           Data.Aeson.Encode                  (encodeToByteStringBuilder)
 import           Data.ByteString                    (ByteString)
 import           Data.Proxy
 import qualified Data.Text                          as TextS
 import           Data.Text.Encoding                 (decodeUtf8)
-import           GHC.Exts                           (Constraint)
 import           Network.HTTP.Media.MediaType
 
+-- | Type representing "application/json" Content-Type
 data JSON
+
+-- | Type representing the "text/plain" Content-Type  
 data PlainText
+
+-- | Type representing the "application/octetstream" Content-Type  
 data OctetStream
-
-type family All1 (ctx :: * -> Constraint) (xs :: [*]) :: Constraint where
-  All1 f (x ': xs) = (f x,  All1 f xs)
-  All1 f '[]       = ()
-
-type family MimeRenderCtx ms a :: Constraint where
-  MimeRenderCtx (m ': ms) a = (MimeRender m a, MimeRenderCtx ms a)
-  MimeRenderCtx '[] a       = ()
 
 class Encodings (ctypes :: [*]) a where
   encodings :: Proxy ctypes -> a -> [(MediaType, Builder)]
 
 instance ( Accept ctype
-         , MimeRender ctype a
+         , Encode ctype a
          , Encodings ctypes a
          ) => Encodings (ctype ': ctypes) a where
-  encodings _ a =  (contentType (Proxy :: Proxy ctype), mimeRender (Proxy :: Proxy ctype) a) : encodings (Proxy :: Proxy ctypes) a
+  encodings _ a =  (contentType (Proxy :: Proxy ctype), encode (Proxy :: Proxy ctype) a) : encodings (Proxy :: Proxy ctypes) a
 
 instance Encodings '[] a where
   encodings _ _ = []
@@ -48,14 +61,15 @@ class Decodings (ctypes :: [*]) a where
   decodings :: Proxy ctypes -> ByteString -> [(MediaType, Either String a)]
 
 instance ( Accept ctype
-         , MimeUnRender ctype a
+         , Decode ctype a
          , Decodings ctypes a
          ) => Decodings (ctype ': ctypes) a where
-  decodings _ bs =  (contentType (Proxy :: Proxy ctype), mimeUnRender (Proxy :: Proxy ctype) bs) : decodings (Proxy :: Proxy ctypes) bs
+  decodings _ bs =  (contentType (Proxy :: Proxy ctype), decode (Proxy :: Proxy ctype) bs) : decodings (Proxy :: Proxy ctypes) bs
 
 instance Decodings '[] a where
   decodings _ _ = []
 
+-- | Singleton class for Content Type. 
 class Accept ctype where
   contentType :: Proxy ctype -> MediaType
 
@@ -68,34 +82,34 @@ instance Accept PlainText where
 instance Accept OctetStream where
   contentType _ = "application" // "octet-stream"
 
-class (Accept a) => MimeRender a c where
-  mimeRender :: Proxy a -> c -> Builder
+-- | Encode a type into a specific Content Type.
+class (Accept a) => Encode a c where
+  encode :: Proxy a -> c -> Builder
 
-instance (ToJSON c) => MimeRender JSON c where
-  mimeRender _ = encodeToByteStringBuilder . toJSON
+instance (ToJSON c) => Encode JSON c where
+  encode _ = encodeToByteStringBuilder . toJSON
 
-instance (ToText a) => MimeRender PlainText a where
-  mimeRender _ = Utf8.fromText . toText
+instance (ToText a) => Encode PlainText a where
+  encode _ = Utf8.fromText . toText
 
-class (Accept c) => MimeUnRender c a where
-  mimeUnRender :: Proxy c -> ByteString -> Either String a
+-- | (Attempts to) Decode a type from a specific Content Type.
+class (Accept c) => Decode c a where
+  decode :: Proxy c -> ByteString -> Either String a
 
-instance (FromJSON a) => MimeUnRender JSON a where
-  mimeUnRender _ = eitherDecodeStrict
+instance (FromJSON a) => Decode JSON a where
+  decode _ = eitherDecodeStrict
 
-instance (FromText a) => MimeUnRender PlainText a where
-  mimeUnRender _ = maybe (Left "Couldn't parse: ") Right . fromText . decodeUtf8
-
-{-
-instance MimeRender OctetStream LB.ByteString where
-  mimeRender _ = fromLazyByteString
-
-instance MimeRender OctetStream SB.ByteString where
-  mimeRender _ = fromByteString
--}
+instance (FromText a) => Decode PlainText a where
+  decode _ = maybe (Left "Couldn't parse: ") Right . fromText . decodeUtf8
 
 class ToText a where
   toText :: a -> TextS.Text
 
+instance ToText TextS.Text where
+  toText = id
+
 class FromText a where
   fromText :: TextS.Text -> Maybe a
+
+instance FromText TextS.Text where
+  fromText = Just . id

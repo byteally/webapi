@@ -81,12 +81,15 @@ import           Network.HTTP.Types
 import           Network.HTTP.Types                 as Http (Header, QueryItem)
 import qualified Network.Wai.Parse                  as Wai (FileInfo (..))
 
+-- | A type for holding a file. 
 newtype FileInfo = FileInfo { fileInfo :: Wai.FileInfo FilePath }
                  deriving (Eq, Show)
 
+-- | Obtain the file path from 'FileInfo'.
 filePath :: FileInfo -> FilePath
 filePath = Wai.fileContent . fileInfo
 
+-- | (Kind) Describes the various types of Param.
 data ParamK = QueryParam
             | FormParam
             | FileParam
@@ -108,6 +111,7 @@ instance ToJSON a => ToJSON (JsonOf a) where
 instance FromJSON a => FromJSON (JsonOf a) where
   parseJSON jval = JsonOf `fmap` parseJSON jval
 
+-- | Define result of serialization of a type of kind 'ParamK'.
 type family SerializedData (par :: ParamK) where
   SerializedData 'QueryParam = Http.QueryItem
   SerializedData 'FormParam  = (ByteString, ByteString)
@@ -115,12 +119,14 @@ type family SerializedData (par :: ParamK) where
   SerializedData 'PathParam  = ByteString
   SerializedData 'Cookie     = (ByteString, ByteString)
 
+-- | Define result of deserialization of a type of kind 'ParamK'.
 type family DeSerializedData (par :: ParamK) where
   DeSerializedData 'QueryParam = Maybe ByteString
   DeSerializedData 'FormParam  = ByteString
   DeSerializedData 'FileParam  = Wai.FileInfo FilePath
   DeSerializedData 'Cookie     = ByteString
 
+-- | Datatype representing the parsed result of params.  
 newtype Validation e a = Validation { getValidation :: Either e a }
                        deriving (Eq, Functor, Show)
 
@@ -131,45 +137,58 @@ instance Monoid e => Applicative (Validation e) where
       Right va -> fmap va b
       Left ea -> either (Left . mappend ea) (const $ Left ea) b
 
+-- | Serialize a type into QueryParams.
 toQueryParam :: (ToParam a 'QueryParam) => a -> Query
 toQueryParam = toParam (Proxy :: Proxy 'QueryParam) ""
 
+-- | Serialize a type into FormParams.                                 
 toFormParam :: (ToParam a 'FormParam) => a -> [(ByteString, ByteString)]
 toFormParam = toParam (Proxy :: Proxy 'FormParam) ""
 
+-- | Serialize a type into FormParams.                                
 toFileParam :: (ToParam a 'FileParam) => a -> [(ByteString, Wai.FileInfo FilePath)]
 toFileParam = toParam (Proxy :: Proxy 'FileParam) ""
 
+-- | Serialize a type into PathParams.                                
 toPathParam :: (ToParam a 'PathParam) => a -> [ByteString]
 toPathParam = toParam (Proxy :: Proxy 'PathParam) ""
 
+-- | Serialize a type into Header.                                
 toHeader :: (ToHeader a) => a -> RequestHeaders
 toHeader = toHeader'
 
+-- | Serialize a type into Cookie.
 toCookie :: (ToParam a 'Cookie) => a -> [(ByteString, ByteString)]
 toCookie = toParam (Proxy :: Proxy 'Cookie) ""
 
+-- | (Try to) Deserialize a type from QueryParams.                             
 fromQueryParam :: (FromParam a 'QueryParam) => Query -> Validation [ParamErr] a
 fromQueryParam par = fromParam (Proxy :: Proxy 'QueryParam) "" $ Trie.fromList par
 
+-- | (Try to) Deserialize a type from FormParams.
 fromFormParam :: (FromParam a 'FormParam) => [(ByteString, ByteString)] -> Validation [ParamErr] a
 fromFormParam par = fromParam (Proxy :: Proxy 'FormParam) "" $ Trie.fromList par
 
+-- | (Try to) Deserialize a type from FileParams.                                        
 fromFileParam :: (FromParam a 'FileParam) => [(ByteString, Wai.FileInfo FilePath)] -> Validation [ParamErr] a
 fromFileParam par = fromParam (Proxy :: Proxy 'FileParam) "" $ Trie.fromList par
 
+-- | (Try to) Deserialize a type from Headers.                                       
 fromHeader :: (FromHeader a) => [Http.Header] -> Validation [ParamErr] a
 fromHeader = fromHeader'
 
+-- | (Try to) Deserialize a type from Cookie.
 fromCookie :: (FromParam a 'Cookie) => [(ByteString, ByteString)] -> Validation [ParamErr] a
 fromCookie par = fromParam (Proxy :: Proxy 'Cookie) "" $ Trie.fromList par
 
+-- | Serialize a type to given 'ParamK' type.                                     
 class ToParam a (parK :: ParamK) where
   toParam :: Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
 
   default toParam :: (Generic a, GToParam (Rep a) parK) => Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
   toParam pt pfx = gtoParam pt pfx (ParamAcc 0 False) ParamSettings . from
 
+-- | (Try to) Deserialize a type from given 'ParamK' type.
 class FromParam a (parK :: ParamK) where
   fromParam :: Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
 
@@ -1239,6 +1258,7 @@ instance ToJSON ParamErr where
     Left ex -> utf8DecodeError "ToJSON ParamErr" (show ex)
     Right bs' -> A.object ["ParseErr" A..= [bs', msg]]
 
+-- | This class de
 class ParamErrToApiErr apiErr where
   toApiErr :: [ParamErr] -> apiErr
 
@@ -1255,6 +1275,7 @@ nest :: ByteString -> ByteString -> ByteString
 nest s1 s2 | SB.null s1 = s2
            | otherwise = SB.concat [s1, ".", s2]
 
+-- | Lookup a value from the trie using the given key.
 lookupParam :: Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Maybe (DeSerializedData parK)
 lookupParam _ key kvs = Trie.lookup key kvs
 

@@ -1,25 +1,55 @@
+{-|
+Module      : WebApi.ContentTypes
+License     : BSD3
+Stability   : experimental
+-}
+
 {-# LANGUAGE DataKinds           #-}
 {-# LANGUAGE KindSignatures      #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-module WebApi.Method where
+module WebApi.Method
+       (-- * Methods
+         GET
+       , POST
+       , PUT
+       , DELETE
+       , HEAD
+       , PATCH
+       , TRACE
+       , OPTIONS
+       , CONNECT
+       , CUSTOM
+       -- * Internal  
+       , SingMethod (..)
+       ) where
 
 import           Data.ByteString.Char8 (pack)
 import           Data.Proxy
 import           GHC.TypeLits
 import           Network.HTTP.Types
 
-
+-- | Type representing a GET method
 data GET
+-- | Type representing a POST method  
 data POST
+-- | Type representing a PUT method    
 data PUT
+-- | Type representing a DELETE method      
 data DELETE
+-- | Type representing a HEAD method        
 data HEAD
+-- | Type representing a PATCH method        
 data PATCH
+-- | Type representing a OPTIONS method
 data OPTIONS
+-- | Type representing a TRACE method
 data TRACE
+-- | Type representing a CONNECT method
 data CONNECT
+-- | Type representing a Custom method
 data CUSTOM (m :: Symbol)
 
+-- | Singleton class for method types.
 class SingMethod (meth :: *) where
   singMethod :: Proxy meth -> Method
 

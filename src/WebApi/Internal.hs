@@ -1,5 +1,6 @@
 {-# LANGUAGE ConstraintKinds       #-}
 {-# LANGUAGE DataKinds             #-}
+{-# LANGUAGE DefaultSignatures     #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE KindSignatures        #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -11,15 +12,16 @@ module WebApi.Internal where
 import           Blaze.ByteString.Builder (Builder, toByteString)
 import qualified Blaze.ByteString.Builder.Char.Utf8 as Utf8 (fromText)
 import           Control.Exception
-import           Control.Monad.Catch (MonadThrow)
+import           Control.Monad.Catch (MonadCatch)
 import           Control.Monad.IO.Class (MonadIO)
 import           Control.Monad.Trans.Resource (runResourceT, withInternalState)
 import           Data.ByteString (ByteString)
-import           Data.ByteString.Char8 (unpack)
+import           Data.ByteString.Char8 (pack, unpack)
 import           Data.List (find, foldl')
 import           Data.Monoid ((<>))
 import           Data.Proxy
-import           Data.Text (Text, pack)
+import           Data.Text (Text)
+import qualified Data.Text as T (pack)
 import           Data.Text.Encoding (decodeUtf8)
 import           Data.Typeable (Typeable)
 import qualified Network.HTTP.Client as HC
@@ -70,17 +72,17 @@ toWaiResponse :: ( ToHeader (HeaderOut m r)
                   , Encodings (ContentTypes m r) (ApiErr m r)
                   ) => Wai.Request -> Response m r -> Wai.Response
 toWaiResponse wreq resp = case resp of
-  Success status out hdrs cookies -> case encode resp out of
+  Success status out hdrs cookies -> case encode' resp out of
     Just o' -> Wai.responseBuilder status (handleHeaders' (toHeader hdrs) (toCookie cookies)) o'
     Nothing -> Wai.responseBuilder notAcceptable406 [] "Matching content type not found"
-  Failure (Left (ApiError status errs hdrs cookies)) -> case encode resp errs of
+  Failure (Left (ApiError status errs hdrs cookies)) -> case encode' resp errs of
     Just errs' -> Wai.responseBuilder status (handleHeaders (toHeader <$> hdrs) (toCookie <$> cookies)) errs'
     Nothing -> Wai.responseBuilder notAcceptable406 [] "Matching content type not found"
-  Failure (Right (OtherError ex)) -> Wai.responseBuilder internalServerError500 [] (Utf8.fromText (pack (displayException ex)))
+  Failure (Right (OtherError ex)) -> Wai.responseBuilder internalServerError500 [] (Utf8.fromText (T.pack (displayException ex)))
 
-  where encode :: ( Encodings (ContentTypes m r) a
+  where encode' :: ( Encodings (ContentTypes m r) a
                  ) => apiRes m r -> a -> Maybe Builder
-        encode r o = case getAccept wreq of
+        encode' r o = case getAccept wreq of
           Just acc -> mapAcceptMedia (encodings (reproxy r) o) acc
           Nothing  -> case encodings (reproxy r) o of
             (x : _)  -> Just (snd x)
@@ -97,6 +99,7 @@ toWaiResponse wreq resp = case resp of
                                      in hds <> ckHs
         renderSC k v = toByteString (renderSetCookie (def { setCookieName = k, setCookieValue = v }))
 
+-- | Generate a Type safe URL for a given route type. The URI can be used for setting a base URL if required.
 link :: ( ToParam (QueryParam m r) 'QueryParam
         , MkPathFormatString r
         , ToParam (PathParam m r) 'PathParam
@@ -107,11 +110,19 @@ link :: ( ToParam (QueryParam m r) 'QueryParam
         -> Maybe (QueryParam m r)
         -> URI
 link r base paths query = base
-                          { uriPath = unpack $ renderPaths paths r
+                          { uriPath = unpack $ renderUriPath (pack $ uriPath base) paths r
                           , uriQuery = maybe "" renderQuery' query
                           }
   where renderQuery' :: (ToParam query 'QueryParam) => query -> String
-        renderQuery' q = unpack $ renderQuery False $ toQueryParam q
+        renderQuery' = unpack . renderQuery False . toQueryParam
+
+renderUriPath ::  ( ToParam path 'PathParam
+                   , MkPathFormatString r
+                   ) => ByteString -> path -> route m r -> ByteString
+renderUriPath basePth p r = case basePth of
+          ""  -> renderPaths p r
+          "/" -> renderPaths p r
+          _   -> basePth `mappend` renderPaths p r
 
 renderPaths :: ( ToParam path 'PathParam
                 , MkPathFormatString r
@@ -130,40 +141,70 @@ renderPaths p r = toByteString
         toRoute :: (MkPathFormatString r) => route m r -> Proxy r
         toRoute = const Proxy
 
-type family ApiInterface (p :: *) :: *
-
-class (API (ApiInterface p) m r) => Server (p :: *) (m :: *) (r :: *) where
-  handler :: (query ~ '[], HandlerM (ApiInterface p) ~ IO)
+-- | Describes the implementation of a single API end point corresponding to `ApiContract (ApiInterface p) m r`
+class (ApiContract (ApiInterface p) m r) => ApiHandler (p :: *) (m :: *) (r :: *) where
+  handler :: (query ~ '[])
             => p
-            -> Proxy query
+            -> Proxy query -- ^ Not currently being used
             -> Request m r
-            -> (HandlerM (ApiInterface p)) (Query (Response m r) query)
-
+            -> HandlerM p (Query (Response m r) query)
 
 type family Query (t :: *) (query :: [*]) :: * where
   Query t '[] = t
 
-class ( MonadThrow (HandlerM p)
-      , MonadIO (HandlerM p)  
-      ) => ApiProvider (p :: *) where
+-- | Binds implementation to interface and provides a pluggable handler monad for the endpoint handler implementation.
+class ( MonadCatch (HandlerM p)
+      , MonadIO (HandlerM p)
+      , WebApi (ApiInterface p)  
+      ) => WebApiImplementation (p :: *) where
+  -- | Type of the handler Monad. It should implement MonadThrow and MonadIO classes.
   type HandlerM p :: * -> *
   type ApiMeta p :: *
   type ApiPager p :: *
+  type ApiInterface p :: *     
+  -- provides common defaulting information for api handlers
 
-  type ApiMeta p = ()
+  -- | Create a value of 'IO a' from 'HandlerM p a'.
+  toIO :: p -> HandlerM p a -> IO a
+
+  default toIO :: (HandlerM p ~ IO) => p -> HandlerM p a -> IO a
+  toIO _ = id
+
+  type HandlerM p = IO
+  type ApiMeta p  = ()
   type ApiPager p = ()
 
+
+-- | Type of settings of the server.
 data ServerSettings = ServerSettings
 
+-- | Default server settings.
 serverSettings :: ServerSettings
 serverSettings = ServerSettings
 
-data PathSegment = StaticSegment Text
-                 | Hole
+-- | Type of segments of a Path.
+data PathSegment = StaticSegment Text -- ^ A static segment
+                 | Hole -- ^ A dynamic segment
                  deriving Show
 
+-- | Describe representation of the route.
 class MkPathFormatString r where
+  -- | Given a route, this function should produce the PathSegments of that route. This gives the flexibility to hook in a different routing system into the application.
   mkPathFormatString :: Proxy r -> [PathSegment]
+
+-- | Type of Exception raised in a handler.
+data ApiException m r = ApiException { apiException :: ApiError m r }
+
+instance Show (ApiException m r) where
+  show (ApiException _) = "ApiException"
+
+instance (Typeable m, Typeable r) => Exception (ApiException m r) where
+
+handleApiException :: (query ~ '[], Monad (HandlerM p)) => p -> ApiException m r -> (HandlerM p) (Query (Response m r) query)
+handleApiException _ = return . Failure . Left . apiException
+
+handleSomeException :: (query ~ '[], Monad (HandlerM p)) => p -> SomeException -> (HandlerM p) (Query (Response m r) query)
+handleSomeException _ = return . Failure . Right . OtherError 
 
 getCookie :: Wai.Request -> Maybe ByteString
 getCookie = fmap snd . find ((== hCookie) . fst) . Wai.requestHeaders
@@ -176,16 +217,3 @@ hSetCookie = "Set-Cookie"
 
 getContentType :: HC.Response a -> Maybe ByteString
 getContentType = fmap snd . find ((== hContentType) . fst) . HC.responseHeaders
-
-data ApiException m r = ApiException { apiException :: ApiError m r }
-
-instance Show (ApiException m r) where
-  show (ApiException _) = "ApiException"
-
-instance (Typeable m, Typeable r) => Exception (ApiException m r) where
-
-handleApiException :: (query ~ '[], HandlerM (ApiInterface p) ~ IO) => p -> ApiException m r -> (HandlerM (ApiInterface p)) (Query (Response m r) query)
-handleApiException _ = return . Failure . Left . apiException
-
-handleSomeException :: (query ~ '[], HandlerM (ApiInterface p) ~ IO) => p -> SomeException -> (HandlerM (ApiInterface p)) (Query (Response m r) query)
-handleSomeException _ = return . Failure . Right . OtherError 

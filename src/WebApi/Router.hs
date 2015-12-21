@@ -1,3 +1,10 @@
+{-|
+
+Module      : WebApi.Contract
+License     : BSD3
+Stability   : experimental
+-}
+
 {-# LANGUAGE ConstraintKinds       #-}
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE DefaultSignatures     #-}
@@ -15,19 +22,22 @@
 {-# LANGUAGE TypeOperators         #-}
 {-# LANGUAGE UndecidableInstances  #-}
 module WebApi.Router
-       ( Static
+       ( -- * Route types
+         Static
        , Root
        , (:/)
+       -- * Default routing implementation  
        , Route
        , Router (..)
        , router
-
-       , MkFormatStr (..)
        , ToPieces
+       -- * Custom routing  
        , PathSegment (..)
+       , MkPathFormatString (..)  
        ) where
 
-import Control.Exception (catches, Handler (..), SomeException (..))
+import Control.Exception (SomeException (..))
+import Control.Monad.Catch (catches, Handler (..), MonadCatch)
 import Data.Proxy
 import Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
@@ -40,18 +50,21 @@ import WebApi.Contract
 import WebApi.Internal
 import WebApi.Param
 
+-- | Datatype representing a endpoint. 
 data Route (m :: *) (r :: *)
 
 data StaticPiece (s :: Symbol)
 
 data DynamicPiece (t :: *)
 
+-- | Datatype representing a route.
 data (:/) (p1 :: k) (p2 :: k1)
 infixr 5 :/
 
 type instance PathParam' m (Static s) = ()
 type instance PathParam' m (p1 :/ p2) = HListToTuple (FilterDynP (ToPieces (p1 :/ p2)))
 
+-- | Datatype representing a static path piece.
 data Static (s :: Symbol)
 
 type Root = Static ""
@@ -91,6 +104,7 @@ dropStaticPiece (Nil _)                 = HNil
 dropStaticPiece (ConsStaticPiece _ ps)  = dropStaticPiece ps
 dropStaticPiece (ConsDynamicPiece p ps) = p :* dropStaticPiece ps
 
+-- | Convert the path into a flat hierarchy.
 type family ToPieces (r :: k) :: [*] where
   ToPieces (Static s)                       = '[StaticPiece s]
   ToPieces ((p1 :: Symbol) :/ (p2 :: Symbol)) = '[StaticPiece p1, StaticPiece p2]
@@ -133,9 +147,10 @@ type family (:++) (as :: [k]) (bs :: [k]) :: [k] where
   '[] :++ bs       = bs
   (a ': as) :++ bs = a ': (as :++ bs)
 
+-- | Class to do the default routing.
 class Router (server :: *) (r :: k) (pr :: (*, [*])) where
   route :: ( iface ~ (ApiInterface server)
-            , HandlerM iface ~ IO
+            -- , HandlerM server
           ) => Proxy r -> server -> ParsedRoute pr -> RoutingApplication
 
 type family MarkDyn (pp :: *) :: * where
@@ -177,7 +192,7 @@ instance (Router s (MarkDyn rest) '(m, (pp :++ '[StaticPiece piece])), KnownSymb
 
 
 -- Base Cases
-instance ( KnownSymbol piece, Server s m (Static piece)
+instance ( KnownSymbol piece, ApiHandler s m (Static piece)
          , ToHeader (HeaderOut m (Static piece))
          , ToParam (CookieOut m (Static piece)) 'Cookie
          , FromParam (QueryParam m (Static piece)) 'QueryParam
@@ -190,7 +205,8 @@ instance ( KnownSymbol piece, Server s m (Static piece)
          , PathParam m (Static piece) ~ ()
          , ParamErrToApiErr (ApiErr m (Static piece))
          , Typeable m
-         , Typeable (Static piece)  
+         , Typeable (Static piece)
+         , WebApiImplementation s  
          ) => Router s (Static piece) '(m, pp) where
   route _ serv _ request respond =
     case pathInfo request of
@@ -200,7 +216,7 @@ instance ( KnownSymbol piece, Server s m (Static piece)
     where getResponse = do
             apiReq' <- fromWaiRequest request ()
             response <- case apiReq' of
-              Validation (Right apiReq) -> serve serv (Proxy :: Proxy '[]) (apiReq :: Request m (Static piece))
+              Validation (Right apiReq) -> toIO serv $ handler' serv (Proxy :: Proxy '[]) (apiReq :: Request m (Static piece))
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toWaiResponse request response
 
@@ -209,7 +225,7 @@ instance ( KnownSymbol lpiece
          , paths ~ (pp :++ '[StaticPiece lpiece, StaticPiece rpiece])
          , paths ~ ((pp :++ '[StaticPiece lpiece]) :++ '[StaticPiece rpiece])
          , route ~ (FromPieces paths)
-         , Server s m route
+         , ApiHandler s m route
          , PathParam m route ~ HListToTuple (FilterDynP paths)
          , FromParam (QueryParam m route) 'QueryParam
          , FromParam (FormParam m route) 'FormParam
@@ -222,7 +238,8 @@ instance ( KnownSymbol lpiece
          , ToParam (CookieOut m route) 'Cookie
          , ParamErrToApiErr (ApiErr m route)
          , Typeable m
-         , Typeable route  
+         , Typeable route
+         , WebApiImplementation s
          ) => Router s ((lpiece :: Symbol) :/ (rpiece :: Symbol)) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
@@ -236,7 +253,7 @@ instance ( KnownSymbol lpiece
           getResponse = do
             apiReq' <- fromWaiRequest request pathPar
             response <- case apiReq' of
-              Validation (Right apiReq) -> serve serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
+              Validation (Right apiReq) -> toIO serv $ handler' serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toWaiResponse request response
 
@@ -244,7 +261,7 @@ instance ( KnownSymbol rpiece
          , paths ~ (pp :++ '[DynamicPiece lpiece, StaticPiece rpiece])
          , paths ~ ((pp :++ '[DynamicPiece lpiece]) :++ '[StaticPiece rpiece])
          , route ~ (FromPieces paths)
-         , Server s m route
+         , ApiHandler s m route
          , PathParam m route ~ HListToTuple (FilterDynP paths)
          , FromParam (QueryParam m route) 'QueryParam
          , FromParam (FormParam m route) 'FormParam
@@ -258,7 +275,8 @@ instance ( KnownSymbol rpiece
          , HttpParam lpiece
          , ParamErrToApiErr (ApiErr m route)
          , Typeable m
-         , Typeable route  
+         , Typeable route
+         , WebApiImplementation s
          ) => Router s ((lpiece :: *) :/ (rpiece :: Symbol)) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
@@ -272,13 +290,13 @@ instance ( KnownSymbol rpiece
                 pRoute = snocParsedRoute (snocParsedRoute parsedRoute $ DPiece dynVal) $ SPiece (Proxy :: Proxy rpiece)
             apiReq' <- fromWaiRequest request (fromParsedRoute pRoute)
             response <- case apiReq' of
-              Validation (Right apiReq) -> serve serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
+              Validation (Right apiReq) -> toIO serv $ handler' serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toWaiResponse request response
 
 
 instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
-         , Server s m route
+         , ApiHandler s m route
          , PathParam m route ~ HListToTuple (FilterDynP (pp :++ '[DynamicPiece t]))
          , FromParam (QueryParam m route) 'QueryParam
          , FromParam (FormParam m route) 'FormParam
@@ -293,6 +311,7 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
          , ParamErrToApiErr (ApiErr m route)
          , Typeable m
          , Typeable route
+         , WebApiImplementation s  
          ) => Router s (DynamicPiece t) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
@@ -305,13 +324,12 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
                 pRoute = snocParsedRoute parsedRoute $ DPiece dynVal
             apiReq' <- fromWaiRequest request (fromParsedRoute pRoute)
             response <- case apiReq' of
-              Validation (Right apiReq) -> serve serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
+              Validation (Right apiReq) -> toIO serv $ handler' serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toWaiResponse request response
 
-
 router :: ( iface ~ (ApiInterface server)
-          , HandlerM iface ~ IO
+          , HandlerM server ~ IO
           , Router server apis '(CUSTOM "", '[])
           ) => Proxy apis -> server -> RoutingApplication
 router apis s = route apis s emptyParsedRoutes
@@ -348,14 +366,14 @@ instance (MkFormatStr xs) => MkFormatStr (DynamicPiece s ': xs) where
 instance MkFormatStr '[] where
   mkFormatStr _ = []
 
-serve :: forall query p m r.
+handler' :: forall query p m r.
        ( query ~ '[]
-       , HandlerM (ApiInterface p) ~ IO
-       , Server p m r
+       , MonadCatch (HandlerM p)
+       , ApiHandler p m r
        , Typeable m
-       , Typeable r) => p -> Proxy query -> Request m r -> (HandlerM (ApiInterface p)) (Query (Response m r) query)
-serve serv q req = catches (handler serv q req) dub
-  where dub :: [Handler (Query (Response m r) query)]
-        dub = [ Handler (\ (ex :: ApiException m r) -> handleApiException serv ex)
-              , Handler (\ (ex :: SomeException) -> handleSomeException serv ex) ]
+       , Typeable r) => p -> Proxy query -> Request m r -> HandlerM p (Query (Response m r) query)
+handler' serv q req =  (handler serv q req) `catches` excepHandlers
+  where excepHandlers :: [Handler (HandlerM p) (Query (Response m r) query)]
+        excepHandlers = [ Handler (\ (ex :: ApiException m r) -> handleApiException serv ex)
+                        , Handler (\ (ex :: SomeException) -> handleSomeException serv ex) ]
 

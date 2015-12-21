@@ -1,3 +1,9 @@
+{-|
+Module      : WebApi.Versioning
+License     : BSD3
+Stability   : experimental
+-}
+
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE FlexibleInstances     #-}
@@ -21,6 +27,7 @@ class OrdVersion (ver :: *) where
   cmpVersion :: (ver ~ ((proxy :: k -> *) (v1 :: k)), ord ~ (VersionOrd (proxy v1) (proxy v2)), SingOrd ord) =>  proxy v1 -> proxy (v2 :: k) -> Proxy ord
   cmpVersion _ _ = (Proxy :: Proxy ord)
 
+-- | Singleton class for ordering
 class SingOrd (ord :: Ordering) where
   singOrd :: proxy ord -> Ordering
 
@@ -33,8 +40,10 @@ instance SingOrd 'LT where
 instance SingOrd 'GT where
   singOrd = const GT
 
+-- | Defines ordering of versions.
 type family VersionOrd (v1 :: k) (v2 :: k) :: Ordering
 
+-- | Comparison between two versions.
 compareVersion :: (OrdVersion (proxy v1), SingOrd (VersionOrd (proxy v1) (proxy v2))) => proxy (v1 :: k) -> proxy (v2 :: k) -> Ordering
 compareVersion v1 v2 = singOrd $ cmpVersion v1 v2
 

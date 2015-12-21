@@ -1,3 +1,9 @@
+{-|
+Module      : WebApi.Client
+License     : BSD3
+Stability   : experimental
+-}
+
 {-# LANGUAGE ConstraintKinds       #-}
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE DefaultSignatures     #-}
@@ -13,10 +19,14 @@
 {-# LANGUAGE TypeOperators         #-}
 {-# LANGUAGE UndecidableInstances  #-}
 module WebApi.Client
-       ( ClientSettings (..)
+       (
+       -- * Client related functions
+         client
        , fromClientResponse
        , toClientRequest
-       , client
+       -- * Types  
+       , ClientSettings (..)
+       , UnknownClientException
        ) where
 
 import           Control.Exception
@@ -36,12 +46,14 @@ import           WebApi.Contract
 import           WebApi.Internal
 import           WebApi.Param
 
-data ClientSettings = ClientSettings { baseUrl           :: String
-                                     , connectionManager :: HC.Manager
+-- | Datatype representing the settings related to Client
+data ClientSettings = ClientSettings { baseUrl           :: String -- ^ base url of the API being called
+                                     , connectionManager :: HC.Manager -- ^ connection manager for the connection
                                      }
 
 data Proxy1 m r = Proxy1
 
+-- | Creates the 'Response' type from the response body.
 fromClientResponse :: forall m r.( FromHeader (HeaderOut m r)
                               , ParamErrToApiErr (ApiErr m r)
                               , Decodings (ContentTypes m r) (ApiOut m r)
@@ -52,18 +64,18 @@ fromClientResponse hcResp = do
       hdrsOut  = HC.responseHeaders hcResp
       respBody = HC.responseBody hcResp
       respHdr  = fromHeader hdrsOut :: Validation [ParamErr] (HeaderOut m r)
-      -- respCk   = fromCookie 
+      -- respCk   = fromCookie
   respBodyBS <- respBody
   return $ case statusIsSuccessful status of
     True  -> case Success <$> pure status
-                         <*> (Validation $ toParamErr $ decode (Proxy1 :: Proxy1 m r) respBodyBS)
+                         <*> (Validation $ toParamErr $ decode' (Proxy1 :: Proxy1 m r) respBodyBS)
                          <*> respHdr
                          <*> pure undefined of
       Validation (Right success) -> success
       Validation (Left errs) -> Failure $ Left $ ApiError status (toApiErr errs) Nothing Nothing
     False -> case ApiError
                   <$> pure status
-                  <*> (Validation $ toParamErr $ decode (Proxy1 :: Proxy1 m r) respBodyBS)
+                  <*> (Validation $ toParamErr $ decode' (Proxy1 :: Proxy1 m r) respBodyBS)
                   <*> (Just <$> respHdr)
                   -- TODO: Handle cookies
                   <*> pure Nothing of
@@ -74,9 +86,9 @@ fromClientResponse hcResp = do
           toParamErr (Left _str) = Left []
           toParamErr (Right r)  = Right r
 
-          decode :: ( Decodings (ContentTypes m r) a
+          decode' :: ( Decodings (ContentTypes m r) a
                    ) => apiRes m r -> ByteString -> Either String a
-          decode r o = case getContentType hcResp of
+          decode' r o = case getContentType hcResp of
             Just ctype -> let decs = decodings (reproxy r) o
                           in maybe (firstRight (map snd decs)) id (mapContentMedia decs ctype)
             Nothing    -> firstRight (map snd (decodings (reproxy r) o))
@@ -87,6 +99,7 @@ fromClientResponse hcResp = do
           firstRight :: [Either String b] -> Either String b
           firstRight = maybe (Left "Couldn't find matching Content-Type") id . find isRight
 
+-- | Creates a request from the 'Request' type
 toClientRequest :: forall m r.( ToParam (PathParam m r) 'PathParam
                           , ToParam (QueryParam m r) 'QueryParam
                           , ToParam (FormParam m r) 'FormParam
@@ -113,10 +126,9 @@ toClientRequest clientReq req = do
   where queryPar = toQueryParam $ queryParam req
         formPar = toFormParam $ formParam req
         filePar = toFileParam $ fileParam req
-        uriPath = case HC.path clientReq of
-          "/" -> renderPaths (pathParam req) req
-          _   -> HC.path clientReq `mappend` renderPaths (pathParam req) req
+        uriPath = renderUriPath (HC.path clientReq) (pathParam req) req
 
+-- | Given a `Request` type, create the request and obtain a response. Gives back a 'Response'
 client :: ( CookieOut m r ~ ()
           , ToParam (PathParam m r) 'PathParam
           , ToParam (QueryParam m r) 'QueryParam
