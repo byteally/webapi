@@ -1,7 +1,4 @@
 packages:
 - '.'
-resolver: nightly-2015-08-04
-extra-deps:
-- record-0.4.0.2
-- basic-lens-0.0.0
+resolver: lts-3.5
 
