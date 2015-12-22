@@ -8,7 +8,8 @@ Stability   : experimental
 {-# LANGUAGE KindSignatures      #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 module WebApi.Method
-       (-- * Methods
+       (
+       -- * Methods
          GET
        , POST
        , PUT
@@ -19,7 +20,8 @@ module WebApi.Method
        , OPTIONS
        , CONNECT
        , CUSTOM
-       -- * Internal  
+ 
+       -- * Internal 
        , SingMethod (..)
        ) where
 
@@ -30,15 +32,15 @@ import           Network.HTTP.Types
 
 -- | Type representing a GET method
 data GET
--- | Type representing a POST method  
+-- | Type representing a POST method 
 data POST
--- | Type representing a PUT method    
+-- | Type representing a PUT method   
 data PUT
--- | Type representing a DELETE method      
+-- | Type representing a DELETE method     
 data DELETE
--- | Type representing a HEAD method        
+-- | Type representing a HEAD method       
 data HEAD
--- | Type representing a PATCH method        
+-- | Type representing a PATCH method       
 data PATCH
 -- | Type representing a OPTIONS method
 data OPTIONS

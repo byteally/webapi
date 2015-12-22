@@ -1,5 +1,5 @@
 {-# LANGUAGE MultiParamTypeClasses, TypeFamilies, OverloadedStrings, DataKinds, TypeOperators, TypeSynonymInstances, FlexibleInstances, DeriveGeneric #-}
-module WebApi.RequestSpec where
+module WebApi.RequestSpec (spec) where
 
 import WebApi
 import WebApi.Internal
@@ -81,7 +81,6 @@ instance WebApi ReqSpec where
 
 
 instance WebApiImplementation ReqSpecImpl where
-  type HandlerM ReqSpecImpl = IO
   type ApiInterface ReqSpecImpl = ReqSpec
 
 instance ApiContract ReqSpec GET ApiR where
@@ -145,23 +144,23 @@ instance ApiContract ReqSpec (CUSTOM "TEST") ApiR where
   type ApiOut (CUSTOM "TEST") ApiR     = ()
 
 instance ApiHandler ReqSpecImpl (CUSTOM "TEST") ApiR where
-  handler _ _ _ = respond ()
+  handler _ _ = respond ()
 instance ApiHandler ReqSpecImpl CONNECT ApiR where
-  handler _ _ _ = respond ()
+  handler _ _ = respond ()
 instance ApiHandler ReqSpecImpl TRACE ApiR where
-  handler _ _ _ = respond ()
+  handler _ _ = respond ()
 instance ApiHandler ReqSpecImpl HEAD ApiR where
-  handler _ _ _ = respond ()
+  handler _ _ = respond ()
 instance ApiHandler ReqSpecImpl PATCH ApiR where
-  handler _ _ _ = respond ()
+  handler _ _ = respond ()
 instance ApiHandler ReqSpecImpl GET ApiR where
-  handler _ _ _ = respond ()
+  handler _ _ = respond ()
 instance ApiHandler ReqSpecImpl POST ApiR where
-  handler _ _ _ = respond ()
+  handler _ _ = respond ()
 instance ApiHandler ReqSpecImpl PUT ApiR where
-  handler _ _ _ = respond ()
+  handler _ _ = respond ()
 instance ApiHandler ReqSpecImpl DELETE ApiR where
-  handler _ _ _ = respond ()
+  handler _ _ = respond ()
 
 formHeaders :: [(ByteString, ByteString)] -> [(ByteString, ByteString)] -> [Header]
 formHeaders headerKvs cookieKvs = map toHeader headerKvs <> [toCookie cookieKvs]
@@ -170,8 +169,8 @@ formHeaders headerKvs cookieKvs = map toHeader headerKvs <> [toCookie cookieKvs]
 
         serializeCookie = foldl' (\acc (k, v) -> acc <> ";" <> k <> "=" <> v) ""
         
-reqSpec :: Spec
-reqSpec = withApp $ describe "WebApi request with payload" $ do
+spec :: Spec
+spec = withApp $ describe "WebApi request with payload" $ do
   context "GET Request" $ do
     it "should be 200 ok" $ do
       Hspec.Wai.get "api?qp1=5&qp2=True&qp3.Right=15.60" `shouldRespondWith` 200

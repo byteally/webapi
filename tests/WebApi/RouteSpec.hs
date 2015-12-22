@@ -1,5 +1,5 @@
 {-# LANGUAGE MultiParamTypeClasses, TypeFamilies, OverloadedStrings, DataKinds, TypeOperators, TypeSynonymInstances, FlexibleInstances #-}
-module WebApi.RouteSpec where
+module WebApi.RouteSpec (spec) where
 
 import WebApi
 import WebApi.Internal
@@ -59,26 +59,26 @@ instance WebApiImplementation RoutingSpecImpl where
 
 
 instance ApiHandler RoutingSpecImpl GET StaticRoute1 where
-  handler _ _ _ = respond ()
+  handler _ _ = respond ()
 
 instance ApiHandler RoutingSpecImpl GET StaticRoute2 where
-  handler _ _ _ = respond ()
+  handler _ _ = respond ()
 
 instance ApiHandler RoutingSpecImpl GET RouteWithParam where
-  handler _ _ _ = respond ()
+  handler _ _ = respond ()
 
 instance ApiHandler RoutingSpecImpl GET RouteWithParamAtBegin where
-  handler _ _ _ = respond "RouteWithParamAtBegin"
+  handler _ _ = respond "RouteWithParamAtBegin"
 
 instance ApiHandler RoutingSpecImpl GET RouteWithParams where
-  handler _ _ _ = respond "RouteWithParams"
+  handler _ _ = respond "RouteWithParams"
 
 instance ApiHandler RoutingSpecImpl GET OverlappingRoute where
-  handler _ _ _ = respond "OverlappingRoute"
+  handler _ _ = respond "OverlappingRoute"
 
 
-routeSpec :: Spec
-routeSpec = withApp $ describe "WebApi routing" $ do
+spec :: Spec
+spec = withApp $ describe "WebApi routing" $ do
   context "static route with only one piece" $ do
     it "should be 200 ok" $ do
       get "static_route" `shouldRespondWith` 200

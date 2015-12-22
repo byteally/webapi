@@ -17,10 +17,13 @@ module WebApi.ContentTypes
        (
        -- * Predefined Content Types.
          JSON
+       , PlainText
+         
        -- * Creating custom Content Types. 
        , Accept (..)
        , Encode (..)
        , Decode (..)
+       
        -- * Internal classes.
        , Encodings (..)
        , Decodings (..)
@@ -36,6 +39,7 @@ import qualified Data.Text                          as TextS
 import           Data.Text.Encoding                 (decodeUtf8)
 import           Network.HTTP.Media.MediaType
 
+
 -- | Type representing "application/json" Content-Type
 data JSON
 
@@ -45,6 +49,7 @@ data PlainText
 -- | Type representing the "application/octetstream" Content-Type  
 data OctetStream
 
+-- | Encodings of type `a` for all content types `ctypes`  
 class Encodings (ctypes :: [*]) a where
   encodings :: Proxy ctypes -> a -> [(MediaType, Builder)]
 
@@ -57,6 +62,7 @@ instance ( Accept ctype
 instance Encodings '[] a where
   encodings _ _ = []
 
+-- | Decodings of type `a` for all content types `ctypes`  
 class Decodings (ctypes :: [*]) a where
   decodings :: Proxy ctypes -> ByteString -> [(MediaType, Either String a)]
 
@@ -92,7 +98,7 @@ instance (ToJSON c) => Encode JSON c where
 instance (ToText a) => Encode PlainText a where
   encode _ = Utf8.fromText . toText
 
--- | (Attempts to) Decode a type from a specific Content Type.
+-- | (Try to) Decode a type from a specific Content Type.
 class (Accept c) => Decode c a where
   decode :: Proxy c -> ByteString -> Either String a
 

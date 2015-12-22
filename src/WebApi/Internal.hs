@@ -25,7 +25,8 @@ import qualified Data.Text as T (pack)
 import           Data.Text.Encoding (decodeUtf8)
 import           Data.Typeable (Typeable)
 import qualified Network.HTTP.Client as HC
-import           Network.HTTP.Media (mapAcceptMedia)
+import           Network.HTTP.Media (MediaType, mapAcceptMedia, matchAccept)
+import           Network.HTTP.Media.RenderHeader (renderHeader)
 import           Network.HTTP.Types hiding (Query)
 import           Network.URI (URI (..))
 import qualified Network.Wai as Wai
@@ -73,19 +74,22 @@ toWaiResponse :: ( ToHeader (HeaderOut m r)
                   ) => Wai.Request -> Response m r -> Wai.Response
 toWaiResponse wreq resp = case resp of
   Success status out hdrs cookies -> case encode' resp out of
-    Just o' -> Wai.responseBuilder status (handleHeaders' (toHeader hdrs) (toCookie cookies)) o'
+    Just (ctype, o') -> let hds = (hContentType, renderHeader ctype) : handleHeaders' (toHeader hdrs) (toCookie cookies)
+                        in Wai.responseBuilder status hds o'
     Nothing -> Wai.responseBuilder notAcceptable406 [] "Matching content type not found"
   Failure (Left (ApiError status errs hdrs cookies)) -> case encode' resp errs of
-    Just errs' -> Wai.responseBuilder status (handleHeaders (toHeader <$> hdrs) (toCookie <$> cookies)) errs'
+    Just (ctype, errs') -> let hds = (hContentType, renderHeader ctype) : handleHeaders (toHeader <$> hdrs) (toCookie <$> cookies)
+                           in Wai.responseBuilder status hds errs'
     Nothing -> Wai.responseBuilder notAcceptable406 [] "Matching content type not found"
   Failure (Right (OtherError ex)) -> Wai.responseBuilder internalServerError500 [] (Utf8.fromText (T.pack (displayException ex)))
 
   where encode' :: ( Encodings (ContentTypes m r) a
-                 ) => apiRes m r -> a -> Maybe Builder
+                 ) => apiRes m r -> a -> Maybe (MediaType, Builder)
         encode' r o = case getAccept wreq of
-          Just acc -> mapAcceptMedia (encodings (reproxy r) o) acc
+          Just acc -> let ecs = encodings (reproxy r) o
+                      in (,) <$> matchAccept (map fst ecs) acc <*> mapAcceptMedia ecs acc
           Nothing  -> case encodings (reproxy r) o of
-            (x : _)  -> Just (snd x)
+            (x : _)  -> Just x
             _        -> Nothing
 
         reproxy :: apiRes m r -> Proxy (ContentTypes m r)
@@ -144,8 +148,7 @@ renderPaths p r = toByteString
 -- | Describes the implementation of a single API end point corresponding to `ApiContract (ApiInterface p) m r`
 class (ApiContract (ApiInterface p) m r) => ApiHandler (p :: *) (m :: *) (r :: *) where
   handler :: (query ~ '[])
-            => p
-            -> Proxy query -- ^ Not currently being used
+            => Tagged query p
             -> Request m r
             -> HandlerM p (Query (Response m r) query)
 
@@ -217,3 +220,5 @@ hSetCookie = "Set-Cookie"
 
 getContentType :: HC.Response a -> Maybe ByteString
 getContentType = fmap snd . find ((== hContentType) . fst) . HC.responseHeaders
+
+newtype Tagged (s :: [*]) b = Tagged { unTagged :: b } 

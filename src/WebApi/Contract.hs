@@ -16,12 +16,14 @@ module WebApi.Contract
        (-- * API Contract
          WebApi (..)
        , ApiContract (..)
+         
        -- * Request and Response
        , PathParam'
        , Request (..)
        , Response (..)
        , ApiError (..)
        , OtherError (..)
+       
        -- * Methods   
        , module WebApi.Method
        ) where

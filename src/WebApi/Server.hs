@@ -11,16 +11,13 @@ Stability   : experimental
 {-# LANGUAGE TypeFamilies          #-}
 module WebApi.Server
        (
-       --  toApplication
-       -- , fromWaiRequest
-       -- , toWaiResponse
        -- * Creating a WAI application  
          serverApp
        , serverSettings
        , ServerSettings
+
        -- * Implementation of Api 
        , ApiHandler (..)
-       , ApiInterface  
        , ApiException (..)
        , WebApiImplementation (..)  
        , respond
@@ -32,7 +29,6 @@ module WebApi.Server
        , module WebApi.Router
        ) where
 
-import           Control.Exception
 import           Control.Monad.Catch
 import           Data.Proxy
 import           Data.Typeable
@@ -60,8 +56,7 @@ respondWith :: ( Monad handM
 respondWith status out hdrs cook = return $ Success status out hdrs cook
 
 -- | This function short circuits returning an `ApiError`.It is assumed that `HeaderOut m r` and `CookieOut m r` has default definitions.
-raise :: ( Monad handM
-         , MonadThrow handM
+raise :: ( MonadThrow handM
          , Typeable m
          , Typeable r
          ) => Status
@@ -81,17 +76,15 @@ raiseWith :: ( Monad handM
                -> handM (Response m r)
 raiseWith status errs hdrs cook = raiseWith' (ApiError status errs (Just hdrs) (Just cook))
 
-raiseWith' :: ( Monad handM
-              , MonadThrow handM
+raiseWith' :: ( MonadThrow handM
               , Typeable m
               , Typeable r  
              ) => ApiError m r
                -> handM (Response m r)
-raiseWith' = throw . ApiException
+raiseWith' = throwM . ApiException
 
 -- | Create a WAI application from the information specified in `WebApiImplementation`, `WebApi`, `ApiContract` and `ApiHandler` classes.
 serverApp :: ( iface ~ (ApiInterface server)
-             , HandlerM server ~ IO
              , Router server (Apis iface) '(CUSTOM "", '[])
              ) => ServerSettings -> server -> Wai.Application
 serverApp _ server = toApplication $ router (apis server) server

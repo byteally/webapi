@@ -173,11 +173,11 @@ instance (Router s route pr, Router s routes pr) => Router s ((route :: *) ': ro
 instance Router s '[] pr where
   route _ _s _ _ respond = respond NotMatched
 
-instance (Router s (MarkDyn rest) '(m, (pp :++ '[DynamicPiece piece])), HttpParam piece)
+instance (Router s (MarkDyn rest) '(m, (pp :++ '[DynamicPiece piece])), DecodeParam piece)
                       => Router s ((piece :: *) :/ (rest :: *)) '(m, pp) where
   route _ _s parsedRoute request respond =
     case pathInfo request of
-      (lpth : rpths)  -> case (fromHttpParam (encodeUtf8 lpth) :: Maybe piece) of
+      (lpth : rpths)  -> case (decodeParam (encodeUtf8 lpth) :: Maybe piece) of
         Just dynPiece -> route (Proxy :: Proxy (MarkDyn rest)) _s (snocParsedRoute parsedRoute $ DPiece dynPiece) request {pathInfo = rpths} respond
         Nothing -> respond NotMatched
       _ -> respond $ NotMatched
@@ -272,7 +272,7 @@ instance ( KnownSymbol rpiece
          , Encodings (ContentTypes m route) (ApiOut m route)
          , ToHeader (HeaderOut m route)
          , ToParam (CookieOut m route) 'Cookie
-         , HttpParam lpiece
+         , DecodeParam lpiece
          , ParamErrToApiErr (ApiErr m route)
          , Typeable m
          , Typeable route
@@ -280,7 +280,7 @@ instance ( KnownSymbol rpiece
          ) => Router s ((lpiece :: *) :/ (rpiece :: Symbol)) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
-      (lpth : rpth : []) | rpieceTxt == rpth -> case (fromHttpParam (encodeUtf8 lpth) :: Maybe lpiece) of
+      (lpth : rpth : []) | rpieceTxt == rpth -> case (decodeParam (encodeUtf8 lpth) :: Maybe lpiece) of
         Just dynVal -> respond . Matched =<< getResponse dynVal
         Nothing     -> respond NotMatched
       _ -> respond NotMatched
@@ -307,7 +307,7 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
          , Encodings (ContentTypes m route) (ApiOut m route)
          , ToHeader (HeaderOut m route)
          , ToParam (CookieOut m route) 'Cookie
-         , HttpParam t
+         , DecodeParam t
          , ParamErrToApiErr (ApiErr m route)
          , Typeable m
          , Typeable route
@@ -315,7 +315,7 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
          ) => Router s (DynamicPiece t) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
-      (lpth : []) -> case (fromHttpParam (encodeUtf8 lpth) :: Maybe t) of
+      (lpth : []) -> case (decodeParam (encodeUtf8 lpth) :: Maybe t) of
         Just dynVal -> respond . Matched =<< getResponse dynVal
         Nothing     -> respond NotMatched
       _           -> respond NotMatched
@@ -329,7 +329,6 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
             return $ toWaiResponse request response
 
 router :: ( iface ~ (ApiInterface server)
-          , HandlerM server ~ IO
           , Router server apis '(CUSTOM "", '[])
           ) => Proxy apis -> server -> RoutingApplication
 router apis s = route apis s emptyParsedRoutes
@@ -372,8 +371,10 @@ handler' :: forall query p m r.
        , ApiHandler p m r
        , Typeable m
        , Typeable r) => p -> Proxy query -> Request m r -> HandlerM p (Query (Response m r) query)
-handler' serv q req =  (handler serv q req) `catches` excepHandlers
+handler' serv p req =  (handler (toTagged p serv) req) `catches` excepHandlers
   where excepHandlers :: [Handler (HandlerM p) (Query (Response m r) query)]
         excepHandlers = [ Handler (\ (ex :: ApiException m r) -> handleApiException serv ex)
                         , Handler (\ (ex :: SomeException) -> handleSomeException serv ex) ]
 
+toTagged :: Proxy s -> b -> Tagged s b
+toTagged _ = Tagged

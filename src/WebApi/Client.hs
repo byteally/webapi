@@ -24,6 +24,7 @@ module WebApi.Client
          client
        , fromClientResponse
        , toClientRequest
+         
        -- * Types  
        , ClientSettings (..)
        , UnknownClientException
@@ -47,17 +48,18 @@ import           WebApi.Internal
 import           WebApi.Param
 
 -- | Datatype representing the settings related to Client
-data ClientSettings = ClientSettings { baseUrl           :: String -- ^ base url of the API being called
+data ClientSettings = ClientSettings { baseUrl           :: String     -- ^ base url of the API being called
                                      , connectionManager :: HC.Manager -- ^ connection manager for the connection
                                      }
 
-data Proxy1 m r = Proxy1
+data Route' m r = Route'
 
 -- | Creates the 'Response' type from the response body.
 fromClientResponse :: forall m r.( FromHeader (HeaderOut m r)
                               , ParamErrToApiErr (ApiErr m r)
                               , Decodings (ContentTypes m r) (ApiOut m r)
-                              , Decodings (ContentTypes m r) (ApiErr m r)  
+                              , Decodings (ContentTypes m r) (ApiErr m r)
+                              , CookieOut m r ~ ()
                              ) => HC.Response HC.BodyReader -> IO (Response m r)
 fromClientResponse hcResp = do
   let status   = HC.responseStatus hcResp
@@ -68,14 +70,14 @@ fromClientResponse hcResp = do
   respBodyBS <- respBody
   return $ case statusIsSuccessful status of
     True  -> case Success <$> pure status
-                         <*> (Validation $ toParamErr $ decode' (Proxy1 :: Proxy1 m r) respBodyBS)
+                         <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
                          <*> respHdr
-                         <*> pure undefined of
+                         <*> pure () of
       Validation (Right success) -> success
       Validation (Left errs) -> Failure $ Left $ ApiError status (toApiErr errs) Nothing Nothing
     False -> case ApiError
                   <$> pure status
-                  <*> (Validation $ toParamErr $ decode' (Proxy1 :: Proxy1 m r) respBodyBS)
+                  <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
                   <*> (Just <$> respHdr)
                   -- TODO: Handle cookies
                   <*> pure Nothing of
@@ -113,7 +115,7 @@ toClientRequest clientReq req = do
               { HC.method = singMethod (Proxy :: Proxy m)
               , HC.path = uriPath
               , HC.requestHeaders = toHeader $ headerIn req
-              , HC.cookieJar = error "TODO: cookieJar"
+              -- , HC.cookieJar = error "TODO: cookieJar"
               }
       cReqQP = HC.setQueryString queryPar cReq'
       cReqUE = if Prelude.null formPar

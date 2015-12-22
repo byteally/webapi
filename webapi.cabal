@@ -27,6 +27,7 @@ library
                      , WebApi.Versioning
                      , WebApi.Param
                      , WebApi.Method
+                     , WebApi.Mock
 
   -- other-modules:       
   -- other-extensions:    
@@ -60,11 +61,11 @@ library
 
 test-suite unit-tests
     type:              exitcode-stdio-1.0
-    main-is:           main.hs
-    other-modules:     WebApi.ClientSpec
-                     , WebApi.RequestSpec
+    main-is:           Spec.hs
+    other-modules:     WebApi.RequestSpec
                      , WebApi.ResponseSpec
-                     , WebApi.RouteSpec 
+                     , WebApi.RouteSpec
+                     , WebApi.ClientSpec
                        
     hs-source-dirs:    tests
     default-language:  Haskell2010
