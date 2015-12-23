@@ -1,3 +1,29 @@
+{-|
+Module      : WebApi.Param
+License     : BSD3
+Stability   : experimental
+
+Param serialization and deserialization. 'ToParam' and 'EncodeParam' are responsible for serialization part.
+'EncodeParam' converts the value into a wire format. 'ToParam' is responsible for creating (nested) key value pairs, which can be then used to deserialize to original type. For example
+
+@
+encodeParam 5 == "5"
+
+data Foo = Foo { foo :: Int }
+         deriving (Show, Eq, Generic)
+
+data Bar = Bar { bar :: Foo }
+         deriving (Show, Eq, Generic)
+
+instance ToParam Foo 'FormParam
+instance ToParam Bar 'FormParam
+
+toParam (Proxy :: Proxy 'FormParam) "" (Bar (Foo 5)) == [("bar.foo","5")]
+@
+
+Deserialization works analogously, 'FromParam' and 'DecodeParam' are counterparts to 'ToParam' and 'EncodeParam' respectively. Generic instances are provided for all of them. This means that the user only need to derive Generic in their type, and provide instance with an empty body. Note that for headers 'FromHeader' and 'ToHeader' is being used in place of 'FromParam' and 'ToParam'. Nesting is not supported for headers.
+-}
+
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE DefaultSignatures     #-}
 {-# LANGUAGE DeriveAnyClass        #-}
@@ -45,6 +71,7 @@ module WebApi.Param
        , JsonOf (..)
        , OptValue (..)
        , FileInfo (..)
+       , NonNested (..)
 
        -- * Helpers  
        , ParamK (..)
@@ -1393,6 +1420,7 @@ instance ParamErrToApiErr A.Value where
   toApiErr errs = toJSON errs
 
 -- | Nest the key with a prefix.
+--
 -- > nest "pfx" "key" == "pfx.key"
 -- > nest "" "key" == "key"
 nest :: ByteString -> ByteString -> ByteString

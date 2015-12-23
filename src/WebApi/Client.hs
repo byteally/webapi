@@ -2,6 +2,8 @@
 Module      : WebApi.Client
 License     : BSD3
 Stability   : experimental
+
+Provides a client for a web api for a given contract.
 -}
 
 {-# LANGUAGE ConstraintKinds       #-}
@@ -47,7 +49,7 @@ import           WebApi.Contract
 import           WebApi.Internal
 import           WebApi.Param
 
--- | Datatype representing the settings related to Client
+-- | Datatype representing the settings related to client.
 data ClientSettings = ClientSettings { baseUrl           :: String     -- ^ base url of the API being called
                                      , connectionManager :: HC.Manager -- ^ connection manager for the connection
                                      }
@@ -101,7 +103,7 @@ fromClientResponse hcResp = do
           firstRight :: [Either String b] -> Either String b
           firstRight = maybe (Left "Couldn't find matching Content-Type") id . find isRight
 
--- | Creates a request from the 'Request' type
+-- | Creates a request from the 'Request' type.
 toClientRequest :: forall m r.( ToParam (PathParam m r) 'PathParam
                           , ToParam (QueryParam m r) 'QueryParam
                           , ToParam (FormParam m r) 'FormParam
@@ -130,7 +132,7 @@ toClientRequest clientReq req = do
         filePar = toFileParam $ fileParam req
         uriPath = renderUriPath (HC.path clientReq) (pathParam req) req
 
--- | Given a `Request` type, create the request and obtain a response. Gives back a 'Response'
+-- | Given a `Request` type, create the request and obtain a response. Gives back a 'Response'.
 client :: ( CookieOut m r ~ ()
           , ToParam (PathParam m r) 'PathParam
           , ToParam (QueryParam m r) 'QueryParam

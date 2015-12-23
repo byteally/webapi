@@ -48,7 +48,9 @@ instance SingOrd 'GT where
 type family VersionOrd (v1 :: k) (v2 :: k) :: Ordering
 
 -- | Comparison between two versions. Returns an 'Ord'.
--- > compareVersion (MajorMinor :: MajorMinor (0, 0)) (MajorMinor :: MajorMinor (0, 1)) == LT             
+--             
+-- >>> compareVersion (MajorMinor :: MajorMinor (0, 0)) (MajorMinor :: MajorMinor (0, 1)) == LT
+-- True            
 compareVersion :: (OrdVersion (proxy v1), SingOrd (VersionOrd (proxy v1) (proxy v2))) => proxy (v1 :: k) -> proxy (v2 :: k) -> Ordering
 compareVersion v1 v2 = singOrd $ cmpVersion v1 v2
 

@@ -3,6 +3,16 @@
 Module      : WebApi.Contract
 License     : BSD3
 Stability   : experimental
+
+Provides the contract for the web api. The contract consists of 'WebApi' and 'ApiContract' classes.
+'WebApi' contains information related to the entire group of APIs whereas 'ApiContract' is concerned with information related to each end point. Once the contract is written, it can be then used to
+
+* Write a 'WebApiImplementation' and corresponding 'ApiHandler' for it.
+* Get a client for web api.
+* Get a mock server and a mock client for web api.
+
+... and possibly more.
+
 -}
 
 {-# LANGUAGE DataKinds                 #-}
@@ -37,12 +47,12 @@ import           WebApi.Versioning
 
 -- | Describes a collection of web apis.
 class (OrdVersion (Version p)) => WebApi (p :: *) where
-  -- | Version of the WebApi.
+  -- | Version of the web api.
   type Version p :: *
-  -- | List of all end points that this WebApi provides.
+  -- | List of all end points that this web api provides.
   type Apis p :: [*]
 
-  type Version p = Major 0     
+  type Version p = Major 0
 
 -- | Describes a contract for a single API end point.
 class (SingMethod m, WebApi p) => ApiContract (p :: *) (m :: *) (r :: *) where

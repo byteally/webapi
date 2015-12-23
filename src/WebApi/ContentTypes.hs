@@ -23,7 +23,11 @@ module WebApi.ContentTypes
        , Accept (..)
        , Encode (..)
        , Decode (..)
-       
+
+       -- * Converting from and to 'Text'
+       , FromText (..)
+       , ToText (..)  
+
        -- * Internal classes.
        , Encodings (..)
        , Decodings (..)
@@ -40,16 +44,16 @@ import           Data.Text.Encoding                 (decodeUtf8)
 import           Network.HTTP.Media.MediaType
 
 
--- | Type representing "application/json" Content-Type
+-- | Type representing content type of @application/json@.
 data JSON
 
--- | Type representing the "text/plain" Content-Type  
+-- | Type representing content type of @text/plain@.
 data PlainText
 
--- | Type representing the "application/octetstream" Content-Type  
+-- | Type representing content type of @application/octetstream@.
 data OctetStream
 
--- | Encodings of type `a` for all content types `ctypes`  
+-- | Encodings of type for all content types `ctypes`.  
 class Encodings (ctypes :: [*]) a where
   encodings :: Proxy ctypes -> a -> [(MediaType, Builder)]
 
@@ -62,7 +66,7 @@ instance ( Accept ctype
 instance Encodings '[] a where
   encodings _ _ = []
 
--- | Decodings of type `a` for all content types `ctypes`  
+-- | Decodings of type for all content types `ctypes`.  
 class Decodings (ctypes :: [*]) a where
   decodings :: Proxy ctypes -> ByteString -> [(MediaType, Either String a)]
 
@@ -75,7 +79,7 @@ instance ( Accept ctype
 instance Decodings '[] a where
   decodings _ _ = []
 
--- | Singleton class for Content Type. 
+-- | Singleton class for content type. 
 class Accept ctype where
   contentType :: Proxy ctype -> MediaType
 
@@ -88,7 +92,7 @@ instance Accept PlainText where
 instance Accept OctetStream where
   contentType _ = "application" // "octet-stream"
 
--- | Encode a type into a specific Content Type.
+-- | Encode a type into a specific content type.
 class (Accept a) => Encode a c where
   encode :: Proxy a -> c -> Builder
 
@@ -98,7 +102,7 @@ instance (ToJSON c) => Encode JSON c where
 instance (ToText a) => Encode PlainText a where
   encode _ = Utf8.fromText . toText
 
--- | (Try to) Decode a type from a specific Content Type.
+-- | (Try to) Decode a type from a specific content type.
 class (Accept c) => Decode c a where
   decode :: Proxy c -> ByteString -> Either String a
 

@@ -2,6 +2,8 @@
 Module      : WebApi.Mock
 License     : BSD3
 Stability   : experimental
+
+Once a contract is defined for a web api, a mock server and client for it can be obtained. 'Arbitrary' instances of the data types used in 'Request' and 'Response' is used to generate the request and response. Note that if a different mocking behaviour is required, it is easy enough to write a different implementation. Please take a look at the reference implementation of 'MockServer' for details. 
 -}
 
 {-# LANGUAGE TypeFamilies, FlexibleInstances, MultiParamTypeClasses, UndecidableInstances, DataKinds, FlexibleContexts, ScopedTypeVariables, DeriveGeneric #-}
@@ -35,8 +37,8 @@ import Test.QuickCheck (Arbitrary, generate, arbitrary)
 data Route' m r = Route'
 
 -- | Datatype representing a mock server. The parameterization over `p` allows it to be a mock server for any `p`.
-data MockServer p = MockServer { mockServerSett :: MockServerSettings }
-                  deriving (Eq, Show)
+newtype MockServer p = MockServer { mockServerSett :: MockServerSettings }
+                     deriving (Eq, Show)
 
 -- | The data constructor of `Response` to be generated in `mockServer`.
 data GenerateResponse = GenerateSuccess

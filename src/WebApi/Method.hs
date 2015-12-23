@@ -2,6 +2,9 @@
 Module      : WebApi.ContentTypes
 License     : BSD3
 Stability   : experimental
+
+Defines various types to represent the HTTP methods.
+
 -}
 
 {-# LANGUAGE DataKinds           #-}
@@ -30,25 +33,25 @@ import           Data.Proxy
 import           GHC.TypeLits
 import           Network.HTTP.Types
 
--- | Type representing a GET method
+-- | Type representing a GET method.
 data GET
--- | Type representing a POST method 
+-- | Type representing a POST method. 
 data POST
--- | Type representing a PUT method   
+-- | Type representing a PUT method.   
 data PUT
--- | Type representing a DELETE method     
+-- | Type representing a DELETE method.     
 data DELETE
--- | Type representing a HEAD method       
+-- | Type representing a HEAD method.       
 data HEAD
--- | Type representing a PATCH method       
+-- | Type representing a PATCH method.       
 data PATCH
--- | Type representing a OPTIONS method
+-- | Type representing a OPTIONS method.
 data OPTIONS
--- | Type representing a TRACE method
+-- | Type representing a TRACE method.
 data TRACE
--- | Type representing a CONNECT method
+-- | Type representing a CONNECT method.
 data CONNECT
--- | Type representing a Custom method
+-- | Type representing a Custom method.
 data CUSTOM (m :: Symbol)
 
 -- | Singleton class for method types.

@@ -103,7 +103,7 @@ toWaiResponse wreq resp = case resp of
                                      in hds <> ckHs
         renderSC k v = toByteString (renderSetCookie (def { setCookieName = k, setCookieValue = v }))
 
--- | Generate a Type safe URL for a given route type. The URI can be used for setting a base URL if required.
+-- | Generate a type safe URL for a given route type. The URI can be used for setting a base URL if required.
 link :: ( ToParam (QueryParam m r) 'QueryParam
         , MkPathFormatString r
         , ToParam (PathParam m r) 'PathParam
@@ -145,7 +145,7 @@ renderPaths p r = toByteString
         toRoute :: (MkPathFormatString r) => route m r -> Proxy r
         toRoute = const Proxy
 
--- | Describes the implementation of a single API end point corresponding to `ApiContract (ApiInterface p) m r`
+-- | Describes the implementation of a single API end point corresponding to @ApiContract (ApiInterface p) m r@
 class (ApiContract (ApiInterface p) m r) => ApiHandler (p :: *) (m :: *) (r :: *) where
   handler :: (query ~ '[])
             => Tagged query p
@@ -160,14 +160,14 @@ class ( MonadCatch (HandlerM p)
       , MonadIO (HandlerM p)
       , WebApi (ApiInterface p)  
       ) => WebApiImplementation (p :: *) where
-  -- | Type of the handler Monad. It should implement MonadThrow and MonadIO classes.
+  -- | Type of the handler 'Monad'. It should implement 'MonadCatch' and 'MonadIO' classes.
   type HandlerM p :: * -> *
   type ApiMeta p :: *
   type ApiPager p :: *
   type ApiInterface p :: *     
   -- provides common defaulting information for api handlers
 
-  -- | Create a value of 'IO a' from 'HandlerM p a'.
+  -- | Create a value of @IO a@ from @HandlerM p a@.
   toIO :: p -> HandlerM p a -> IO a
 
   default toIO :: (HandlerM p ~ IO) => p -> HandlerM p a -> IO a
@@ -192,7 +192,7 @@ data PathSegment = StaticSegment Text -- ^ A static segment
 
 -- | Describe representation of the route.
 class MkPathFormatString r where
-  -- | Given a route, this function should produce the PathSegments of that route. This gives the flexibility to hook in a different routing system into the application.
+  -- | Given a route, this function should produce the @[PathSegment]@ of that route. This gives the flexibility to hook in a different routing system into the application.
   mkPathFormatString :: Proxy r -> [PathSegment]
 
 -- | Type of Exception raised in a handler.
