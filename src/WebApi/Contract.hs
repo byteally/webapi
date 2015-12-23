@@ -47,36 +47,37 @@ class (OrdVersion (Version p)) => WebApi (p :: *) where
 -- | Describes a contract for a single API end point.
 class (SingMethod m, WebApi p) => ApiContract (p :: *) (m :: *) (r :: *) where
   -- | Type of path param that this end point takes in.
+  -- defaults to @PathParam' m r@
   type PathParam m r
   -- | Type of query param that this end point takes in
-  -- defaults to '()'
+  -- defaults to @()@
   type QueryParam m r
   -- | Type form params that this end point takes in
-  -- defaults to '()'   
+  -- defaults to @()@   
   type FormParam m r
   -- | Type of file params that this end point takes in
-  -- defaults to '()'   
+  -- defaults to @()@   
   type FileParam m r
   -- | Type of header params that this end point takes in
-  -- defaults to '()'   
+  -- defaults to @()@   
   type HeaderIn m r
   -- | Type of cookie params that this end point takes in
-  -- defaults to '()'   
+  -- defaults to @()@   
   type CookieIn m r
   -- | Type of result of this end point when successful
-  -- defaults to '()'   
+  -- defaults to @()@   
   type ApiOut m r
   -- | Type of result of this end point when a known failure occurs
-  -- defaults to '()'   
+  -- defaults to @()@   
   type ApiErr m r
   -- | Type of headers of this end point gives out
-  -- defaults to '()'   
+  -- defaults to @()@   
   type HeaderOut m r
   -- | Type of cookies of this end point gives out
-  -- defaults to '()'   
+  -- defaults to @()@
   type CookieOut m r
   -- | List of Content Types that this end point can serve
-  -- defaults to '\'[JSON]'
+  -- defaults to @[JSON]@
   type ContentTypes m r :: [*]
 
   type PathParam m r    = PathParam' m r
@@ -90,6 +91,9 @@ class (SingMethod m, WebApi p) => ApiContract (p :: *) (m :: *) (r :: *) where
   type ApiErr m r       = ()
   type ContentTypes m r = '[JSON]
 
+-- | Type of the path params that a route 'r' has. If a custom routing system is being used, 
+-- then you will have to give an instance for PathParam' for types being used in routing.
+-- Please take a look at the existing instances of PathParam' for reference.
 type family PathParam' m r :: *
 
 -- | Datatype representing a request to route `r` with method `m`

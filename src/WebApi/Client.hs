@@ -149,6 +149,7 @@ client sett req = do
   cReq <- toClientRequest cReqInit req
   HC.withResponse cReq (connectionManager sett) fromClientResponse
 
+-- | This exception is used to signal an irrecoverable error while deserializing the response.
 data UnknownClientException = UnknownClientException
                             deriving (Typeable, Show)
 

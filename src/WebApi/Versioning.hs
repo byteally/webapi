@@ -12,17 +12,21 @@ Stability   : experimental
 {-# LANGUAGE PolyKinds             #-}
 {-# LANGUAGE TypeFamilies          #-}
 module WebApi.Versioning
-       ( MajorMinor (..)
+       (
+       -- * Versioning styles
+         MajorMinor (..)
        , Major (..)
+
+       -- * Building custom versions  
        , OrdVersion (..)
        , VersionOrd
-       , SingOrd (..)
        , compareVersion
        ) where
 
 import           Data.Proxy
 import           GHC.TypeLits
 
+-- | Comparison between versions.
 class OrdVersion (ver :: *) where
   cmpVersion :: (ver ~ ((proxy :: k -> *) (v1 :: k)), ord ~ (VersionOrd (proxy v1) (proxy v2)), SingOrd ord) =>  proxy v1 -> proxy (v2 :: k) -> Proxy ord
   cmpVersion _ _ = (Proxy :: Proxy ord)
@@ -43,11 +47,15 @@ instance SingOrd 'GT where
 -- | Defines ordering of versions.
 type family VersionOrd (v1 :: k) (v2 :: k) :: Ordering
 
--- | Comparison between two versions.
+-- | Comparison between two versions. Returns an 'Ord'.
+-- > compareVersion (MajorMinor :: MajorMinor (0, 0)) (MajorMinor :: MajorMinor (0, 1)) == LT             
 compareVersion :: (OrdVersion (proxy v1), SingOrd (VersionOrd (proxy v1) (proxy v2))) => proxy (v1 :: k) -> proxy (v2 :: k) -> Ordering
 compareVersion v1 v2 = singOrd $ cmpVersion v1 v2
 
+-- | A Style of versioning which has a Major version and a Minor version.
 data MajorMinor (ver :: (Nat, Nat)) = MajorMinor
+
+-- | A Style of versioning which has only has a Major version.
 data Major (maj :: Nat) = Major
 
 type instance VersionOrd (Major (m :: Nat)) (Major (n :: Nat)) = (CmpNat m n)
