@@ -2,15 +2,14 @@
 module WebApi.RequestSpec (spec) where
 
 import WebApi
-import WebApi.Internal
 import Data.Text (Text)
-import Network.HTTP.Types.Method (methodPost, methodPut, methodDelete, methodHead
+import Network.HTTP.Types.Method (methodPut, methodDelete, methodHead
                                  ,methodPatch, methodConnect, methodTrace, methodOptions)
 import Test.Hspec
 import Test.Hspec.Wai (with, request, shouldRespondWith, postHtmlForm, matchStatus)
 import qualified Test.Hspec.Wai as Hspec.Wai (get)
 import GHC.Generics
-import Data.ByteString (ByteString, drop)
+import Data.ByteString (ByteString)
 import Data.Monoid ((<>))
 import Data.List (foldl')
 import qualified Network.Wai as Wai
@@ -24,14 +23,16 @@ withApp = with (return reqSpecApp)
 reqSpecApp :: Wai.Application
 reqSpecApp = serverApp serverSettings ReqSpecImpl
 
-data ReqSpec     = ReqSpec
+data ReqSpec
 data ReqSpecImpl = ReqSpecImpl
 
+{-
 data Profile = Profile { name :: Text, age :: Age , desc :: Text }
              deriving (Show, Eq, Generic)
 
 newtype Age = Age { unAge :: Int }
             deriving (Show, Eq, Generic)
+-}
 
 data QP = QP { qp1 :: Int , qp2 :: Maybe Bool, qp3 :: Either Text Double }
         deriving (Show, Eq, Generic)
@@ -62,7 +63,7 @@ instance ToHeader HP where
 instance ToParam FiP 'FileParam where
   
 type ApiR = Static "api"
-type QuickCheckR = Static "autogen"
+-- type QuickCheckR = Static "autogen"
 
 instance WebApi ReqSpec where
   type Version ReqSpec = MajorMinor '(0, 1)

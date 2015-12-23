@@ -4,6 +4,6 @@ import Test.Hspec
 
 spec :: Spec
 spec = describe "Webapi client" $ do
-  it "can format text in a way that everyone likes" $
+  it "can create proper requests" $
     pending
 

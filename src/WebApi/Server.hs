@@ -28,9 +28,10 @@ module WebApi.Server
        , respondWith
        , raise
        , raiseWith
-
+         
        -- * Routing  
        , module WebApi.Router
+       , link
        ) where
 
 import           Control.Monad.Catch

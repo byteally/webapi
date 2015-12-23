@@ -26,6 +26,7 @@ module WebApi.Client
          client
        , fromClientResponse
        , toClientRequest
+       , link  
          
        -- * Types  
        , ClientSettings (..)

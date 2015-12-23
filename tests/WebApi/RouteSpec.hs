@@ -2,7 +2,6 @@
 module WebApi.RouteSpec (spec) where
 
 import WebApi
-import WebApi.Internal
 import Data.Text (Text)
 import Test.Hspec
 import Test.Hspec.Wai
@@ -14,7 +13,7 @@ withApp = with (return routingSpecApp)
 routingSpecApp :: Wai.Application
 routingSpecApp = serverApp serverSettings RoutingSpecImpl
 
-data RoutingSpec     = RoutingSpec
+data RoutingSpec
 data RoutingSpecImpl = RoutingSpecImpl
 
 type StaticRoute1 = "this":/"is":/"a":/"static":/"route"
@@ -90,13 +89,13 @@ spec = withApp $ describe "WebApi routing" $ do
       get "param/5" `shouldRespondWith` 200
   context "route with param at beginning" $ do
     it "should be 200 ok returning RouteWithParamAtBegin" $ do
-      get "True/param" `shouldRespondWith` "RouteWithParamAtBegin" { matchStatus = 200 }
+      get "True/param" `shouldRespondWith` "\"RouteWithParamAtBegin\"" { matchStatus = 200 }
   context "route with multiple params" $ do
     it "should be 200 ok returning RouteWithParams" $ do
-      get "bar/param1/5/param2" `shouldRespondWith` "RouteWithParams" { matchStatus = 200 }
+      get "bar/param1/5/param2" `shouldRespondWith` "\"RouteWithParams\"" { matchStatus = 200 }
   context "overlapping route selected by order" $ do
     it "should be 200 ok returning OverlappingRoute" $ do
-      get "foo/param1/5/param2" `shouldRespondWith` "OverlappingRoute" { matchStatus = 200 }
+      get "foo/param1/5/param2" `shouldRespondWith` "\"OverlappingRoute\"" { matchStatus = 200 }
   context "non existing route" $ do
     it "should be 404 ok" $ do
       get "foo/param1/5/param3" `shouldRespondWith` 404

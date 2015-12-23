@@ -5,6 +5,7 @@ module WebApi
        , module WebApi.Client
        , module WebApi.Versioning
        , module WebApi.Param
+       , module WebApi.Mock 
        ) where
 
 import WebApi.Contract
@@ -13,3 +14,4 @@ import WebApi.Server
 import WebApi.Client
 import WebApi.Versioning
 import WebApi.Param
+import WebApi.Mock

@@ -67,6 +67,7 @@ test-suite unit-tests
                      , WebApi.ResponseSpec
                      , WebApi.RouteSpec
                      , WebApi.ClientSpec
+                     , WebApi.MockSpec
                        
     hs-source-dirs:    tests
     default-language:  Haskell2010

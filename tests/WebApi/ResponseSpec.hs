@@ -18,7 +18,7 @@ withApp = with (return respSpecApp)
 respSpecApp :: Wai.Application
 respSpecApp = serverApp serverSettings RespSpecImpl
 
-data RespSpec     = RespSpec
+data RespSpec
 data RespSpecImpl = RespSpecImpl
 
 data Out = Out { out :: Text }
@@ -87,7 +87,7 @@ instance ApiHandler RespSpecImpl GET ApiWithHeaders where
 instance ApiHandler RespSpecImpl GET ApiWithError where
   handler _ _ = do
     -- raise should short circuit
-    (raise status500 (Err "fail") :: IO (Response GET ApiWithError)) 
+    _ <- (raise status500 (Err "fail") :: IO (Response GET ApiWithError)) 
     -- raiseWith' _ -- (ApiError status500 (Err "fail") Nothing Nothing) -- :: ApiError GET ApiWithError)
     -- which means respond will never get called
     respond (Out "Done")
