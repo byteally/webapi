@@ -160,10 +160,8 @@ class ( MonadCatch (HandlerM p)
       , MonadIO (HandlerM p)
       , WebApi (ApiInterface p)  
       ) => WebApiImplementation (p :: *) where
-  -- | Type of the handler 'Monad'. It should implement 'MonadCatch' and 'MonadIO' classes.
+  -- | Type of the handler 'Monad'. It should implement 'MonadCatch' and 'MonadIO' classes. Defaults to 'IO'.
   type HandlerM p :: * -> *
-  type ApiMeta p :: *
-  type ApiPager p :: *
   type ApiInterface p :: *     
   -- provides common defaulting information for api handlers
 
@@ -174,9 +172,6 @@ class ( MonadCatch (HandlerM p)
   toIO _ = id
 
   type HandlerM p = IO
-  type ApiMeta p  = ()
-  type ApiPager p = ()
-
 
 -- | Type of settings of the server.
 data ServerSettings = ServerSettings

@@ -40,7 +40,7 @@ data Route' m r = Route'
 newtype MockServer p = MockServer { mockServerSett :: MockServerSettings }
                      deriving (Eq, Show)
 
--- | The data constructor of `Response` to be generated in `mockServer`.
+-- | Determine the data constructor of `Response` to be generated in `mockServer`.
 data GenerateResponse = GenerateSuccess
                       | GenerateApiError Status
                       | GenerateOtherError
