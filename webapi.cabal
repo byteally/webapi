@@ -5,7 +5,7 @@ name:                webapi
 version:             0.1.0.0
 synopsis:            WAI based library for web api
 -- description:         
-homepage:            https://fmap.io
+homepage:            http://byteally.github.io/webapi/
 license:             BSD3
 license-file:        LICENSE
 author:              Magesh B
