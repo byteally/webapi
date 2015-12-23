@@ -4,17 +4,21 @@
 name:                webapi
 version:             0.1.0.0
 synopsis:            WAI based library for web api
--- description:         
+description:         WAI based library for web api         
 homepage:            http://byteally.github.io/webapi/
 license:             BSD3
 license-file:        LICENSE
 author:              Magesh B
 maintainer:          magesh85@gmail.com
 -- copyright:           
-category:            Web
-build-type:          Simple
 -- extra-source-files:  
 cabal-version:       >=1.10
+category:            Web
+build-type:          Simple
+source-repository head
+    type:     git
+    location: https://github.com/byteally/webapi
+
 
 library
   exposed-modules:     WebApi
