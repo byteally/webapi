@@ -12,37 +12,44 @@
 {-# LANGUAGE TypeOperators         #-}
 {-# LANGUAGE UndecidableInstances  #-}
 module WebApi.Param
-       ( ParamK (..)
-       , JsonOf (..)
-       , OptValue (..)
-       , Validation (..)
+       ( -- * Serialization
+         ToParam (..)
        , EncodeParam (..)
-       , DecodeParam (..)
-       , ToParam (..)
-       , FromParam (..)
-       , FromHeader (..)
        , ToHeader (..)
-       , ParamErr (..)
-       , ParamErrToApiErr (..)
        , SerializedData
-       , DeSerializedData
-       , FileInfo (..)
-       , filePath  
        , toQueryParam
        , toFormParam
        , toFileParam
        , toPathParam
        , toHeader
        , toCookie
+       , toNonNestedParam
+
+       -- * Deserialization
+       , FromParam (..)
+       , DecodeParam (..)
+       , FromHeader (..)
+       , Validation (..)
+       , ParamErr (..)
+       , ParamErrToApiErr (..)
+       , DeSerializedData
        , fromQueryParam
        , fromFormParam
        , fromFileParam
        , fromHeader
        , fromCookie
-       , nest
        , lookupParam
-       , toNonNestedParam
        , fromNonNestedParam
+
+       -- * Wrappers
+       , JsonOf (..)
+       , OptValue (..)
+       , FileInfo (..)
+
+       -- * Helpers  
+       , ParamK (..)
+       , filePath  
+       , nest
        ) where
 
 
@@ -100,6 +107,7 @@ data ParamK = QueryParam
 newtype OptValue a = OptValue { toMaybe :: Maybe a}
                    deriving (Show, Read, Eq, Ord)
 
+-- | Serializing 'JsonOf' will produce a JSON representation of the value contained within. This is useful if params has to be sent as JSON.  
 newtype JsonOf a = JsonOf {getValue :: a}
                     deriving (Show, Read, Eq, Ord)
 
@@ -182,27 +190,28 @@ fromHeader = fromHeader'
 fromCookie :: (FromParam a 'Cookie) => [(ByteString, ByteString)] -> Validation [ParamErr] a
 fromCookie par = fromParam (Proxy :: Proxy 'Cookie) "" $ Trie.fromList par
 
--- | Serialize a type to given 'ParamK' type.                                     
+-- | Serialize a type to a given type of kind 'ParamK'.
 class ToParam a (parK :: ParamK) where
   toParam :: Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
 
   default toParam :: (Generic a, GToParam (Rep a) parK) => Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
   toParam pt pfx = gtoParam pt pfx (ParamAcc 0 False) ParamSettings . from
 
--- | (Try to) Deserialize a type from given 'ParamK' type.
+-- | (Try to) Deserialize a type from a given type of kind 'ParamK'.
 class FromParam a (parK :: ParamK) where
   fromParam :: Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
 
   default fromParam :: (Generic a, GFromParam (Rep a) parK) => Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
   fromParam pt pfx = (fmap to) . gfromParam pt pfx (ParamAcc 0 False) ParamSettings
 
+-- | Serialize a type to ByteString.
 class EncodeParam (t :: *) where
   encodeParam :: t -> ByteString
 
   default encodeParam :: (Generic t, GHttpParam (Rep t)) => t -> ByteString
   encodeParam = gEncodeParam . from
 
-
+-- | (Try to) Deserialize a type from ByteString.
 class DecodeParam (t :: *) where
   decodeParam :: ByteString -> Maybe t
 
@@ -382,10 +391,10 @@ instance DecodeParam Integer where
     Just (i, "") -> Just i
     _            -> Nothing
 
-instance (ToJSON a, FromJSON a) => EncodeParam (JsonOf a) where
+instance (ToJSON a) => EncodeParam (JsonOf a) where
   encodeParam (JsonOf a) = toStrict $ A.encode a
 
-instance (ToJSON a, FromJSON a) => DecodeParam (JsonOf a) where
+instance (FromJSON a) => DecodeParam (JsonOf a) where
   decodeParam str = A.decodeStrict' str
 
 class GHttpParam f where
@@ -413,13 +422,15 @@ instance GHttpParam U1 where
   gEncodeParam U1    = error "Panic! Unreacheable code @ GHttpParam U1"
   gDecodeParam _   = Just U1
 
-
+-- | Use this type if for serialization / deserialization nesting is not required. The type contained within most likely requires 'EncodeParam' / 'DecodeParam'.
 newtype NonNested a = NonNested { getNonNestedParam :: a }
                     deriving (Show, Eq, Read)
 
+-- | Serialize a type without nesting
 toNonNestedParam :: (ToParam (NonNested a) parK, EncodeParam a) => Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
 toNonNestedParam par pfx a = toParam par pfx (NonNested a)
 
+-- | (Try to) Deserialize a type without nesting
 fromNonNestedParam :: (FromParam (NonNested a) parK, DecodeParam a) => Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
 fromNonNestedParam par pfx kvs = getNonNestedParam <$> fromParam par pfx kvs
 
@@ -1170,6 +1181,66 @@ instance FromParam FileInfo 'FileParam where
     Just par -> Validation $ Right (FileInfo par)
     Nothing  -> Validation $ Left [NotFound key]
 
+instance ToParam ByteString 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam Int 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam Int8 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam Int16 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam Int32 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam Int64 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam Word 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam Word8 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam Word16 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam Word32 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam Word64 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam Float 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam Double 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam Char 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam T.Text 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam Day 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam UTCTime 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam Bool 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance ToParam Integer 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
+instance (ToJSON a) => ToParam (JsonOf a) 'PathParam where
+  toParam _ _ v = [encodeParam v]
+
 instance ( EncodeParam a
          , EncodeParam b
          ) => ToParam (a, b) 'PathParam where
@@ -1292,8 +1363,9 @@ instance ( EncodeParam a
       , encodeParam j
       ]
 
-data ParamErr = NotFound ByteString
-              | ParseErr ByteString T.Text
+-- | Errors that occured during deserialization.
+data ParamErr = NotFound ByteString -- ^ The key was not found.
+              | ParseErr ByteString T.Text -- ^ A parse error occured while deserializing the type.
                 deriving (Show, Eq)
 
 utf8DecodeError :: String -> String -> a
@@ -1320,6 +1392,9 @@ instance ParamErrToApiErr T.Text where
 instance ParamErrToApiErr A.Value where
   toApiErr errs = toJSON errs
 
+-- | Nest the key with a prefix.
+-- > nest "pfx" "key" == "pfx.key"
+-- > nest "" "key" == "key"
 nest :: ByteString -> ByteString -> ByteString
 nest s1 s2 | SB.null s1 = s2
            | otherwise = SB.concat [s1, ".", s2]
@@ -1334,12 +1409,14 @@ data ParamAcc = ParamAcc { index :: Int, isSum :: Bool }
 data ParamSettings = ParamSettings
                    deriving (Show, Eq)
 
+-- | Serialize a type to the header params
 class ToHeader a where
   toHeader' :: a -> [Http.Header]
 
   default toHeader' :: (Generic a, GToHeader (Rep a)) => a -> [Http.Header]
   toHeader' = gtoHeader "" (ParamAcc 0 False) ParamSettings . from
 
+-- | (Try to) Deserialize a type from the header params
 class FromHeader a where
   fromHeader' :: [Http.Header] -> Validation [ParamErr] a
 
