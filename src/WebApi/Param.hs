@@ -131,6 +131,7 @@ data ParamK = QueryParam
             | PathParam
             | Cookie
 
+-- | Use this type if a key is required but the value is optional.
 newtype OptValue a = OptValue { toMaybe :: Maybe a}
                    deriving (Show, Read, Eq, Ord)
 
