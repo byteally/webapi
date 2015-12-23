@@ -51,8 +51,8 @@ import           WebApi.Internal
 import           WebApi.Param
 
 -- | Datatype representing the settings related to client.
-data ClientSettings = ClientSettings { baseUrl           :: String     -- ^ base url of the API being called
-                                     , connectionManager :: HC.Manager -- ^ connection manager for the connection
+data ClientSettings = ClientSettings { baseUrl           :: String     -- ^ base url of the API being called.
+                                     , connectionManager :: HC.Manager -- ^ connection manager for the connection.
                                      }
 
 data Route' m r = Route'

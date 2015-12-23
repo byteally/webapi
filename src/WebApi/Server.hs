@@ -43,7 +43,7 @@ import           WebApi.Contract
 import           WebApi.Internal
 import           WebApi.Router
 
--- | Creates a successful response from its components. It is assumed that `HeaderOut m r` and `CookieOut m r` has default definitions.
+-- | Creates a successful response from its components. It is assumed that 'HeaderOut' and 'CookieOut' has default definitions.
 respond :: ( Monad handM
            , (HeaderOut m r) ~ ()
            , (CookieOut m r) ~ ()
@@ -60,7 +60,7 @@ respondWith :: ( Monad handM
                   -> handM (Response m r)
 respondWith status out hdrs cook = return $ Success status out hdrs cook
 
--- | This function short circuits returning an `ApiError`.It is assumed that `HeaderOut m r` and `CookieOut m r` has default definitions.
+-- | This function short circuits returning an `ApiError`.It is assumed that 'HeaderOut' and 'CookieOut' has default definitions.
 raise :: ( MonadThrow handM
          , Typeable m
          , Typeable r

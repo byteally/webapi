@@ -47,7 +47,7 @@ module WebApi.Param
        , toFormParam
        , toFileParam
        , toPathParam
-       , toHeader
+       , toHeader'
        , toCookie
        , toNonNestedParam
 
@@ -62,7 +62,7 @@ module WebApi.Param
        , fromQueryParam
        , fromFormParam
        , fromFileParam
-       , fromHeader
+       , fromHeader'
        , fromCookie
        , lookupParam
        , fromNonNestedParam
@@ -174,47 +174,47 @@ instance Monoid e => Applicative (Validation e) where
       Right va -> fmap va b
       Left ea -> either (Left . mappend ea) (const $ Left ea) b
 
--- | Serialize a type into QueryParams.
+-- | Serialize a type into query params.
 toQueryParam :: (ToParam a 'QueryParam) => a -> Query
 toQueryParam = toParam (Proxy :: Proxy 'QueryParam) ""
 
--- | Serialize a type into FormParams.                                 
+-- | Serialize a type into form params.                                 
 toFormParam :: (ToParam a 'FormParam) => a -> [(ByteString, ByteString)]
 toFormParam = toParam (Proxy :: Proxy 'FormParam) ""
 
--- | Serialize a type into FormParams.                                
+-- | Serialize a type into file params.                                
 toFileParam :: (ToParam a 'FileParam) => a -> [(ByteString, Wai.FileInfo FilePath)]
 toFileParam = toParam (Proxy :: Proxy 'FileParam) ""
 
--- | Serialize a type into PathParams.                                
+-- | Serialize a type into path params.                                
 toPathParam :: (ToParam a 'PathParam) => a -> [ByteString]
 toPathParam = toParam (Proxy :: Proxy 'PathParam) ""
 
--- | Serialize a type into Header.                                
-toHeader :: (ToHeader a) => a -> RequestHeaders
-toHeader = toHeader'
+-- | Serialize a type into header.                                
+toHeader' :: (ToHeader a) => a -> RequestHeaders
+toHeader' = toHeader
 
--- | Serialize a type into Cookie.
+-- | Serialize a type into cookie.
 toCookie :: (ToParam a 'Cookie) => a -> [(ByteString, ByteString)]
 toCookie = toParam (Proxy :: Proxy 'Cookie) ""
 
--- | (Try to) Deserialize a type from QueryParams.                             
+-- | (Try to) Deserialize a type from query params.                             
 fromQueryParam :: (FromParam a 'QueryParam) => Query -> Validation [ParamErr] a
 fromQueryParam par = fromParam (Proxy :: Proxy 'QueryParam) "" $ Trie.fromList par
 
--- | (Try to) Deserialize a type from FormParams.
+-- | (Try to) Deserialize a type from form params.
 fromFormParam :: (FromParam a 'FormParam) => [(ByteString, ByteString)] -> Validation [ParamErr] a
 fromFormParam par = fromParam (Proxy :: Proxy 'FormParam) "" $ Trie.fromList par
 
--- | (Try to) Deserialize a type from FileParams.                                        
+-- | (Try to) Deserialize a type from file params.                                        
 fromFileParam :: (FromParam a 'FileParam) => [(ByteString, Wai.FileInfo FilePath)] -> Validation [ParamErr] a
 fromFileParam par = fromParam (Proxy :: Proxy 'FileParam) "" $ Trie.fromList par
 
--- | (Try to) Deserialize a type from Headers.                                       
-fromHeader :: (FromHeader a) => [Http.Header] -> Validation [ParamErr] a
-fromHeader = fromHeader'
+-- | (Try to) Deserialize a type from headers.                                       
+fromHeader' :: (FromHeader a) => [Http.Header] -> Validation [ParamErr] a
+fromHeader' = fromHeader
 
--- | (Try to) Deserialize a type from Cookie.
+-- | (Try to) Deserialize a type from cookie.
 fromCookie :: (FromParam a 'Cookie) => [(ByteString, ByteString)] -> Validation [ParamErr] a
 fromCookie par = fromParam (Proxy :: Proxy 'Cookie) "" $ Trie.fromList par
 
@@ -232,14 +232,14 @@ class FromParam a (parK :: ParamK) where
   default fromParam :: (Generic a, GFromParam (Rep a) parK) => Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
   fromParam pt pfx = (fmap to) . gfromParam pt pfx (ParamAcc 0 False) ParamSettings
 
--- | Serialize a type to ByteString.
+-- | Serialize a type to 'ByteString'.
 class EncodeParam (t :: *) where
   encodeParam :: t -> ByteString
 
   default encodeParam :: (Generic t, GHttpParam (Rep t)) => t -> ByteString
   encodeParam = gEncodeParam . from
 
--- | (Try to) Deserialize a type from ByteString.
+-- | (Try to) Deserialize a type from 'ByteString'.
 class DecodeParam (t :: *) where
   decodeParam :: ByteString -> Maybe t
 
@@ -450,15 +450,15 @@ instance GHttpParam U1 where
   gEncodeParam U1    = error "Panic! Unreacheable code @ GHttpParam U1"
   gDecodeParam _   = Just U1
 
--- | Use this type if for serialization / deserialization nesting is not required. The type contained within most likely requires 'EncodeParam' / 'DecodeParam'.
+-- | Use this type if for serialization \/ deserialization nesting is not required. The type contained within most likely requires 'EncodeParam' \/ 'DecodeParam'.
 newtype NonNested a = NonNested { getNonNestedParam :: a }
                     deriving (Show, Eq, Read)
 
--- | Serialize a type without nesting
+-- | Serialize a type without nesting.
 toNonNestedParam :: (ToParam (NonNested a) parK, EncodeParam a) => Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
 toNonNestedParam par pfx a = toParam par pfx (NonNested a)
 
--- | (Try to) Deserialize a type without nesting
+-- | (Try to) Deserialize a type without nesting.
 fromNonNestedParam :: (FromParam (NonNested a) parK, DecodeParam a) => Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
 fromNonNestedParam par pfx kvs = getNonNestedParam <$> fromParam par pfx kvs
 
@@ -496,7 +496,7 @@ instance ToParam () parK where
   toParam _ _ _ = []
 
 instance ToHeader () where
-  toHeader' _ = []
+  toHeader _ = []
 
 instance ToParam Unit 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -717,7 +717,7 @@ instance FromParam () parK where
   fromParam _ _ _ = pure ()
 
 instance FromHeader () where
-  fromHeader' _ = pure ()
+  fromHeader _ = pure ()
 
 instance FromParam Unit 'QueryParam where
   fromParam pt key kvs = case lookupParam pt key kvs of
@@ -1407,7 +1407,7 @@ instance ToJSON ParamErr where
     Left ex -> utf8DecodeError "ToJSON ParamErr" (show ex)
     Right bs' -> A.object ["ParseErr" A..= [bs', msg]]
 
--- | This class de
+-- | Convert the 'ParamErr' that occured during deserialization into 'ApiErr' type which can then be put in 'Response'. 
 class ParamErrToApiErr apiErr where
   toApiErr :: [ParamErr] -> apiErr
 
@@ -1428,7 +1428,7 @@ nest :: ByteString -> ByteString -> ByteString
 nest s1 s2 | SB.null s1 = s2
            | otherwise = SB.concat [s1, ".", s2]
 
--- | Lookup a value from the trie using the given key.
+-- | Lookup a value from the 'Trie' using the given key.
 lookupParam :: Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Maybe (DeSerializedData parK)
 lookupParam _ key kvs = Trie.lookup key kvs
 
@@ -1440,17 +1440,17 @@ data ParamSettings = ParamSettings
 
 -- | Serialize a type to the header params
 class ToHeader a where
-  toHeader' :: a -> [Http.Header]
+  toHeader :: a -> [Http.Header]
 
-  default toHeader' :: (Generic a, GToHeader (Rep a)) => a -> [Http.Header]
-  toHeader' = gtoHeader "" (ParamAcc 0 False) ParamSettings . from
+  default toHeader :: (Generic a, GToHeader (Rep a)) => a -> [Http.Header]
+  toHeader = gtoHeader "" (ParamAcc 0 False) ParamSettings . from
 
 -- | (Try to) Deserialize a type from the header params
 class FromHeader a where
-  fromHeader' :: [Http.Header] -> Validation [ParamErr] a
+  fromHeader :: [Http.Header] -> Validation [ParamErr] a
 
-  default fromHeader' :: (Generic a, GFromHeader (Rep a)) => [Http.Header] -> Validation [ParamErr] a
-  fromHeader' = (fmap to) . gfromHeader "" (ParamAcc 0 False) ParamSettings
+  default fromHeader :: (Generic a, GFromHeader (Rep a)) => [Http.Header] -> Validation [ParamErr] a
+  fromHeader = (fmap to) . gfromHeader "" (ParamAcc 0 False) ParamSettings
 
 class GToHeader f where
   gtoHeader :: ByteString -> ParamAcc -> ParamSettings -> f a -> [Http.Header]
