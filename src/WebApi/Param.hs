@@ -47,7 +47,6 @@ module WebApi.Param
        , toFormParam
        , toFileParam
        , toPathParam
-       , toHeader'
        , toCookie
        , toNonNestedParam
 
@@ -62,7 +61,6 @@ module WebApi.Param
        , fromQueryParam
        , fromFormParam
        , fromFileParam
-       , fromHeader'
        , fromCookie
        , lookupParam
        , fromNonNestedParam
@@ -190,10 +188,6 @@ toFileParam = toParam (Proxy :: Proxy 'FileParam) ""
 toPathParam :: (ToParam a 'PathParam) => a -> [ByteString]
 toPathParam = toParam (Proxy :: Proxy 'PathParam) ""
 
--- | Serialize a type into header.                                
-toHeader' :: (ToHeader a) => a -> RequestHeaders
-toHeader' = toHeader
-
 -- | Serialize a type into cookie.
 toCookie :: (ToParam a 'Cookie) => a -> [(ByteString, ByteString)]
 toCookie = toParam (Proxy :: Proxy 'Cookie) ""
@@ -209,10 +203,6 @@ fromFormParam par = fromParam (Proxy :: Proxy 'FormParam) "" $ Trie.fromList par
 -- | (Try to) Deserialize a type from file params.                                        
 fromFileParam :: (FromParam a 'FileParam) => [(ByteString, Wai.FileInfo FilePath)] -> Validation [ParamErr] a
 fromFileParam par = fromParam (Proxy :: Proxy 'FileParam) "" $ Trie.fromList par
-
--- | (Try to) Deserialize a type from headers.                                       
-fromHeader' :: (FromHeader a) => [Http.Header] -> Validation [ParamErr] a
-fromHeader' = fromHeader
 
 -- | (Try to) Deserialize a type from cookie.
 fromCookie :: (FromParam a 'Cookie) => [(ByteString, ByteString)] -> Validation [ParamErr] a

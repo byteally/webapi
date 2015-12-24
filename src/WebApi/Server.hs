@@ -5,7 +5,7 @@ Stability   : experimental
 
 Provides the implementation of web api. Given a contract, an implementation of the web api can be provided by using 'WebApiImplementation' and 'ApiHandler'. 'WebApiImplementation' has the information pertaining to web api as a whole. 'ApiHandler' provides a way to write the handler for a particular API end point.
 
-Comparing with the "WebApi.Contract", 'WebApi' <-> 'ApiContract' is the same relationship as 'WebApiImplementation' <-> 'ApiHandler'.
+Comparing with the "WebApi.Contract", 'WebApi' and 'ApiContract' has the same relationship as 'WebApiImplementation' and 'ApiHandler'.
 -}
 
 {-# LANGUAGE DataKinds             #-}
@@ -28,6 +28,10 @@ module WebApi.Server
        , respondWith
        , raise
        , raiseWith
+
+       -- * Wrapping and unwrapping a 'Tagged'
+       , unTagged
+       , toTagged
          
        -- * Routing  
        , module WebApi.Router

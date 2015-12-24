@@ -16,7 +16,7 @@ module WebApi.Mock
        , MockServer (..)
        , MockServerSettings (..)
        , MockServerException (..)  
-       , GenerateResponse (..)
+       , ResponseData (..)
         
        -- * Mock Client
        , mockClient 
@@ -41,18 +41,18 @@ newtype MockServer p = MockServer { mockServerSett :: MockServerSettings }
                      deriving (Eq, Show)
 
 -- | Determine the data constructor of `Response` to be generated in `mockServer`.
-data GenerateResponse = GenerateSuccess
-                      | GenerateApiError Status
-                      | GenerateOtherError
-                      deriving (Eq, Show)
+data ResponseData = SuccessData
+                  | ApiErrorData Status
+                  | OtherErrorData
+                  deriving (Eq, Show)
 
 -- | Settings related to mock server.
-data MockServerSettings = MockServerSettings { genResponse :: GenerateResponse }
+data MockServerSettings = MockServerSettings { responseData :: ResponseData }
                         deriving (Eq, Show)
 
 -- | Default mock server settings. 
 mockServerSettings :: MockServerSettings
-mockServerSettings = MockServerSettings GenerateSuccess
+mockServerSettings = MockServerSettings SuccessData
 
 instance (WebApi p) => WebApiImplementation (MockServer p) where
   type ApiInterface (MockServer p) = p
@@ -75,10 +75,10 @@ mockResponse :: forall route m r. ( Arbitrary (ApiOut m r)
                               , Typeable m
                               , Typeable r 
                               ) => route m r -> MockServerSettings -> IO (Response m r)
-mockResponse _ msett = case genResponse msett of
-  GenerateSuccess       -> mockSuccess
-  GenerateApiError   st -> mockApiError st
-  GenerateOtherError    -> mockOtherError
+mockResponse _ msett = case responseData msett of
+  SuccessData       -> mockSuccess
+  ApiErrorData   st -> mockApiError st
+  OtherErrorData    -> mockOtherError
 
   where mockSuccess :: IO (Response m r)
         mockSuccess = do

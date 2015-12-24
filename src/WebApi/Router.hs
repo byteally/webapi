@@ -378,6 +378,3 @@ handler' serv p req =  (handler (toTagged p serv) req) `catches` excepHandlers
   where excepHandlers :: [Handler (HandlerM p) (Query (Response m r) query)]
         excepHandlers = [ Handler (\ (ex :: ApiException m r) -> handleApiException serv ex)
                         , Handler (\ (ex :: SomeException) -> handleSomeException serv ex) ]
-
-toTagged :: Proxy s -> b -> Tagged s b
-toTagged _ = Tagged

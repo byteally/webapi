@@ -217,3 +217,6 @@ getContentType :: HC.Response a -> Maybe ByteString
 getContentType = fmap snd . find ((== hContentType) . fst) . HC.responseHeaders
 
 newtype Tagged (s :: [*]) b = Tagged { unTagged :: b } 
+
+toTagged :: Proxy s -> b -> Tagged s b
+toTagged _ = Tagged
