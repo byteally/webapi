@@ -67,19 +67,17 @@ type ApiR = Static "api"
 
 instance WebApi ReqSpec where
   type Version ReqSpec = MajorMinor '(0, 1)
-  type Apis    ReqSpec = '[ Route GET               ApiR
-                          , Route POST              ApiR
-                          , Route PUT               ApiR  
-                          , Route DELETE            ApiR
-                          , Route HEAD              ApiR
-                          , Route PATCH             ApiR
-                          , Route TRACE             ApiR
-                          , Route CONNECT           ApiR
-                          , Route (CUSTOM ("TEST")) ApiR
-                          -- , Route POST              QuickCheckR  
+  type Apis    ReqSpec = '[ Route '[ GET
+                                   , POST
+                                   , PUT
+                                   , DELETE
+                                   , HEAD
+                                   , PATCH
+                                   , TRACE
+                                   , CONNECT
+                                   , (CUSTOM ("TEST"))
+                                   ] ApiR
                           ]
-
-
 
 instance WebApiImplementation ReqSpecImpl where
   type ApiInterface ReqSpecImpl = ReqSpec

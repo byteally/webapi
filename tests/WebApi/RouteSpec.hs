@@ -26,12 +26,12 @@ type OverlappingRoute      = "foo":/"param1":/Int:/"param2"
 
 instance WebApi RoutingSpec where
   type Version RoutingSpec = MajorMinor '(0, 1)
-  type Apis    RoutingSpec = '[ Route GET StaticRoute1
-                              , Route GET StaticRoute2  
-                              , Route GET RouteWithParam
-                              , Route GET RouteWithParamAtBegin
-                              , Route GET OverlappingRoute
-                              , Route GET RouteWithParams
+  type Apis    RoutingSpec = '[ Route '[GET] StaticRoute1
+                              , Route '[GET] StaticRoute2  
+                              , Route '[GET] RouteWithParam
+                              , Route '[GET] RouteWithParamAtBegin
+                              , Route '[GET] OverlappingRoute
+                              , Route '[GET] RouteWithParams
                               ]
 
 instance ApiContract RoutingSpec GET StaticRoute1 where

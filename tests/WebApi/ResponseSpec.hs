@@ -47,11 +47,11 @@ type TextCType      = Static "text"
 type LazyEncoding   = Static "lazyencoding"
 
 instance WebApi RespSpec where
-  type Apis    RespSpec = '[ Route GET ApiResp
-                           , Route GET ApiWithHeaders 
-                           , Route GET ApiWithError 
-                           , Route GET TextCType
-                           , Route GET LazyEncoding]
+  type Apis    RespSpec = '[ Route '[GET] ApiResp
+                           , Route '[GET] ApiWithHeaders 
+                           , Route '[GET] ApiWithError 
+                           , Route '[GET] TextCType
+                           , Route '[GET] LazyEncoding]
 
 instance WebApiImplementation RespSpecImpl where
   type ApiInterface RespSpecImpl = RespSpec

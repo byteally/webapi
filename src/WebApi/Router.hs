@@ -51,7 +51,7 @@ import WebApi.Internal
 import WebApi.Param
 
 -- | Datatype representing a endpoint. 
-data Route (m :: *) (r :: *)
+data Route (ms :: [*]) (r :: *)
 
 data StaticPiece (s :: Symbol)
 
@@ -157,12 +157,15 @@ type family MarkDyn (pp :: *) :: * where
   MarkDyn (p1 :/ t) = (p1 :/ t)
   MarkDyn (t :: *)   = DynamicPiece t
 
-instance (Router s r '(m, '[]), SingMethod m) => Router s (Route m r) pr where
+instance (Router s r '(m, '[]), SingMethod m) => Router s (Route (m ': ms) r) pr where
   route _ _s _ request respond =
     case requestMethod request == meth of
       True  -> route (Proxy :: Proxy r) _s (Nil (Proxy :: Proxy m)) request respond
       False -> respond NotMatched
     where meth = singMethod (Proxy :: Proxy m)
+
+instance Router s (Route '[] r) pr where
+  route _ _s _ _request respond = respond NotMatched
 
 instance (Router s route pr, Router s routes pr) => Router s ((route :: *) ': routes) pr where
   route _ _s parsedRoute request respond =

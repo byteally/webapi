@@ -35,7 +35,7 @@ instance Arbitrary MockOut where
                       <*> arbitrary
 
 instance WebApi MockSpec where
-  type Apis MockSpec = '[ Route GET MockApi ]
+  type Apis MockSpec = '[ Route '[GET] MockApi ]
 
 instance ApiContract MockSpec GET MockApi where
   type QueryParam GET MockApi = QP
