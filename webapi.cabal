@@ -78,9 +78,12 @@ test-suite unit-tests
     cpp-options:       -DTEST
     -- ghc-options:       -Wall 
     build-depends:     base              >=4.7 && <4.9
+                     , aeson             >=0.8 && <0.9
+                     , case-insensitive  == 1.2.*
                      , wai               == 3.0.*
                      , wai-extra         == 3.0.*
                      , warp              == 3.1.*
+                     , http-media        == 0.6.*
                      , http-types        == 0.8.*
                      , hspec             == 2.1.*
                      , hspec-wai         == 0.6.*
