@@ -147,6 +147,15 @@ renderPaths p r = toByteString
 
 -- | Describes the implementation of a single API end point corresponding to @ApiContract (ApiInterface p) m r@
 class (ApiContract (ApiInterface p) m r) => ApiHandler (p :: *) (m :: *) (r :: *) where
+  -- | Handler for the API end point which returns a 'Response'.
+  --
+  -- TODO : 'query' type parameter is an experimental one used for trying out dependently typed params.
+  -- This parameter will let us refine the 'ApiOut' to the structure that is requested by the client.
+  -- for eg : graph.facebook.com/bgolub?fields=id,name,picture
+  --
+  -- This feature is not finalized and might get changed \/ removed.
+  -- Currently the return type of handler is equivalent to `Response m r`
+  --
   handler :: (query ~ '[])
             => Tagged query p
             -> Request m r
