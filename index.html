@@ -1,1 +1,171 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="description" content="WebApi - Lightweight framework to build Web APIs in Haskell">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebApi - Lightweight framework to build Web APIs in Haskell</title>
+  <link href="https://fonts.googleapis.com/css?family=Lato" rel="stylesheet" type="text/css">
+  <link rel="stylesheet" href="./css/normalize.css">
+  <link rel="stylesheet" href="./css/syntax.css">
+  <link rel="stylesheet" href="./css/webapi.css">
+</head>
+<body>
+  <header>
+    <section>
+      <a href="http://byteally.com/">
+        <img src="./img/logo.png" alt="ByteAlly logo" class="logo" />
+      </a>
+      <a href="https://github.com/byteally/webapi" class="git-button">
+        <img class src="./img/octocat.png" />
+        <span>Git Repo</span>
+      </a>
+      <h1>WebApi</h1>
+      <small>Lightweight framework to build Web APIs in Haskell</small>
+    </section>
+  </header>
+  <main>
+    <div class="sourceCode"><pre class="sourceCode literate literatehaskell"><code class="sourceCode literatehaskell"><span class="ot">&gt;</span> <span class="co">{-# LANGUAGE DataKinds, TypeFamilies, MultiParamTypeClasses, TypeOperators, </span>
+<span class="co">&gt;              TypeSynonymInstances, FlexibleInstances, OverloadedStrings, DeriveGeneric #-}</span>
+<span class="ot">&gt;</span> <span class="kw">import </span><span class="dt">WebApi</span>
+<span class="ot">&gt;</span> <span class="kw">import </span><span class="dt">Data.Aeson</span>
+<span class="ot">&gt;</span> <span class="kw">import </span><span class="dt">Data.Text</span>
+<span class="ot">&gt;</span> <span class="kw">import </span><span class="dt">GHC.Generics</span>
+<span class="ot">&gt;</span> <span class="kw">import </span><span class="dt">Network.Wai.Handler.Warp</span> (run)
+<span class="ot">&gt;</span> <span class="kw">import qualified</span> <span class="dt">Network.Wai</span> <span class="kw">as</span> <span class="dt">Wai</span></code></pre></div>
+<h1 id="introduction-to-webapi">Introduction to <strong>webapi</strong></h1>
+<p>Webapi is a library to build web apis over <a href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html"><code>WAI</code></a>. It makes use of the strong type system of haskell which lets to</p>
+<ul>
+<li>Create a type safe routing system.</li>
+<li>Enable type safe generation of links.</li>
+<li>Specify a contract for the APIs.</li>
+<li>Auto serialization and deserialization of the request and response based on api contract.</li>
+<li>Write handlers which respect the contract.</li>
+</ul>
+<h2 id="a-first-taste-of-webapi">A First taste of webapi</h2>
+<p>Writing a web api comprises of two steps</p>
+<ul>
+<li>Writing a contract of a web api.</li>
+<li>Providing an implementation of a web api.</li>
+</ul>
+<p>Consider a webapi that lets you do create, update, delete and fetch users.</p>
+<h2 id="contract">Contract</h2>
+<p>First, lets define the routes.</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
+<span class="fu">&gt;</span> <span class="kw">type</span> <span class="dt">User</span>   <span class="fu">=</span> <span class="dt">Static</span> <span class="st">&quot;user&quot;</span>
+<span class="fu">&gt;</span> <span class="kw">type</span> <span class="dt">UserId</span> <span class="fu">=</span> <span class="st">&quot;user&quot;</span><span class="fu">:/</span><span class="dt">Int</span></code></pre></div>
+<p>Next step is to create a datatype for our service. Lets call it <code>UserApi</code></p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
+<span class="fu">&gt;</span> <span class="kw">data</span> <span class="dt">UserApi</span></code></pre></div>
+<p>Now, lets define the <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Contract.html#t:WebApi"><code>WebApi</code></a> instance for our service type.</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">WebApi</span> <span class="dt">UserApi</span> <span class="kw">where</span>
+<span class="fu">&gt;</span>   <span class="co">-- Route &lt;Method&gt; &lt;Route Name&gt;</span>
+<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">Apis</span> <span class="dt">UserApi</span> <span class="fu">=</span> <span class="ch">'[ Route '</span>[<span class="dt">GET</span>, <span class="dt">POST</span>]        <span class="dt">User</span>
+<span class="fu">&gt;</span>                        , <span class="dt">Route</span> <span class="ch">'[GET, PUT, DELETE] UserId</span>
+<span class="fu">&gt;</span>                        ]</code></pre></div>
+<p>Next, we'll define a type to hold our <code>User</code>. We will also define instances for json and param serialization &amp; deserialization. A definition needn’t be provided since <a href="https://hackage.haskell.org/package/base/docs/GHC-Generics.html"><code>GHC.Generics</code></a> provides a generic implementation.</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
+<span class="fu">&gt;</span> <span class="kw">data</span> <span class="dt">UserData</span> <span class="fu">=</span> <span class="dt">UserData</span> {<span class="ot"> age     ::</span> <span class="dt">Int</span>
+<span class="fu">&gt;</span>                          ,<span class="ot"> address ::</span> <span class="dt">Text</span>
+<span class="fu">&gt;</span>                          ,<span class="ot"> name    ::</span> <span class="dt">Text</span>
+<span class="fu">&gt;</span>                          ,<span class="ot"> userId  ::</span> <span class="dt">Maybe</span> <span class="dt">Int</span>
+<span class="fu">&gt;</span>                          } <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>, <span class="dt">Generic</span>)
+<span class="fu">&gt;</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">FromJSON</span> <span class="dt">UserData</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ToJSON</span>   <span class="dt">UserData</span>
+<span class="fu">&gt;</span>   
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">FromParam</span> <span class="dt">UserData</span> <span class="ch">'FormParam</span></code></pre></div>
+<p>Next step is to define the contract for each of the end points.</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
+<span class="fu">&gt;</span> <span class="co">-- Takes a User type in form params and returns unit.</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">UserApi</span> <span class="dt">POST</span> <span class="dt">User</span> <span class="kw">where</span>
+<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">FormParam</span> <span class="dt">POST</span> <span class="dt">User</span> <span class="fu">=</span> <span class="dt">UserData</span>
+<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiOut</span>    <span class="dt">POST</span> <span class="dt">User</span> <span class="fu">=</span> ()
+<span class="fu">&gt;</span>
+<span class="fu">&gt;</span> <span class="co">-- Takes a User type in form params and returns updated users.</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">UserApi</span> <span class="dt">PUT</span> <span class="dt">UserId</span> <span class="kw">where</span>
+<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">FormParam</span> <span class="dt">PUT</span> <span class="dt">UserId</span> <span class="fu">=</span> <span class="dt">UserData</span>
+<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiOut</span>    <span class="dt">PUT</span> <span class="dt">UserId</span> <span class="fu">=</span> [<span class="dt">UserData</span>]
+<span class="fu">&gt;</span>
+<span class="fu">&gt;</span>  <span class="co">-- Removes the specified user and returns unit.</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">UserApi</span> <span class="dt">DELETE</span> <span class="dt">UserId</span> <span class="kw">where</span>
+<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiOut</span> <span class="dt">DELETE</span> <span class="dt">UserId</span> <span class="fu">=</span> ()
+<span class="fu">&gt;</span>
+<span class="fu">&gt;</span> <span class="co">-- Gets a specific user</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">UserApi</span> <span class="dt">GET</span> <span class="dt">UserId</span> <span class="kw">where</span>
+<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiOut</span> <span class="dt">GET</span> <span class="dt">UserId</span> <span class="fu">=</span> <span class="dt">UserData</span>
+<span class="fu">&gt;</span>
+<span class="fu">&gt;</span> <span class="co">-- Gets all users</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">UserApi</span> <span class="dt">GET</span> <span class="dt">User</span> <span class="kw">where</span>
+<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiOut</span> <span class="dt">GET</span> <span class="dt">User</span> <span class="fu">=</span> [<span class="dt">UserData</span>]</code></pre></div>
+<p><a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Contract.html#t:ApiContract"><code>ApiContract</code></a> lets us specify what goes in (Eg <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Contract.html#t:FormParam"><code>FormParam</code></a>) and what goes out (Eg <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Contract.html#t:ApiOut"><code>ApiOut</code></a>) of the api endpoint. of the API. This completes the contract part.</p>
+<h2 id="implementation">Implementation</h2>
+<p>First step is to create a type for the implementation and define <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#t:WebApiImplementation"><code>WebApiImplementation</code></a> instance for it.</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
+<span class="fu">&gt;</span> <span class="kw">data</span> <span class="dt">UserApiImpl</span> <span class="fu">=</span> <span class="dt">UserApiImpl</span> 
+<span class="fu">&gt;</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">WebApiImplementation</span> <span class="dt">UserApiImpl</span> <span class="kw">where</span>
+<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">HandlerM</span> <span class="dt">UserApiImpl</span> <span class="fu">=</span> <span class="dt">IO</span>
+<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiInterface</span> <span class="dt">UserApiImpl</span> <span class="fu">=</span> <span class="dt">UserApi</span></code></pre></div>
+<p><a href="http://hackage.haskell.org/package/webapi-0.1.0.0/candidate/docs/WebApi-Server.html#t:HandlerM"><code>HandlerM</code></a> is the base monad in which the <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#v:handler"><code>handler</code></a> will run. We also state that <code>UserApiImpl</code> is an implementation of the <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#t:ApiInterface"><code>ApiInterface</code></a> provided by <code>UserApi</code>.</p>
+<p>Now let’s create the <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#t:ApiHandler"><code>ApiHandler</code></a>s</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">UserApiImpl</span> <span class="dt">POST</span> <span class="dt">User</span> <span class="kw">where</span>
+<span class="fu">&gt;</span>   handler _ req <span class="fu">=</span> <span class="kw">do</span>
+<span class="fu">&gt;</span>     <span class="kw">let</span> _userInfo <span class="fu">=</span> formParam req
+<span class="fu">&gt;</span>     respond ()
+<span class="fu">&gt;</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">UserApiImpl</span> <span class="dt">GET</span> <span class="dt">User</span> <span class="kw">where</span>
+<span class="fu">&gt;</span>   handler _ _ <span class="fu">=</span> <span class="kw">do</span>
+<span class="fu">&gt;</span>     <span class="kw">let</span> users <span class="fu">=</span> []
+<span class="fu">&gt;</span>     respond users
+<span class="fu">&gt;</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">UserApiImpl</span> <span class="dt">PUT</span> <span class="dt">UserId</span> <span class="kw">where</span>
+<span class="fu">&gt;</span>   handler _ req <span class="fu">=</span> <span class="kw">do</span>
+<span class="fu">&gt;</span>     <span class="kw">let</span> userInfo <span class="fu">=</span> formParam req
+<span class="fu">&gt;</span>     respond [userInfo]
+<span class="fu">&gt;</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">UserApiImpl</span> <span class="dt">DELETE</span> <span class="dt">UserId</span> <span class="kw">where</span>
+<span class="fu">&gt;</span>   handler _ req <span class="fu">=</span> <span class="kw">do</span>
+<span class="fu">&gt;</span>     <span class="kw">let</span> _userID <span class="fu">=</span> pathParam req
+<span class="fu">&gt;</span>     respond ()
+<span class="fu">&gt;</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">UserApiImpl</span> <span class="dt">GET</span> <span class="dt">UserId</span> <span class="kw">where</span>
+<span class="fu">&gt;</span>   handler _ req <span class="fu">=</span> <span class="kw">do</span>
+<span class="fu">&gt;</span>     <span class="kw">let</span> userID <span class="fu">=</span> pathParam req
+<span class="fu">&gt;</span>         userInfo <span class="fu">=</span> <span class="dt">UserData</span> <span class="dv">10</span> <span class="st">&quot;Address&quot;</span> <span class="st">&quot;Name&quot;</span> (<span class="dt">Just</span> userID)
+<span class="fu">&gt;</span>     respond userInfo</code></pre></div>
+<p>The last thing that is left is to create a <a href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html"><code>WAI</code></a> application from all the aforementioned information. For that we use <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#v:serverApp"><code>serverApp</code></a></p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
+<span class="fu">&gt;</span><span class="ot"> userApiApp ::</span> <span class="dt">Wai.Application</span>
+<span class="fu">&gt;</span> userApiApp <span class="fu">=</span> serverApp serverSettings <span class="dt">UserApiImpl</span>
+<span class="fu">&gt;</span>
+<span class="fu">&gt;</span><span class="ot"> main ::</span> <span class="dt">IO</span> ()
+<span class="fu">&gt;</span> main <span class="fu">=</span> run <span class="dv">8000</span> userApiApp
+<span class="fu">&gt;</span> </code></pre></div>
+<p>That’s it - now <code>userApiApp</code> could be run like any other <a href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html"><code>WAI</code></a> application.</p>
+  </main>
+  <footer>
+    <div>
+        <a href="http://byteally.com" class="inline-block ba-logo">
+          <img src="./img/logo_black.png" alt="ByteAlly" />
+        </a>
 
+      <div class="inline-block">
+        <ul class="unstyled-list">
+            <li><a href="http://byteally.com/contact-us.html">Talk to Us</a></li>
+            <li><a href="http://blog.byteally.com/">Blog</a></li>
+            <li><a href="http://code.byteally.com/">Engineering</a></li>
+            <li><a href="http://byteally.com/careers.html">Careers</a></li>
+            <li><a href="https://github.com/byteally/">Github</a></li>
+        </ul>
+        <div class="copyright">
+            <span>ByteAlly &copy; 2015</span>
+        </div>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
