@@ -32,20 +32,27 @@ Consider a webapi that lets you do create, update, delete and fetch users.
 Contract
 --------
 
-First, lets define the routes.
+The contract of API comprises of four things
+
+  * The data type of the API
+  * The route types
+  * [`WebApi`]($webapi-url$/docs/WebApi-Contract.html#t:WebApi) instance for the API
+  * [`ApiContract`]($webapi-url$/docs/WebApi-Contract.html#t:ApiContract) instance for API, route and method.
+
+First step is to create a datatype for our service. Lets call it `UserApi`
+
+```haskell
+
+> data UserApi
+
+```
+
+Next, lets define the routes.
 
 ```haskell 
 
 > type User   = Static "user"
 > type UserId = "user":/Int
-
-```
-
-Next step is to create a datatype for our service. Lets call it `UserApi`
-
-```haskell
-
-> data UserApi
 
 ```
 
@@ -58,25 +65,6 @@ Now, lets define the [`WebApi`]($webapi-url$/docs/WebApi-Contract.html#t:WebApi)
 >   type Apis UserApi = '[ Route '[GET, POST]        User
 >                        , Route '[GET, PUT, DELETE] UserId
 >                        ]
-
-```
-
-Next, we\'ll define a type to hold our `User`. We will also define instances for json and param serialization & deserialization. A definition needn't be provided since [`GHC.Generics`](https://hackage.haskell.org/package/base/docs/GHC-Generics.html) provides a generic implementation.
-
-```haskell
-
-> data UserData = UserData { age     :: Int
->                          , address :: Text
->                          , name    :: Text
->                          , userId  :: Maybe Int
->                          } deriving (Show, Eq, Generic)
->
-> instance FromJSON UserData
-> instance ToJSON   UserData
->   
-> instance FromParam UserData 'FormParam
-
-```
 
 Next step is to define the contract for each of the end points.
 
@@ -103,11 +91,27 @@ Next step is to define the contract for each of the end points.
 > -- Gets all users
 > instance ApiContract UserApi GET User where
 >   type ApiOut GET User = [UserData]
+> 
+> -- Our user type
+> data UserData = UserData { age     :: Int
+>                          , address :: Text
+>                          , name    :: Text
+>                          , userId  :: Maybe Int
+>                          } deriving (Show, Eq, Generic)
+>
+> instance FromJSON UserData
+> instance ToJSON   UserData
+>   
+> instance FromParam UserData 'FormParam
+
 
 ```
 
 [`ApiContract`]($webapi-url$/docs/WebApi-Contract.html#t:ApiContract) lets us specify what goes in (Eg [`FormParam`]($webapi-url$/docs/WebApi-Contract.html#t:FormParam)) and what goes out (Eg [`ApiOut`]($webapi-url$/docs/WebApi-Contract.html#t:ApiOut)) of the api endpoint.
- of the API. This completes the contract part.
+
+We will also define instances for json and param serialization & deserialization for `UserData` type. A definition needn't be provided since [`GHC.Generics`](https://hackage.haskell.org/package/base/docs/GHC-Generics.html) provides a generic implementation.
+
+This completes the contract part of the API.
 
 Implementation
 --------------
@@ -157,8 +161,10 @@ Now let's create the [`ApiHandler`]($webapi-url$/docs/WebApi-Server.html#t:ApiHa
 >     respond userInfo
 
 ```
+By keeping the implementation separate from the contract, it is possible for a contract to have multiple implementations.
+Hypothetically, there could be a websocket implementation as well as a ReST implementation for a single contract.
 
-The last thing that is left is to create a [`WAI`](https://hackage.haskell.org/package/wai/docs/Network-Wai.html) application from all the aforementioned information. For that we use [`serverApp`]($webapi-url$/docs/WebApi-Server.html#v:serverApp)
+The last thing that is left is to create a [`WAI`](https://hackage.haskell.org/package/wai/docs/Network-Wai.html) application from all the aforementioned information. For that we use [`serverApp`]($webapi-url$/docs/WebApi-Server.html#v:serverApp).
 
 ```haskell
 
