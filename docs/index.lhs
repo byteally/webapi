@@ -11,7 +11,7 @@
 Introduction to **webapi**
 ==========================
 
-Webapi is a library to build web apis over [`WAI`](https://hackage.haskell.org/package/wai/docs/Network-Wai.html). It makes use of the strong type system of haskell which lets to
+[`Webapi`](https://hackage.haskell.org/package/webapi) is a library to build web apis over [`WAI`](https://hackage.haskell.org/package/wai/docs/Network-Wai.html). It makes use of the strong type system of haskell which lets to
 
   * Create a type safe routing system.
   * Enable type safe generation of links.
