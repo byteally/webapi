@@ -34,10 +34,10 @@ Contract
 
 The contract of API comprises of four things
 
-  * The data type of the API
-  * The route types
-  * [`WebApi`]($webapi-url$/docs/WebApi-Contract.html#t:WebApi) instance for the API
-  * [`ApiContract`]($webapi-url$/docs/WebApi-Contract.html#t:ApiContract) instance for API, route and method.
+  * The data type of the API.
+  * The routes of the API.
+  * [`WebApi`]($webapi-url$/docs/WebApi-Contract.html#t:WebApi) instance which declares the endpoints.
+  * [`ApiContract`]($webapi-url$/docs/WebApi-Contract.html#t:ApiContract) instance which describes each endpoint.
 
 First step is to create a datatype for our service. Lets call it `UserApi`
 
@@ -65,6 +65,8 @@ Now, lets define the [`WebApi`]($webapi-url$/docs/WebApi-Contract.html#t:WebApi)
 >   type Apis UserApi = '[ Route '[GET, POST]        User
 >                        , Route '[GET, PUT, DELETE] UserId
 >                        ]
+
+```
 
 Next step is to define the contract for each of the end points.
 
@@ -178,3 +180,5 @@ The last thing that is left is to create a [`WAI`](https://hackage.haskell.org/p
 ```
 
 That's it - now `userApiApp` could be run like any other [`WAI`](https://hackage.haskell.org/package/wai/docs/Network-Wai.html) application.
+
+You can find the whole source code for this post in literate haskell [here](https://github.com/byteally/webapi/blob/master/docs/index.lhs).
