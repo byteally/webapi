@@ -5,7 +5,7 @@ License     : BSD3
 Stability   : experimental
 
 Provides the contract for the web api. The contract consists of 'WebApi' and 'ApiContract' classes.
-'WebApi' contains information related to the entire group of APIs whereas 'ApiContract' is concerned with information related to each end point. Once the contract is written, it can be then used to
+'WebApi' contains information related to the entire group of endpoints whereas 'ApiContract' is concerned with information related to each end point. Once the contract is written, it can be then used to
 
 * Write a 'WebApiImplementation' and corresponding 'ApiHandler' for it.
 * Get a client for web api.
