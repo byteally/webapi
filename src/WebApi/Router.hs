@@ -157,11 +157,14 @@ type family MarkDyn (pp :: *) :: * where
   MarkDyn (p1 :/ t) = (p1 :/ t)
   MarkDyn (t :: *)   = DynamicPiece t
 
-instance (Router s r '(m, '[]), SingMethod m) => Router s (Route (m ': ms) r) pr where
-  route _ _s _ request respond =
+instance ( SingMethod m
+         , Router s r '(m, '[])
+         , Router s (Route ms r) pr) => 
+         Router s (Route (m ': ms) r) pr where
+  route _ _s parsedRoute request respond =
     case requestMethod request == meth of
       True  -> route (Proxy :: Proxy r) _s (Nil (Proxy :: Proxy m)) request respond
-      False -> respond NotMatched
+      False -> route (Proxy :: Proxy (Route ms r)) _s parsedRoute request respond
     where meth = singMethod (Proxy :: Proxy m)
 
 instance Router s (Route '[] r) pr where
