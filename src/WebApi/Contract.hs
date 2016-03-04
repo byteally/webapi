@@ -22,6 +22,7 @@ Provides the contract for the web api. The contract consists of 'WebApi' and 'Ap
 {-# LANGUAGE MultiParamTypeClasses     #-}
 {-# LANGUAGE PolyKinds                 #-}
 {-# LANGUAGE TypeFamilies              #-}
+{-# LANGUAGE UndecidableInstances      #-}
 module WebApi.Contract
        (-- * API Contract
          WebApi (..)
