@@ -76,6 +76,7 @@ instance WebApi ReqSpec where
                                    , TRACE
                                    , CONNECT
                                    , (CUSTOM ("TEST"))
+                                   , OPTIONS
                                    ] ApiR
                           ]
 
@@ -142,6 +143,9 @@ instance ApiContract ReqSpec (CUSTOM "TEST") ApiR where
   -- type FormParam (CUSTOM "TEST") ApiR  = FoP
   type ApiOut (CUSTOM "TEST") ApiR     = ()
 
+instance ApiContract ReqSpec OPTIONS ApiR where
+  type ApiOut OPTIONS ApiR = [Text]
+
 instance ApiHandler ReqSpecImpl (CUSTOM "TEST") ApiR where
   handler _ _ = respond ()
 instance ApiHandler ReqSpecImpl CONNECT ApiR where
@@ -160,6 +164,8 @@ instance ApiHandler ReqSpecImpl PUT ApiR where
   handler _ _ = respond ()
 instance ApiHandler ReqSpecImpl DELETE ApiR where
   handler _ _ = respond ()
+instance ApiHandler ReqSpecImpl OPTIONS ApiR where
+  handler _ _ = respond ["GET", "POST"]
 
 formHeaders :: [(ByteString, ByteString)] -> [(ByteString, ByteString)] -> [Header]
 formHeaders headerKvs cookieKvs = map toHeader headerKvs <> [toCookie cookieKvs]
@@ -194,7 +200,7 @@ spec = withApp $ describe "WebApi request with payload" $ do
       request methodTrace "api" [] "" `shouldRespondWith` "[]" { matchStatus = 200 }
   context "OPTIONS Request" $ do
     it "should be 200 ok" $ do
-      request methodOptions "api" [] "" `shouldRespondWith` "[]" { matchStatus = 200 }
+      request methodOptions "api" [] "" `shouldRespondWith` "[\"GET\",\"POST\"]" { matchStatus = 200 }
   context "CONNECT Request" $ do
     it "should be 200 ok" $ do
       request methodConnect "api" [] "" `shouldRespondWith` "[]" { matchStatus = 200 }
