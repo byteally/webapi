@@ -118,7 +118,7 @@ link r base paths query = base
                           , uriQuery = maybe "" renderQuery' query
                           }
   where renderQuery' :: (ToParam query 'QueryParam) => query -> String
-        renderQuery' = unpack . renderQuery False . toQueryParam
+        renderQuery' = unpack . renderQuery True . toQueryParam
 
 renderUriPath ::  ( ToParam path 'PathParam
                    , MkPathFormatString r
@@ -192,7 +192,7 @@ serverSettings = ServerSettings
 -- | Type of segments of a Path.
 data PathSegment = StaticSegment Text -- ^ A static segment
                  | Hole -- ^ A dynamic segment
-                 deriving Show
+                 deriving (Show, Eq)
 
 -- | Describe representation of the route.
 class MkPathFormatString r where
