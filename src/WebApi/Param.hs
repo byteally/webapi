@@ -66,6 +66,7 @@ module WebApi.Param
        , fromNonNestedParam
 
        -- * Wrappers
+       , Field (..)
        , JsonOf (..)
        , OptValue (..)
        , FileInfo (..)
@@ -110,6 +111,7 @@ import           Data.Vector                        (Vector)
 import qualified Data.Vector                        as V
 import           Data.Word
 import           GHC.Generics
+import           GHC.TypeLits
 import           Network.HTTP.Types
 import           Network.HTTP.Types                 as Http (Header, QueryItem)
 import qualified Network.Wai.Parse                  as Wai (FileInfo (..))
@@ -1428,6 +1430,27 @@ data ParamAcc = ParamAcc { index :: Int, isSum :: Bool }
 data ParamSettings = ParamSettings
                    deriving (Show, Eq)
 
+newtype Field (s :: Symbol) a = Field { unField :: a }
+
+instance (ToParam a parK) => ToParam (Field s a) parK where
+  toParam pt pfx = toParam pt pfx . unField
+
+instance (FromParam a parK) => FromParam (Field s a) parK where
+  fromParam pt key kvs = Field <$> fromParam pt key kvs
+
+type family IsMeta a where
+  IsMeta (Field s a) = 'True
+  IsMeta a           = 'False
+
+class Meta a (b :: Bool) where
+  meta :: Proxy a -> Proxy b -> (ByteString -> ByteString)
+
+instance (KnownSymbol s) => Meta (Field s a) 'True where
+  meta _ _ = const $ ASCII.pack (symbolVal (Proxy :: Proxy s))
+
+instance Meta a 'False where
+  meta _ _ = id
+
 -- | Serialize a type to the header params
 class ToHeader a where
   toHeader :: a -> [Http.Header]
@@ -1550,11 +1573,12 @@ instance (GFromParam f parK, Datatype t) => GFromParam (M1 D t f) parK where
 
     where dtN = T.pack $ datatypeName (undefined :: (M1 D t f) a)
 
-instance (GFromParam f parK, Selector t) => GFromParam (M1 S t f) parK where
+instance (GFromParam f parK, Selector t, f ~ (K1 i c), Meta c (IsMeta c)) => GFromParam (M1 S t f) parK where
   gfromParam pt pfx pa psett kvs = let fldN = (ASCII.pack $ (selName (undefined :: (M1 S t f) a)))
+                                       modSelName = meta (Proxy :: Proxy c) (Proxy :: Proxy (IsMeta c))
                                    in case fldN of
                                      "" -> M1 <$> gfromParam pt (pfx `nest` numberedFld pa) pa psett (submap pfx kvs)
-                                     _  -> M1 <$> gfromParam pt (pfx `nest` fldN) pa psett (submap pfx kvs)
+                                     _  -> M1 <$> gfromParam pt (pfx `nest` (modSelName fldN)) pa psett (submap pfx kvs)
 
 instance (FromParam c parK) => GFromParam (K1 i c) parK where
   gfromParam pt pfx _ _ kvs = K1 <$> fromParam pt pfx kvs
@@ -1583,11 +1607,12 @@ instance (GToParam f parK, Constructor t) => GToParam (M1 C t f) parK where
 instance (GToParam f parK) => GToParam (M1 D t f) parK where
   gtoParam pt pfx pa psett (M1 x) = gtoParam pt pfx pa psett x
 
-instance (GToParam f parK, Selector t) => GToParam (M1 S t f) parK where
+instance (GToParam f parK, Selector t, f ~ (K1 i c), Meta c (IsMeta c)) => GToParam (M1 S t f) parK where
   gtoParam pt pfx pa psett  m@(M1 x) = let fldN = ASCII.pack (selName m)
+                                           modSelName = meta (Proxy :: Proxy c) (Proxy :: Proxy (IsMeta c))
                                        in case fldN of
                                          "" -> gtoParam pt (pfx `nest` numberedFld pa) pa psett x
-                                         _  -> gtoParam pt (pfx `nest` fldN) pa psett x
+                                         _  -> gtoParam pt (pfx `nest` (modSelName fldN)) pa psett x
 
 instance (ToParam Unit parK) => GToParam U1 parK where
   gtoParam pt pfx _ _ _ = toParam pt pfx Unit

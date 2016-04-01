@@ -157,4 +157,3 @@ data UnknownClientException = UnknownClientException
                             deriving (Typeable, Show)
 
 instance Exception UnknownClientException where
-  
