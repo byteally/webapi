@@ -8,10 +8,10 @@
 > import qualified Network.Wai as Wai
 
 
-Introduction to **webapi**
+Introduction to **WebApi**
 ==========================
 
-[`Webapi`](https://hackage.haskell.org/package/webapi) is a library to build web apis over [`WAI`](https://hackage.haskell.org/package/wai/docs/Network-Wai.html). It makes use of the strong type system of haskell which lets to
+[`Webapi`](https://hackage.haskell.org/package/webapi) is a library to build web APIs over [`WAI`](https://hackage.haskell.org/package/wai/docs/Network-Wai.html). It makes use of the strong type system of haskell which lets to
 
   * Create a type safe routing system.
   * Enable type safe generation of links.
@@ -19,35 +19,32 @@ Introduction to **webapi**
   * Auto serialization and deserialization of the request and response based on api contract.
   * Write handlers which respect the contract.
 
-A First taste of webapi
+A First taste of WebApi
 -----------------------
 
-Writing a web api comprises of two steps
+Writing your web API service comprises of two steps
 
-  * Writing a contract of a web api.
-  * Providing an implementation of a web api.
-
-Consider a webapi that lets you do create, update, delete and fetch users.
+  * Writing a contract (definition below) of a web API.
+  * Providing an implementation of the web API.
 
 Contract
 --------
+A contract is the list of end-points in your API service and the definition of each API endpoint.
+We define what goes in (Eg Query params, form params) and what comes out (the response) of each API endpoint.
 
-The contract of API comprises of four things
+As an example, consider a web API service that lets you do create, update, delete and fetch users. First step is to create a datatype for our service. Lets call it `MyApiService`
 
-  * The data type of the API.
-  * The routes of the API.
-  * [`WebApi`]($webapi-url$/docs/WebApi-Contract.html#t:WebApi) instance which declares the endpoints.
-  * [`ApiContract`]($webapi-url$/docs/WebApi-Contract.html#t:ApiContract) instance which describes each endpoint.
+To define your contract using the framework, you need to
 
-First step is to create a datatype for our service. Lets call it `UserApi`
+  * Declare a data type for your API service.
 
 ```haskell
 
-> data UserApi
+> data MyApiService
 
 ```
-
-Next, lets define the routes.
+  
+  * List down the routes of your API service.
 
 ```haskell 
 
@@ -55,43 +52,47 @@ Next, lets define the routes.
 > type UserId = "user":/Int
 
 ```
-
-Now, lets define the [`WebApi`]($webapi-url$/docs/WebApi-Contract.html#t:WebApi) instance for our service type.
+  
+  * Write a [`WebApi`]($webapi-url$/docs/WebApi-Contract.html#t:WebApi) instance which declares the endpoints.
 
 ```haskell
 
-> instance WebApi UserApi where
+> instance WebApi MyApiService where
 >   -- Route <Method> <Route Name>
->   type Apis UserApi = '[ Route '[GET, POST]        User
->                        , Route '[GET, PUT, DELETE] UserId
->                        ]
+>   type Apis MyApiService = '[ Route '[GET, POST]        User
+>                             , Route '[GET, PUT, DELETE] UserId
+>                             ]
 
 ```
+  
+  * Write [`ApiContract`]($webapi-url$/docs/WebApi-Contract.html#t:ApiContract) instances describing what goes in and what comes out from each API endpoint.
 
-Next step is to define the contract for each of the end points.
+    In the following code snippet, the first instance declares that the `POST` method on route `/user` takes `UserData` as form parameters and responds with nothing (`()`).
+
+    An equivalent curl syntax would be: `curl -H "Content-Type: application/x-www-form-urlencoded" -d 'age=12&address=Velachery&name=Bhishag' <URL>`
 
 ```haskell
 
 > -- Takes a User type in form params and returns unit.
-> instance ApiContract UserApi POST User where
+> instance ApiContract MyApiService POST User where
 >   type FormParam POST User = UserData
 >   type ApiOut    POST User = ()
 >
 > -- Takes a User type in form params and returns updated users.
-> instance ApiContract UserApi PUT UserId where
+> instance ApiContract MyApiService PUT UserId where
 >   type FormParam PUT UserId = UserData
 >   type ApiOut    PUT UserId = [UserData]
 >
 >  -- Removes the specified user and returns unit.
-> instance ApiContract UserApi DELETE UserId where
+> instance ApiContract MyApiService DELETE UserId where
 >   type ApiOut DELETE UserId = ()
 >
 > -- Gets a specific user
-> instance ApiContract UserApi GET UserId where
+> instance ApiContract MyApiService GET UserId where
 >   type ApiOut GET UserId = UserData
 >
 > -- Gets all users
-> instance ApiContract UserApi GET User where
+> instance ApiContract MyApiService GET User where
 >   type ApiOut GET User = [UserData]
 > 
 > -- Our user type
@@ -100,18 +101,20 @@ Next step is to define the contract for each of the end points.
 >                          , name    :: Text
 >                          , userId  :: Maybe Int
 >                          } deriving (Show, Eq, Generic)
+
+```
+
+We also have to define instances for json and param serialization & deserialization for `UserData` type. A definition needn't be provided since [`GHC.Generics`](https://hackage.haskell.org/package/base/docs/GHC-Generics.html) provides a generic implementation.
+    
+```haskell
+
 >
 > instance FromJSON UserData
 > instance ToJSON   UserData
 >   
 > instance FromParam UserData 'FormParam
 
-
 ```
-
-[`ApiContract`]($webapi-url$/docs/WebApi-Contract.html#t:ApiContract) lets us specify what goes in (Eg [`FormParam`]($webapi-url$/docs/WebApi-Contract.html#t:FormParam)) and what goes out (Eg [`ApiOut`]($webapi-url$/docs/WebApi-Contract.html#t:ApiOut)) of the api endpoint.
-
-We will also define instances for json and param serialization & deserialization for `UserData` type. A definition needn't be provided since [`GHC.Generics`](https://hackage.haskell.org/package/base/docs/GHC-Generics.html) provides a generic implementation.
 
 This completes the contract part of the API.
 
@@ -122,41 +125,41 @@ First step is to create a type for the implementation and define [`WebApiImpleme
 
 ```haskell
 
-> data UserApiImpl = UserApiImpl 
+> data MyApiServiceImpl = MyApiServiceImpl 
 >
-> instance WebApiImplementation UserApiImpl where
->   type HandlerM UserApiImpl = IO
->   type ApiInterface UserApiImpl = UserApi
+> instance WebApiImplementation MyApiServiceImpl where
+>   type HandlerM MyApiServiceImpl = IO
+>   type ApiInterface MyApiServiceImpl = MyApiService
 
 ```
 
-[`HandlerM`](http://hackage.haskell.org/package/webapi-0.1.0.0/candidate/docs/WebApi-Server.html#t:HandlerM) is the base monad in which the [`handler`]($webapi-url$/docs/WebApi-Server.html#v:handler) will run. We also state that `UserApiImpl` is an implementation of the [`ApiInterface`]($webapi-url$/docs/WebApi-Server.html#t:ApiInterface) provided by `UserApi`.
+[`HandlerM`](http://hackage.haskell.org/package/webapi-0.1.0.0/candidate/docs/WebApi-Server.html#t:HandlerM) is the base monad in which the [`handler`]($webapi-url$/docs/WebApi-Server.html#v:handler) will run. We also state that `MyApiServiceImpl` is an implementation of the [`ApiInterface`]($webapi-url$/docs/WebApi-Server.html#t:ApiInterface) provided by `MyApiServiceApi`.
 
 Now let's create the [`ApiHandler`]($webapi-url$/docs/WebApi-Server.html#t:ApiHandler)s
 
 ```haskell
 
-> instance ApiHandler UserApiImpl POST User where
+> instance ApiHandler MyApiServiceImpl POST User where
 >   handler _ req = do
 >     let _userInfo = formParam req
 >     respond ()
 >
-> instance ApiHandler UserApiImpl GET User where
+> instance ApiHandler MyApiServiceImpl GET User where
 >   handler _ _ = do
 >     let users = []
 >     respond users
 >
-> instance ApiHandler UserApiImpl PUT UserId where
+> instance ApiHandler MyApiServiceImpl PUT UserId where
 >   handler _ req = do
 >     let userInfo = formParam req
 >     respond [userInfo]
 >
-> instance ApiHandler UserApiImpl DELETE UserId where
+> instance ApiHandler MyApiServiceImpl DELETE UserId where
 >   handler _ req = do
 >     let _userID = pathParam req
 >     respond ()
 >
-> instance ApiHandler UserApiImpl GET UserId where
+> instance ApiHandler MyApiServiceImpl GET UserId where
 >   handler _ req = do
 >     let userID = pathParam req
 >         userInfo = UserData 10 "Address" "Name" (Just userID)
@@ -170,15 +173,15 @@ The last thing that is left is to create a [`WAI`](https://hackage.haskell.org/p
 
 ```haskell
 
-> userApiApp :: Wai.Application
-> userApiApp = serverApp serverSettings UserApiImpl
+> myApiApp :: Wai.Application
+> myApiApp = serverApp serverSettings MyApiServiceImpl
 >
 > main :: IO ()
-> main = run 8000 userApiApp
+> main = run 8000 myApiApp
 > 
 
 ```
 
-That's it - now `userApiApp` could be run like any other [`WAI`](https://hackage.haskell.org/package/wai/docs/Network-Wai.html) application.
+That's it - now `myApiApp` could be run like any other [`WAI`](https://hackage.haskell.org/package/wai/docs/Network-Wai.html) application.
 
 You can find the whole source code for this post in literate haskell [here](https://github.com/byteally/webapi/blob/master/docs/index.lhs).
