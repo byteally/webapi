@@ -28,7 +28,6 @@ Deserialization works analogously, 'FromParam' and 'DecodeParam' are counterpart
 {-# LANGUAGE DefaultSignatures     #-}
 {-# LANGUAGE DeriveAnyClass        #-}
 {-# LANGUAGE DeriveFunctor         #-}
-{-# LANGUAGE DeriveGeneric         #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -72,9 +71,9 @@ module WebApi.Param
        , FileInfo (..)
        , NonNested (..)
 
-       -- * Helpers  
+       -- * Helpers
        , ParamK (..)
-       , filePath  
+       , filePath
        , nest
        ) where
 
@@ -83,7 +82,8 @@ import           Blaze.ByteString.Builder           (toByteString)
 import           Blaze.ByteString.Builder.Char.Utf8 (fromChar)
 import           Data.Aeson                         (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson                         as A
-import           Data.ByteString                    as SB hiding (index, isPrefixOf)
+import           Data.ByteString                    as SB hiding (index,
+                                                           isPrefixOf)
 import qualified Data.ByteString                    as SB (isPrefixOf)
 import           Data.ByteString.Builder            (byteString, char7,
                                                      toLazyByteString)
@@ -95,7 +95,7 @@ import           Data.ByteString.Lex.Integral
 import           Data.CaseInsensitive               as CI
 import           Data.Foldable                      as Fold (foldl')
 import           Data.Int
-import qualified Data.List                          as L (find)          
+import qualified Data.List                          as L (find)
 import           Data.Monoid                        ((<>))
 import           Data.Proxy
 import qualified Data.Text                          as T (Text, pack, uncons)
@@ -116,7 +116,7 @@ import           Network.HTTP.Types
 import           Network.HTTP.Types                 as Http (Header, QueryItem)
 import qualified Network.Wai.Parse                  as Wai (FileInfo (..))
 
--- | A type for holding a file. 
+-- | A type for holding a file.
 newtype FileInfo = FileInfo { fileInfo :: Wai.FileInfo FilePath }
                  deriving (Eq, Show)
 
@@ -135,7 +135,7 @@ data ParamK = QueryParam
 newtype OptValue a = OptValue { toMaybe :: Maybe a}
                    deriving (Show, Read, Eq, Ord)
 
--- | Serializing 'JsonOf' will produce a JSON representation of the value contained within. This is useful if params has to be sent as JSON.  
+-- | Serializing 'JsonOf' will produce a JSON representation of the value contained within. This is useful if params has to be sent as JSON.
 newtype JsonOf a = JsonOf {getValue :: a}
                     deriving (Show, Read, Eq, Ord)
 
@@ -163,7 +163,7 @@ type family DeSerializedData (par :: ParamK) where
   DeSerializedData 'FileParam  = Wai.FileInfo FilePath
   DeSerializedData 'Cookie     = ByteString
 
--- | Datatype representing the parsed result of params.  
+-- | Datatype representing the parsed result of params.
 newtype Validation e a = Validation { getValidation :: Either e a }
                        deriving (Eq, Functor, Show)
 
@@ -178,15 +178,15 @@ instance Monoid e => Applicative (Validation e) where
 toQueryParam :: (ToParam a 'QueryParam) => a -> Query
 toQueryParam = toParam (Proxy :: Proxy 'QueryParam) ""
 
--- | Serialize a type into form params.                                 
+-- | Serialize a type into form params.
 toFormParam :: (ToParam a 'FormParam) => a -> [(ByteString, ByteString)]
 toFormParam = toParam (Proxy :: Proxy 'FormParam) ""
 
--- | Serialize a type into file params.                                
+-- | Serialize a type into file params.
 toFileParam :: (ToParam a 'FileParam) => a -> [(ByteString, Wai.FileInfo FilePath)]
 toFileParam = toParam (Proxy :: Proxy 'FileParam) ""
 
--- | Serialize a type into path params.                                
+-- | Serialize a type into path params.
 toPathParam :: (ToParam a 'PathParam) => a -> [ByteString]
 toPathParam = toParam (Proxy :: Proxy 'PathParam) ""
 
@@ -194,7 +194,7 @@ toPathParam = toParam (Proxy :: Proxy 'PathParam) ""
 toCookie :: (ToParam a 'Cookie) => a -> [(ByteString, ByteString)]
 toCookie = toParam (Proxy :: Proxy 'Cookie) ""
 
--- | (Try to) Deserialize a type from query params.                             
+-- | (Try to) Deserialize a type from query params.
 fromQueryParam :: (FromParam a 'QueryParam) => Query -> Validation [ParamErr] a
 fromQueryParam par = fromParam (Proxy :: Proxy 'QueryParam) "" $ Trie.fromList par
 
@@ -202,7 +202,7 @@ fromQueryParam par = fromParam (Proxy :: Proxy 'QueryParam) "" $ Trie.fromList p
 fromFormParam :: (FromParam a 'FormParam) => [(ByteString, ByteString)] -> Validation [ParamErr] a
 fromFormParam par = fromParam (Proxy :: Proxy 'FormParam) "" $ Trie.fromList par
 
--- | (Try to) Deserialize a type from file params.                                        
+-- | (Try to) Deserialize a type from file params.
 fromFileParam :: (FromParam a 'FileParam) => [(ByteString, Wai.FileInfo FilePath)] -> Validation [ParamErr] a
 fromFileParam par = fromParam (Proxy :: Proxy 'FileParam) "" $ Trie.fromList par
 
@@ -345,7 +345,7 @@ instance EncodeParam Char where
 
 instance DecodeParam Char where
   decodeParam str = case decodeUtf8' str of
-    Right txt -> maybe Nothing (Just . fst) (T.uncons txt)
+    Right txt -> fmap fst (T.uncons txt)
     Left _    -> Nothing
 
 instance EncodeParam T.Text where
@@ -1155,7 +1155,7 @@ instance (Show (DeSerializedData par), FromParam a par) => FromParam [a] par whe
     True  ->  Validation $ Right []
     False ->
       let pars = Prelude.map (\(nkey, kv) -> fromParam pt nkey kv :: Validation [ParamErr] a) kvitems
-      in (Prelude.reverse) <$> Fold.foldl' accRes (Validation $ Right []) pars
+      in Prelude.reverse <$> Fold.foldl' accRes (Validation $ Right []) pars
     where kvs' = submap key kvs
           kvitems = Prelude.takeWhile (not . Prelude.null . snd)  (Prelude.map (\ix ->
             let ixkey = key `nest` (ASCII.pack $ show ix)
@@ -1399,7 +1399,7 @@ instance ToJSON ParamErr where
     Left ex -> utf8DecodeError "ToJSON ParamErr" (show ex)
     Right bs' -> A.object ["ParseErr" A..= [bs', msg]]
 
--- | Convert the 'ParamErr' that occured during deserialization into 'ApiErr' type which can then be put in 'Response'. 
+-- | Convert the 'ParamErr' that occured during deserialization into 'ApiErr' type which can then be put in 'Response'.
 class ParamErrToApiErr apiErr where
   toApiErr :: [ParamErr] -> apiErr
 
@@ -1430,6 +1430,9 @@ data ParamAcc = ParamAcc { index :: Int, isSum :: Bool }
 data ParamSettings = ParamSettings
                    deriving (Show, Eq)
 
+-- | Used to alias the field name while serailizing FromParam/ToParam instances
+--
+-- > data Foo = Foo { foobar :: Field "foo_bar" Int} -- fieldname would be aliased to foo_bar instead of foobar
 newtype Field (s :: Symbol) a = Field { unField :: a }
 
 instance (ToParam a parK) => ToParam (Field s a) parK where

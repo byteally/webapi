@@ -13,13 +13,18 @@ Stability   : experimental
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
 {-# LANGUAGE UndecidableInstances  #-}
+{-# LANGUAGE TupleSections         #-}
 module WebApi.ContentTypes
        (
        -- * Predefined Content Types.
          JSON
        , PlainText
+       , OctetStream
+       , MultipartFormData
+       , UrlEncoded
          
        -- * Creating custom Content Types. 
+       , Content
        , Accept (..)
        , Encode (..)
        , Decode (..)
@@ -31,6 +36,9 @@ module WebApi.ContentTypes
        -- * Internal classes.
        , Encodings (..)
        , Decodings (..)
+       , PartEncodings (..)
+       , PartDecodings (..)
+       , StripContents
        ) where
 
 import           Blaze.ByteString.Builder           (Builder)
@@ -38,10 +46,13 @@ import qualified Blaze.ByteString.Builder.Char.Utf8 as Utf8 (fromText)
 import           Data.Aeson                         (ToJSON (..), FromJSON (..), eitherDecodeStrict)
 import           Data.Aeson.Encode                  (encodeToByteStringBuilder)
 import           Data.ByteString                    (ByteString)
+import           Data.Maybe                         (fromMaybe)
 import           Data.Proxy
 import qualified Data.Text                          as TextS
 import           Data.Text.Encoding                 (decodeUtf8)
 import           Network.HTTP.Media.MediaType
+import           Network.HTTP.Media                 (mapContentMedia)
+import           WebApi.Util
 
 
 -- | Type representing content type of @application/json@.
@@ -52,6 +63,12 @@ data PlainText
 
 -- | Type representing content type of @application/octetstream@.
 data OctetStream
+
+-- | Type representing content type of @multipart/form-data@.
+data MultipartFormData
+
+-- | Type representing content type of @application/x-www-form-urlencoded@.
+data UrlEncoded
 
 -- | Encodings of type for all content types `ctypes`.  
 class Encodings (ctypes :: [*]) a where
@@ -92,6 +109,12 @@ instance Accept PlainText where
 instance Accept OctetStream where
   contentType _ = "application" // "octet-stream"
 
+instance Accept MultipartFormData where
+  contentType _ = "multipart" // "form-data"
+
+instance Accept UrlEncoded where
+  contentType _ = "application" // "x-www-form-urlencoded"
+
 -- | Encode a type into a specific content type.
 class (Accept a) => Encode a c where
   encode :: Proxy a -> c -> Builder
@@ -122,4 +145,45 @@ class FromText a where
   fromText :: TextS.Text -> Maybe a
 
 instance FromText TextS.Text where
-  fromText = Just . id
+  fromText = Just
+
+--newtype Content (ctypes :: [*]) (a :: *) = Content { getContent :: a }
+data Content (ctypes :: [*]) (a :: *)
+
+class PartEncodings (xs :: [*]) where
+  partEncodings :: Proxy xs
+                  -> HListToRecTuple (StripContents xs)
+                  -> [[(MediaType, Builder)]]
+
+instance (PartEncodings ts, Encodings ctypes (StripContent t), MkContent t ~ Content ctypes a) => PartEncodings (t ': ts) where
+  partEncodings _ (t, ts) = encodings (Proxy :: Proxy ctypes) t : partEncodings (Proxy :: Proxy ts) ts
+
+instance PartEncodings '[] where
+  partEncodings _ () = []
+
+class PartDecodings (xs :: [*]) where
+  partDecodings :: Proxy xs -> [(ByteString, ByteString)] -> Either String (HListToRecTuple (StripContents xs))
+
+instance (PartDecodings ts, Decodings ctypes (StripContent t), MkContent t ~ Content ctypes a) => PartDecodings (t ': ts) where
+  partDecodings _ ((ctype, partBody) : xs) = do
+    let decs = decodings (Proxy :: Proxy ctypes) partBody
+        (decValE :: Maybe (Either String (StripContent t))) = mapContentMedia decs ctype
+    decVal <- fromMaybe (Left "Error 415: No Matching Content Type") decValE
+    (decVal, ) <$> partDecodings (Proxy :: Proxy ts) xs
+  partDecodings _ [] = error "Error!: This shouldn't have happened"
+
+instance PartDecodings '[] where
+  partDecodings _ _ = Right ()
+
+type family MkContent a where
+  MkContent (Content ctypes a) = Content ctypes a
+  MkContent a                  = Content '[JSON] a
+
+type family StripContents (a :: [*]) :: [*] where
+  StripContents (t ': ts) = StripContent t ': StripContents ts
+  StripContents '[]       = '[]
+
+type family StripContent a where
+  StripContent (Content ctypes t) = t 
+  StripContent t                  = t
+

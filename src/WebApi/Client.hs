@@ -22,33 +22,49 @@ Provides a client for a web api for a given contract.
 {-# LANGUAGE UndecidableInstances  #-}
 module WebApi.Client
        (
-       -- * Client related functions
+         -- * Client related functions
          client
        , fromClientResponse
        , toClientRequest
-       , link  
-         
-       -- * Types  
+       , link
+
+         -- * Types
        , ClientSettings (..)
        , UnknownClientException
+
+         -- * Connection manager
+       , HC.Manager
+       , HC.newManager
+       , HC.closeManager
+       , HC.withManager
+       , HC.HasHttpManager (..)
+
+         -- ** Connection manager settings
+       , HC.ManagerSettings
+       , HC.defaultManagerSettings
+       , HC.tlsManagerSettings
        ) where
 
+import           Blaze.ByteString.Builder              (toByteString)
 import           Control.Exception
 import           Data.ByteString                       (ByteString)
 import           Data.Either                           (isRight)
 import           Data.List                             (find)
 import           Data.Proxy
 import           Data.Text.Encoding                    (decodeUtf8)
-import           Data.Typeable                         (Typeable) 
+import           Data.Typeable                         (Typeable)
 import qualified Network.HTTP.Client                   as HC
 import qualified Network.HTTP.Client.MultipartFormData as HC
-import           Network.HTTP.Media                    (mapContentMedia)
+import qualified Network.HTTP.Client.TLS               as HC (tlsManagerSettings)
+import           Network.HTTP.Media                    (RenderHeader (..),
+                                                        mapContentMedia)
 import           Network.HTTP.Types                    hiding (Query)
 import           Network.Wai.Parse                     (fileContent)
 import           WebApi.ContentTypes
 import           WebApi.Contract
 import           WebApi.Internal
 import           WebApi.Param
+import           WebApi.Util
 
 -- | Datatype representing the settings related to client.
 data ClientSettings = ClientSettings { baseUrl           :: String     -- ^ base url of the API being called.
@@ -93,7 +109,7 @@ fromClientResponse hcResp = do
 
           decode' :: ( Decodings (ContentTypes m r) a
                    ) => apiRes m r -> ByteString -> Either String a
-          decode' r o = case getContentType hcResp of
+          decode' r o = case getContentType (HC.responseHeaders hcResp) of
             Just ctype -> let decs = decodings (reproxy r) o
                           in maybe (firstRight (map snd decs)) id (mapContentMedia decs ctype)
             Nothing    -> firstRight (map snd (decodings (reproxy r) o))
@@ -112,6 +128,8 @@ toClientRequest :: forall m r.( ToParam (PathParam m r) 'PathParam
                           , ToParam (FileParam m r) 'FileParam
                           , SingMethod m
                           , MkPathFormatString r
+                          , PartEncodings (RequestBody m r)
+                          , ToHListRecTuple (StripContents (RequestBody m r))
                           ) => HC.Request -> Request m r -> IO HC.Request
 toClientRequest clientReq req = do
   let cReq' = clientReq
@@ -124,14 +142,27 @@ toClientRequest clientReq req = do
       cReqUE = if Prelude.null formPar
                then cReqQP
                else HC.urlEncodedBody formPar cReqQP
-      cReqMP = if Prelude.null filePar
-               then return cReqUE
-               else HC.formDataBody (Prelude.map (\(pname, finfo) -> HC.partFileSource (decodeUtf8 pname) (fileContent finfo)) filePar) cReqUE
+      fileParts = if Prelude.null filePar
+                  then []
+                  else Prelude.map (\(pname, finfo) -> HC.partFileSource (decodeUtf8 pname) (fileContent finfo)) filePar
+      cReqMP = if Prelude.null filePar && Prelude.null formPar
+               then case partEncs of
+                 (_ : _) -> do
+                    let (mt, b) = firstPart
+                    return cReqUE { HC.requestHeaders = HC.requestHeaders cReqUE ++ [(hContentType, renderHeader mt)]
+                                  , HC.requestBody = HC.RequestBodyBS $ toByteString b
+                                  }
+                 [] -> return cReqUE
+               else if not (Prelude.null filePar) then HC.formDataBody fileParts cReqUE else return cReqUE
   cReqMP
   where queryPar = toQueryParam $ queryParam req
         formPar = toFormParam $ formParam req
         filePar = toFileParam $ fileParam req
         uriPath = renderUriPath (HC.path clientReq) (pathParam req) req
+        firstPart = head . head $ partEncs
+        partEncs = partEncodings cts (toRecTuple cts' (requestBody req))
+        cts     = Proxy :: Proxy (RequestBody m r)
+        cts'     = Proxy :: Proxy (StripContents (RequestBody m r))
 
 -- | Given a `Request` type, create the request and obtain a response. Gives back a 'Response'.
 client :: ( CookieOut m r ~ ()
@@ -142,10 +173,12 @@ client :: ( CookieOut m r ~ ()
           , ToParam (FileParam m r) 'FileParam
           , FromHeader (HeaderOut m r)
           , Decodings (ContentTypes m r) (ApiOut m r)
-          , Decodings (ContentTypes m r) (ApiErr m r)  
+          , Decodings (ContentTypes m r) (ApiErr m r)
           , ParamErrToApiErr (ApiErr m r)
           , SingMethod m
           , MkPathFormatString r
+          , PartEncodings (RequestBody m r)
+          , ToHListRecTuple (StripContents (RequestBody m r))
           ) => ClientSettings -> Request m r -> IO (Response m r)
 client sett req = do
   cReqInit <- HC.parseUrl (baseUrl sett)

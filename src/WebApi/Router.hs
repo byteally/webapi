@@ -49,6 +49,7 @@ import WebApi.ContentTypes
 import WebApi.Contract
 import WebApi.Internal
 import WebApi.Param
+import WebApi.Util
 
 -- | Datatype representing a endpoint. 
 data Route (ms :: [*]) (r :: *)
@@ -130,18 +131,6 @@ type family FilterDynP (ps :: [*]) :: [*] where
   FilterDynP (p1 ': p2)              = FilterDynP p2
   FilterDynP '[]                     = '[]
 
-type family HListToTuple (xs :: [*]) :: * where
-  HListToTuple '[]   = ()
-  HListToTuple '[p1] = p1
-  HListToTuple '[p1, p2] = (p1, p2)
-  HListToTuple '[p1, p2, p3] = (p1, p2, p3)
-  HListToTuple '[p1, p2, p3, p4] = (p1, p2, p3, p4)
-  HListToTuple '[p1, p2, p3, p4, p5] = (p1, p2, p3, p4, p5)
-  HListToTuple '[p1, p2, p3, p4, p5, p6] = (p1, p2, p3, p4, p5, p6)
-  HListToTuple '[p1, p2, p3, p4, p5, p6, p7] = (p1, p2, p3, p4, p5, p6, p7)
-  HListToTuple '[p1, p2, p3, p4, p5, p6, p7, p8] = (p1, p2, p3, p4, p5, p6, p7, p8)
-  HListToTuple '[p1, p2, p3, p4, p5, p6, p7, p8, p9] = (p1, p2, p3, p4, p5, p6, p7, p8, p9)
-
 infixr 5 :++
 type family (:++) (as :: [k]) (bs :: [k]) :: [k] where
   '[] :++ bs       = bs
@@ -210,6 +199,8 @@ instance ( KnownSymbol piece, ApiHandler s m (Static piece)
          , Encodings (ContentTypes m (Static piece)) (ApiErr m (Static piece))
          , PathParam m (Static piece) ~ ()
          , ParamErrToApiErr (ApiErr m (Static piece))
+         , ToHListRecTuple (StripContents (RequestBody m (Static piece)))
+         , PartDecodings (RequestBody m (Static piece))
          , Typeable m
          , Typeable (Static piece)
          , WebApiImplementation s  
@@ -243,6 +234,8 @@ instance ( KnownSymbol lpiece
          , ToHeader (HeaderOut m route)
          , ToParam (CookieOut m route) 'Cookie
          , ParamErrToApiErr (ApiErr m route)
+         , ToHListRecTuple (StripContents (RequestBody m route))
+         , PartDecodings (RequestBody m route)
          , Typeable m
          , Typeable route
          , WebApiImplementation s
@@ -280,6 +273,8 @@ instance ( KnownSymbol rpiece
          , ToParam (CookieOut m route) 'Cookie
          , DecodeParam lpiece
          , ParamErrToApiErr (ApiErr m route)
+         , ToHListRecTuple (StripContents (RequestBody m route))
+         , PartDecodings (RequestBody m route)
          , Typeable m
          , Typeable route
          , WebApiImplementation s
@@ -315,6 +310,8 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
          , ToParam (CookieOut m route) 'Cookie
          , DecodeParam t
          , ParamErrToApiErr (ApiErr m route)
+         , ToHListRecTuple (StripContents (RequestBody m route))
+         , PartDecodings (RequestBody m route)
          , Typeable m
          , Typeable route
          , WebApiImplementation s  

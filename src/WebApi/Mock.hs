@@ -23,15 +23,15 @@ module WebApi.Mock
        ) where
 
 import Control.Exception
-import Data.Proxy (Proxy (..))
-import Data.Text.Encoding (decodeUtf8)
 import Data.Typeable (Typeable)
 import GHC.Generics (Generic)
 import Network.HTTP.Types (Status, ok200)
 import qualified Network.Wai as Wai
 import WebApi.Internal
 import WebApi.Contract
+import WebApi.ContentTypes
 import WebApi.Server
+import WebApi.Util
 import Test.QuickCheck (Arbitrary, generate, arbitrary)
 
 data Route' m r = Route'
@@ -116,16 +116,14 @@ mockClient :: (  Arbitrary (PathParam m r)
                , Arbitrary (FileParam m r)
                , Arbitrary (HeaderIn m r)
                , Arbitrary (CookieIn m r)
+               , Arbitrary (HListToTuple (StripContents (RequestBody m r)))
                , SingMethod m
                ) => route m r -> IO (Request m r)
-mockClient r =
-  Req  <$> generate arbitrary
-       <*> generate arbitrary
-       <*> generate arbitrary
-       <*> generate arbitrary
-       <*> generate arbitrary
-       <*> generate arbitrary
-       <*> pure (decodeUtf8 $ singMethod (reproxy r))
-
-  where reproxy :: route m r -> Proxy m
-        reproxy = const Proxy
+mockClient _ =
+  Request <$> generate arbitrary
+          <*> generate arbitrary
+          <*> generate arbitrary
+          <*> generate arbitrary
+          <*> generate arbitrary
+          <*> generate arbitrary
+          <*> generate arbitrary

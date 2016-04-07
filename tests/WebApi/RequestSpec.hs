@@ -2,6 +2,7 @@
 module WebApi.RequestSpec (spec) where
 
 import WebApi
+import Data.Aeson
 import Data.Text (Text)
 import Network.HTTP.Types.Method (methodPut, methodDelete, methodHead
                                  ,methodPatch, methodConnect, methodTrace, methodOptions)
@@ -50,6 +51,9 @@ data HP =  HP1 { hp1 :: Int }
 data FiP = FiP { fip :: FileInfo }
          deriving (Show, Eq, Generic)
 
+data RB = RB { rb :: Text }
+        deriving (Show, Eq, Generic)
+
 instance FromParam QP 'QueryParam where
 instance FromParam FoP 'FormParam where   
 instance FromParam CP 'Cookie where
@@ -61,6 +65,8 @@ instance ToParam FoP 'FormParam where
 instance ToParam CP 'Cookie where
 instance ToHeader HP where
 instance ToParam FiP 'FileParam where
+
+instance FromJSON RB
   
 type ApiR = Static "api"
 -- type QuickCheckR = Static "autogen"
@@ -101,6 +107,7 @@ instance ApiContract ReqSpec PUT ApiR where
   type HeaderIn PUT ApiR    = HP
   type CookieIn PUT ApiR    = CP
   -- type FormParam PUT ApiR   = FoP
+  type RequestBody PUT ApiR = '[RB]
   type ApiOut PUT ApiR      = ()
   type ApiErr PUT ApiR      = Text
 
@@ -184,8 +191,9 @@ spec = withApp $ describe "WebApi request with payload" $ do
       postHtmlForm "api?qp1=5&qp2=True&qp3.Left=foo" [("fop", "foobar")] `shouldRespondWith` 200
   context "PUT Request" $ do
     it "should be 200 ok" $ do
-      let headers = formHeaders [("HP1.hp1", "5")] [("cp", "True")]
-      request methodPut "api" headers "" `shouldRespondWith` "[]" { matchStatus = 200 }
+      let headers = formHeaders [("HP1.hp1", "5"), ("Content-Type", "application/json")] [("cp", "True")]
+          bdy = "{\"rb\":\"foobar\"}"
+      request methodPut "api" headers bdy `shouldRespondWith` "[]" { matchStatus = 200 }
   context "DELETE Request" $ do
     it "should be 200 ok" $ do
       request methodDelete "api" [] "" `shouldRespondWith` "[]" { matchStatus = 200 }
@@ -209,5 +217,6 @@ spec = withApp $ describe "WebApi request with payload" $ do
       request "TEST" "api" [] "" `shouldRespondWith` "[]" { matchStatus = 200 }
   context "When request is incomplete" $ do
     it "should be 400 ok" $ do
-      let headers = formHeaders [("HP2.hp2", "True")] []
-      request methodPut "api" headers "" `shouldRespondWith` "\"[NotFound \\\"cp\\\"]\"" { matchStatus = 400 }
+      let headers = formHeaders [("HP2.hp2", "True"), ("Content-Type", "application/json")] []
+          bdy = "{\"rb\":\"foobar\"}"
+      request methodPut "api" headers bdy `shouldRespondWith` "\"[NotFound \\\"cp\\\"]\"" { matchStatus = 400 }
