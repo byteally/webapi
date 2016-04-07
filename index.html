@@ -34,8 +34,8 @@
 <span class="ot">&gt;</span> <span class="kw">import </span><span class="dt">GHC.Generics</span>
 <span class="ot">&gt;</span> <span class="kw">import </span><span class="dt">Network.Wai.Handler.Warp</span> (run)
 <span class="ot">&gt;</span> <span class="kw">import qualified</span> <span class="dt">Network.Wai</span> <span class="kw">as</span> <span class="dt">Wai</span></code></pre></div>
-<h1 id="introduction-to-webapi">Introduction to <strong>webapi</strong></h1>
-<p><a href="https://hackage.haskell.org/package/webapi"><code>Webapi</code></a> is a library to build web apis over <a href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html"><code>WAI</code></a>. It makes use of the strong type system of haskell which lets to</p>
+<h1 id="introduction-to-webapi">Introduction to <strong>WebApi</strong></h1>
+<p><a href="https://hackage.haskell.org/package/webapi"><code>Webapi</code></a> is a library to build web APIs over <a href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html"><code>WAI</code></a>. It makes use of the strong type system of haskell which lets to</p>
 <ul>
 <li>Create a type safe routing system.</li>
 <li>Enable type safe generation of links.</li>
@@ -43,57 +43,62 @@
 <li>Auto serialization and deserialization of the request and response based on api contract.</li>
 <li>Write handlers which respect the contract.</li>
 </ul>
-<h2 id="a-first-taste-of-webapi">A First taste of webapi</h2>
-<p>Writing a web api comprises of two steps</p>
+<h2 id="a-first-taste-of-webapi">A First taste of WebApi</h2>
+<p>Writing your web API service comprises of two steps</p>
 <ul>
-<li>Writing a contract of a web api.</li>
-<li>Providing an implementation of a web api.</li>
+<li>Writing a contract (definition below)</li>
+<li>Providing an implementation</li>
 </ul>
-<p>Consider a webapi that lets you do create, update, delete and fetch users.</p>
 <h2 id="contract">Contract</h2>
-<p>The contract of API comprises of four things</p>
+<p>A contract is the list of end-points in your API service and the definition of each API endpoint. We define what goes in (Eg Query params, form params) and what comes out (the response) of each API endpoint.</p>
+<p>As an example, consider a web API service that lets you do create, update, delete and fetch users. First step is to create a datatype for our service. Lets call it <code>MyApiService</code></p>
+<p>To define your contract using the framework, you need to</p>
 <ul>
-<li>The data type of the API.</li>
-<li>The routes of the API.</li>
-<li><a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Contract.html#t:WebApi"><code>WebApi</code></a> instance which declares the endpoints.</li>
-<li><a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Contract.html#t:ApiContract"><code>ApiContract</code></a> instance which describes each endpoint.</li>
+<li>Declare a data type for your API service.</li>
 </ul>
-<p>First step is to create a datatype for our service. Lets call it <code>UserApi</code></p>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
-<span class="fu">&gt;</span> <span class="kw">data</span> <span class="dt">UserApi</span></code></pre></div>
-<p>Next, lets define the routes.</p>
+<span class="fu">&gt;</span> <span class="kw">data</span> <span class="dt">MyApiService</span></code></pre></div>
+<ul>
+<li>List down the routes of your API service.</li>
+</ul>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
 <span class="fu">&gt;</span> <span class="kw">type</span> <span class="dt">User</span>   <span class="fu">=</span> <span class="dt">Static</span> <span class="st">&quot;user&quot;</span>
 <span class="fu">&gt;</span> <span class="kw">type</span> <span class="dt">UserId</span> <span class="fu">=</span> <span class="st">&quot;user&quot;</span><span class="fu">:/</span><span class="dt">Int</span></code></pre></div>
-<p>Now, lets define the <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Contract.html#t:WebApi"><code>WebApi</code></a> instance for our service type.</p>
+<ul>
+<li>Write a <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Contract.html#t:WebApi"><code>WebApi</code></a> instance which declares the endpoints.</li>
+</ul>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">WebApi</span> <span class="dt">UserApi</span> <span class="kw">where</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">WebApi</span> <span class="dt">MyApiService</span> <span class="kw">where</span>
 <span class="fu">&gt;</span>   <span class="co">-- Route &lt;Method&gt; &lt;Route Name&gt;</span>
-<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">Apis</span> <span class="dt">UserApi</span> <span class="fu">=</span> <span class="ch">'[ Route '</span>[<span class="dt">GET</span>, <span class="dt">POST</span>]        <span class="dt">User</span>
-<span class="fu">&gt;</span>                        , <span class="dt">Route</span> <span class="ch">'[GET, PUT, DELETE] UserId</span>
-<span class="fu">&gt;</span>                        ]</code></pre></div>
-<p>Next step is to define the contract for each of the end points.</p>
+<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">Apis</span> <span class="dt">MyApiService</span> <span class="fu">=</span> <span class="ch">'[ Route '</span>[<span class="dt">GET</span>, <span class="dt">POST</span>]        <span class="dt">User</span>
+<span class="fu">&gt;</span>                             , <span class="dt">Route</span> <span class="ch">'[GET, PUT, DELETE] UserId</span>
+<span class="fu">&gt;</span>                             ]</code></pre></div>
+<ul>
+<li><p>Write <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Contract.html#t:ApiContract"><code>ApiContract</code></a> instances describing what goes in and what comes out from each API endpoint.</p>
+<p>In the following code snippet, the first instance declares that the <code>POST</code> method on route <code>/user</code> takes <code>UserData</code> as form parameters and responds with nothing (<code>()</code>).</p>
+<p>An equivalent curl syntax would be: <code>curl -H &quot;Content-Type: application/x-www-form-urlencoded&quot; -d 'age=12&amp;address=Velachery&amp;name=Bhishag' &lt;URL&gt;</code></p></li>
+</ul>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
 <span class="fu">&gt;</span> <span class="co">-- Takes a User type in form params and returns unit.</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">UserApi</span> <span class="dt">POST</span> <span class="dt">User</span> <span class="kw">where</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">MyApiService</span> <span class="dt">POST</span> <span class="dt">User</span> <span class="kw">where</span>
 <span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">FormParam</span> <span class="dt">POST</span> <span class="dt">User</span> <span class="fu">=</span> <span class="dt">UserData</span>
 <span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiOut</span>    <span class="dt">POST</span> <span class="dt">User</span> <span class="fu">=</span> ()
 <span class="fu">&gt;</span>
 <span class="fu">&gt;</span> <span class="co">-- Takes a User type in form params and returns updated users.</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">UserApi</span> <span class="dt">PUT</span> <span class="dt">UserId</span> <span class="kw">where</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">MyApiService</span> <span class="dt">PUT</span> <span class="dt">UserId</span> <span class="kw">where</span>
 <span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">FormParam</span> <span class="dt">PUT</span> <span class="dt">UserId</span> <span class="fu">=</span> <span class="dt">UserData</span>
 <span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiOut</span>    <span class="dt">PUT</span> <span class="dt">UserId</span> <span class="fu">=</span> [<span class="dt">UserData</span>]
 <span class="fu">&gt;</span>
 <span class="fu">&gt;</span>  <span class="co">-- Removes the specified user and returns unit.</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">UserApi</span> <span class="dt">DELETE</span> <span class="dt">UserId</span> <span class="kw">where</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">MyApiService</span> <span class="dt">DELETE</span> <span class="dt">UserId</span> <span class="kw">where</span>
 <span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiOut</span> <span class="dt">DELETE</span> <span class="dt">UserId</span> <span class="fu">=</span> ()
 <span class="fu">&gt;</span>
 <span class="fu">&gt;</span> <span class="co">-- Gets a specific user</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">UserApi</span> <span class="dt">GET</span> <span class="dt">UserId</span> <span class="kw">where</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">MyApiService</span> <span class="dt">GET</span> <span class="dt">UserId</span> <span class="kw">where</span>
 <span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiOut</span> <span class="dt">GET</span> <span class="dt">UserId</span> <span class="fu">=</span> <span class="dt">UserData</span>
 <span class="fu">&gt;</span>
 <span class="fu">&gt;</span> <span class="co">-- Gets all users</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">UserApi</span> <span class="dt">GET</span> <span class="dt">User</span> <span class="kw">where</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">MyApiService</span> <span class="dt">GET</span> <span class="dt">User</span> <span class="kw">where</span>
 <span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiOut</span> <span class="dt">GET</span> <span class="dt">User</span> <span class="fu">=</span> [<span class="dt">UserData</span>]
 <span class="fu">&gt;</span> 
 <span class="fu">&gt;</span> <span class="co">-- Our user type</span>
@@ -101,48 +106,47 @@
 <span class="fu">&gt;</span>                          ,<span class="ot"> address ::</span> <span class="dt">Text</span>
 <span class="fu">&gt;</span>                          ,<span class="ot"> name    ::</span> <span class="dt">Text</span>
 <span class="fu">&gt;</span>                          ,<span class="ot"> userId  ::</span> <span class="dt">Maybe</span> <span class="dt">Int</span>
-<span class="fu">&gt;</span>                          } <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>, <span class="dt">Generic</span>)
+<span class="fu">&gt;</span>                          } <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>, <span class="dt">Generic</span>)</code></pre></div>
+<p>We also have to define instances for json and param serialization &amp; deserialization for <code>UserData</code> type. A definition needn’t be provided since <a href="https://hackage.haskell.org/package/base/docs/GHC-Generics.html"><code>GHC.Generics</code></a> provides a generic implementation.</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
 <span class="fu">&gt;</span>
 <span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">FromJSON</span> <span class="dt">UserData</span>
 <span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ToJSON</span>   <span class="dt">UserData</span>
 <span class="fu">&gt;</span>   
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">FromParam</span> <span class="dt">UserData</span> <span class="ch">'FormParam</span>
-</code></pre></div>
-<p><a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Contract.html#t:ApiContract"><code>ApiContract</code></a> lets us specify what goes in (Eg <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Contract.html#t:FormParam"><code>FormParam</code></a>) and what goes out (Eg <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Contract.html#t:ApiOut"><code>ApiOut</code></a>) of the api endpoint.</p>
-<p>We will also define instances for json and param serialization &amp; deserialization for <code>UserData</code> type. A definition needn’t be provided since <a href="https://hackage.haskell.org/package/base/docs/GHC-Generics.html"><code>GHC.Generics</code></a> provides a generic implementation.</p>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">FromParam</span> <span class="dt">UserData</span> <span class="ch">'FormParam</span></code></pre></div>
 <p>This completes the contract part of the API.</p>
 <h2 id="implementation">Implementation</h2>
 <p>First step is to create a type for the implementation and define <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#t:WebApiImplementation"><code>WebApiImplementation</code></a> instance for it.</p>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
-<span class="fu">&gt;</span> <span class="kw">data</span> <span class="dt">UserApiImpl</span> <span class="fu">=</span> <span class="dt">UserApiImpl</span> 
+<span class="fu">&gt;</span> <span class="kw">data</span> <span class="dt">MyApiServiceImpl</span> <span class="fu">=</span> <span class="dt">MyApiServiceImpl</span> 
 <span class="fu">&gt;</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">WebApiImplementation</span> <span class="dt">UserApiImpl</span> <span class="kw">where</span>
-<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">HandlerM</span> <span class="dt">UserApiImpl</span> <span class="fu">=</span> <span class="dt">IO</span>
-<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiInterface</span> <span class="dt">UserApiImpl</span> <span class="fu">=</span> <span class="dt">UserApi</span></code></pre></div>
-<p><a href="http://hackage.haskell.org/package/webapi-0.1.0.0/candidate/docs/WebApi-Server.html#t:HandlerM"><code>HandlerM</code></a> is the base monad in which the <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#v:handler"><code>handler</code></a> will run. We also state that <code>UserApiImpl</code> is an implementation of the <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#t:ApiInterface"><code>ApiInterface</code></a> provided by <code>UserApi</code>.</p>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">WebApiImplementation</span> <span class="dt">MyApiServiceImpl</span> <span class="kw">where</span>
+<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">HandlerM</span> <span class="dt">MyApiServiceImpl</span> <span class="fu">=</span> <span class="dt">IO</span>
+<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiInterface</span> <span class="dt">MyApiServiceImpl</span> <span class="fu">=</span> <span class="dt">MyApiService</span></code></pre></div>
+<p><a href="http://hackage.haskell.org/package/webapi-0.1.0.0/candidate/docs/WebApi-Server.html#t:HandlerM"><code>HandlerM</code></a> is the base monad in which the <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#v:handler"><code>handler</code></a> will run. We also state that <code>MyApiServiceImpl</code> is an implementation of the <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#t:ApiInterface"><code>ApiInterface</code></a> provided by <code>MyApiServiceApi</code>.</p>
 <p>Now let’s create the <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#t:ApiHandler"><code>ApiHandler</code></a>s</p>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">UserApiImpl</span> <span class="dt">POST</span> <span class="dt">User</span> <span class="kw">where</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">MyApiServiceImpl</span> <span class="dt">POST</span> <span class="dt">User</span> <span class="kw">where</span>
 <span class="fu">&gt;</span>   handler _ req <span class="fu">=</span> <span class="kw">do</span>
 <span class="fu">&gt;</span>     <span class="kw">let</span> _userInfo <span class="fu">=</span> formParam req
 <span class="fu">&gt;</span>     respond ()
 <span class="fu">&gt;</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">UserApiImpl</span> <span class="dt">GET</span> <span class="dt">User</span> <span class="kw">where</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">MyApiServiceImpl</span> <span class="dt">GET</span> <span class="dt">User</span> <span class="kw">where</span>
 <span class="fu">&gt;</span>   handler _ _ <span class="fu">=</span> <span class="kw">do</span>
 <span class="fu">&gt;</span>     <span class="kw">let</span> users <span class="fu">=</span> []
 <span class="fu">&gt;</span>     respond users
 <span class="fu">&gt;</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">UserApiImpl</span> <span class="dt">PUT</span> <span class="dt">UserId</span> <span class="kw">where</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">MyApiServiceImpl</span> <span class="dt">PUT</span> <span class="dt">UserId</span> <span class="kw">where</span>
 <span class="fu">&gt;</span>   handler _ req <span class="fu">=</span> <span class="kw">do</span>
 <span class="fu">&gt;</span>     <span class="kw">let</span> userInfo <span class="fu">=</span> formParam req
 <span class="fu">&gt;</span>     respond [userInfo]
 <span class="fu">&gt;</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">UserApiImpl</span> <span class="dt">DELETE</span> <span class="dt">UserId</span> <span class="kw">where</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">MyApiServiceImpl</span> <span class="dt">DELETE</span> <span class="dt">UserId</span> <span class="kw">where</span>
 <span class="fu">&gt;</span>   handler _ req <span class="fu">=</span> <span class="kw">do</span>
 <span class="fu">&gt;</span>     <span class="kw">let</span> _userID <span class="fu">=</span> pathParam req
 <span class="fu">&gt;</span>     respond ()
 <span class="fu">&gt;</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">UserApiImpl</span> <span class="dt">GET</span> <span class="dt">UserId</span> <span class="kw">where</span>
+<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">MyApiServiceImpl</span> <span class="dt">GET</span> <span class="dt">UserId</span> <span class="kw">where</span>
 <span class="fu">&gt;</span>   handler _ req <span class="fu">=</span> <span class="kw">do</span>
 <span class="fu">&gt;</span>     <span class="kw">let</span> userID <span class="fu">=</span> pathParam req
 <span class="fu">&gt;</span>         userInfo <span class="fu">=</span> <span class="dt">UserData</span> <span class="dv">10</span> <span class="st">&quot;Address&quot;</span> <span class="st">&quot;Name&quot;</span> (<span class="dt">Just</span> userID)
@@ -150,14 +154,26 @@
 <p>By keeping the implementation separate from the contract, it is possible for a contract to have multiple implementations. Hypothetically, there could be a websocket implementation as well as a ReST implementation for a single contract.</p>
 <p>The last thing that is left is to create a <a href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html"><code>WAI</code></a> application from all the aforementioned information. For that we use <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#v:serverApp"><code>serverApp</code></a>.</p>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
-<span class="fu">&gt;</span><span class="ot"> userApiApp ::</span> <span class="dt">Wai.Application</span>
-<span class="fu">&gt;</span> userApiApp <span class="fu">=</span> serverApp serverSettings <span class="dt">UserApiImpl</span>
+<span class="fu">&gt;</span><span class="ot"> myApiApp ::</span> <span class="dt">Wai.Application</span>
+<span class="fu">&gt;</span> myApiApp <span class="fu">=</span> serverApp serverSettings <span class="dt">MyApiServiceImpl</span>
 <span class="fu">&gt;</span>
 <span class="fu">&gt;</span><span class="ot"> main ::</span> <span class="dt">IO</span> ()
-<span class="fu">&gt;</span> main <span class="fu">=</span> run <span class="dv">8000</span> userApiApp
+<span class="fu">&gt;</span> main <span class="fu">=</span> run <span class="dv">8000</span> myApiApp
 <span class="fu">&gt;</span> </code></pre></div>
-<p>That’s it - now <code>userApiApp</code> could be run like any other <a href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html"><code>WAI</code></a> application.</p>
+<p>That’s it - now <code>myApiApp</code> could be run like any other <a href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html"><code>WAI</code></a> application.</p>
 <p>You can find the whole source code for this post in literate haskell <a href="https://github.com/byteally/webapi/blob/master/docs/index.lhs">here</a>.</p>
+    <div id="disqus_thread"></div>
+    <script>
+    (function() { // DON'T EDIT BELOW THIS LINE
+    var d = document, s = d.createElement('script');
+
+    s.src = '//byteally-webapi.disqus.com/embed.js';
+
+    s.setAttribute('data-timestamp', +new Date());
+    (d.head || d.body).appendChild(s);
+    })();
+    </script>
+    <noscript>Please enable JavaScript to view the <a href="https://disqus.com/?ref_noscript" rel="nofollow">comments powered by Disqus.</a></noscript>
   </main>
   <footer>
     <div>
@@ -186,6 +202,7 @@
         ga('create', 'UA-71903268-2', 'auto');
         ga('send', 'pageview');
     </script>
+    <script id="dsq-count-scr" src="//byteally-webapi.disqus.com/count.js" async></script>
   </footer>
 </body>
 </html>
