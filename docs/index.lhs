@@ -24,8 +24,8 @@ A First taste of WebApi
 
 Writing your web API service comprises of two steps
 
-  * Writing a contract (definition below) of a web API.
-  * Providing an implementation of the web API.
+  * Writing a contract (definition below)
+  * Providing an implementation
 
 Contract
 --------
