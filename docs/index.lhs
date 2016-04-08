@@ -11,13 +11,45 @@
 Introduction to **WebApi**
 ==========================
 
-[`Webapi`](https://hackage.haskell.org/package/webapi) is a library to build web APIs over [`WAI`](https://hackage.haskell.org/package/wai/docs/Network-Wai.html). It makes use of the strong type system of haskell which lets to
+[`Webapi`](https://hackage.haskell.org/package/webapi) is a Haskell library that lets you
+
+  * Write web API services
+  * Quickly build Haskell client for existing API services
+  * Generate API console interface for your web API ([coming soon](https://github.com/byteally/webapi-console))
+  * Generate a mock server that can mock your responses and requests too.
+
+[`Webapi`](https://hackage.haskell.org/package/webapi) is built with [`WAI`](https://hackage.haskell.org/package/wai/docs/Network-Wai.html). It makes use of the strong type system of haskell which lets to
 
   * Create a type safe routing system.
   * Enable type safe generation of links.
   * Specify a contract for the APIs.
   * Auto serialization and deserialization of the request and response based on api contract.
   * Write handlers which respect the contract.
+
+Installation
+------------
+
+We recommend using [stack](https://github.com/commercialhaskell/stack#readme) build tool for installation and building. If you don't have [stack](https://github.com/commercialhaskell/stack#readme) already, follow [these](http://docs.haskellstack.org/en/stable/install_and_upgrade/) instructions to install it. To setup your own project:
+ 
+ * Create a project: `stack new <Your-Project-Name> --resolver lts-3.5`
+
+ * Add *webapi* to the *extra-deps* section in `stack.yaml` file:
+
+```
+
+extra-deps:
+- webapi-0.2.1.0
+
+```
+  Also add *webapi* to the `build-depends` section of your *cabal* file.
+
+```
+
+build-depends:    webapi
+
+```
+
+You can find the whole source code for this post in literate haskell [here](https://github.com/byteally/webapi/blob/master/docs/index.lhs). You can fire up `ghci` by running `stack exec ghci` and load this file with: `:l index.lhs` command.
 
 A First taste of WebApi
 -----------------------
@@ -183,5 +215,3 @@ The last thing that is left is to create a [`WAI`](https://hackage.haskell.org/p
 ```
 
 That's it - now `myApiApp` could be run like any other [`WAI`](https://hackage.haskell.org/package/wai/docs/Network-Wai.html) application.
-
-You can find the whole source code for this post in literate haskell [here](https://github.com/byteally/webapi/blob/master/docs/index.lhs).

@@ -1,4 +1,15 @@
-# webapi
+webapi
 ========
 
-A WAI based library for web api. Please take a look at <http://byteally.github.io/webapi/> for more details.
+Introduction to **WebApi**
+--------------------------
+
+[`Webapi`](https://hackage.haskell.org/package/webapi) is a Haskell library that lets you
+
+  * Write web API services
+  * Quickly build Haskell client for existing API services
+  * Generate API console interface for your web API ([coming soon](https://github.com/byteally/webapi-console))
+  * Generate a mock server that can mock your responses and requests too.
+
+
+Please take a look at <http://byteally.github.io/webapi/> for more details.
