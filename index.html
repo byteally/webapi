@@ -35,7 +35,14 @@
 <span class="ot">&gt;</span> <span class="kw">import </span><span class="dt">Network.Wai.Handler.Warp</span> (run)
 <span class="ot">&gt;</span> <span class="kw">import qualified</span> <span class="dt">Network.Wai</span> <span class="kw">as</span> <span class="dt">Wai</span></code></pre></div>
 <h1 id="introduction-to-webapi">Introduction to <strong>WebApi</strong></h1>
-<p><a href="https://hackage.haskell.org/package/webapi"><code>Webapi</code></a> is a library to build web APIs over <a href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html"><code>WAI</code></a>. It makes use of the strong type system of haskell which lets to</p>
+<p><a href="https://hackage.haskell.org/package/webapi"><code>Webapi</code></a> is a Haskell library that lets you</p>
+<ul>
+<li>Write web API services</li>
+<li>Quickly build Haskell client for existing API services</li>
+<li>Generate API console interface for your web API (<a href="https://github.com/byteally/webapi-console">coming soon</a>)</li>
+<li>Generate a mock server that can mock your responses and requests too.</li>
+</ul>
+<p><a href="https://hackage.haskell.org/package/webapi"><code>Webapi</code></a> is built with <a href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html"><code>WAI</code></a>. It makes use of the strong type system of haskell which lets to</p>
 <ul>
 <li>Create a type safe routing system.</li>
 <li>Enable type safe generation of links.</li>
@@ -43,6 +50,21 @@
 <li>Auto serialization and deserialization of the request and response based on api contract.</li>
 <li>Write handlers which respect the contract.</li>
 </ul>
+<h2 id="installation">Installation</h2>
+<p>We recommend using <a href="https://github.com/commercialhaskell/stack#readme">stack</a> build tool for installation and building. If you don’t have <a href="https://github.com/commercialhaskell/stack#readme">stack</a> already, follow <a href="http://docs.haskellstack.org/en/stable/install_and_upgrade/">these</a> instructions to install it. To setup your own project:</p>
+<ul>
+<li><p>Create a project: <code>stack new &lt;Your-Project-Name&gt; --resolver lts-3.5</code></p></li>
+<li><p>Add <em>webapi</em> to the <em>extra-deps</em> section in <code>stack.yaml</code> file:</p></li>
+</ul>
+<pre><code>
+extra-deps:
+- webapi-0.2.1.0
+</code></pre>
+<p>Also add <em>webapi</em> to the <code>build-depends</code> section of your <em>cabal</em> file.</p>
+<pre><code>
+build-depends:    webapi
+</code></pre>
+<p>You can find the whole source code for this post in literate haskell <a href="https://github.com/byteally/webapi/blob/master/docs/index.lhs">here</a>. You can fire up <code>ghci</code> by running <code>stack exec ghci</code> and load this file with: <code>:l index.lhs</code> command.</p>
 <h2 id="a-first-taste-of-webapi">A First taste of WebApi</h2>
 <p>Writing your web API service comprises of two steps</p>
 <ul>
@@ -161,7 +183,6 @@
 <span class="fu">&gt;</span> main <span class="fu">=</span> run <span class="dv">8000</span> myApiApp
 <span class="fu">&gt;</span> </code></pre></div>
 <p>That’s it - now <code>myApiApp</code> could be run like any other <a href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html"><code>WAI</code></a> application.</p>
-<p>You can find the whole source code for this post in literate haskell <a href="https://github.com/byteally/webapi/blob/master/docs/index.lhs">here</a>.</p>
     <div id="disqus_thread"></div>
     <script>
     (function() { // DON'T EDIT BELOW THIS LINE
