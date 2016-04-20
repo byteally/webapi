@@ -21,13 +21,13 @@ respSpecApp = serverApp serverSettings RespSpecImpl
 data RespSpec
 data RespSpecImpl = RespSpecImpl
 
-data Out = Out { out :: Text }
+data Out = Out { _out :: Text }
          deriving (Show, Eq, Generic) 
-data HOut = HOut { hOut :: Text }
+data HOut = HOut { _hOut :: Text }
          deriving (Show, Eq, Generic) 
-data COut = COut { cOut :: Text }
+data COut = COut { _cOut :: Text }
          deriving (Show, Eq, Generic)
-data Err = Err { err :: Text }
+data Err = Err { _err :: Text }
          deriving (Show, Eq, Generic)
 
 instance ToJSON Err
