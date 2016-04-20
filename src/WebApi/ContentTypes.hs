@@ -19,6 +19,7 @@ module WebApi.ContentTypes
        -- * Predefined Content Types.
          JSON
        , PlainText
+       , HTML
        , OctetStream
        , MultipartFormData
        , UrlEncoded
@@ -60,6 +61,9 @@ data JSON
 
 -- | Type representing content type of @text/plain@.
 data PlainText
+
+-- | Type representing content type of @text/html@.
+data HTML
 
 -- | Type representing content type of @application/octetstream@.
 data OctetStream
@@ -105,6 +109,9 @@ instance Accept JSON where
 
 instance Accept PlainText where
   contentType _ = "text" // "plain" /: ("charset", "utf-8")
+
+instance Accept HTML where
+  contentType _ = "text" // "html" /: ("charset", "utf-8")
 
 instance Accept OctetStream where
   contentType _ = "application" // "octet-stream"

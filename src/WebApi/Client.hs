@@ -75,7 +75,6 @@ data Route' m r = Route'
 
 -- | Creates the 'Response' type from the response body.
 fromClientResponse :: forall m r.( FromHeader (HeaderOut m r)
-                              , ParamErrToApiErr (ApiErr m r)
                               , Decodings (ContentTypes m r) (ApiOut m r)
                               , Decodings (ContentTypes m r) (ApiErr m r)
                               , CookieOut m r ~ ()
@@ -87,25 +86,23 @@ fromClientResponse hcResp = do
       respHdr  = fromHeader hdrsOut :: Validation [ParamErr] (HeaderOut m r)
       -- respCk   = fromCookie
   respBodyBS <- respBody
-  return $ case statusIsSuccessful status of
-    True  -> case Success <$> pure status
-                         <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
-                         <*> respHdr
-                         <*> pure () of
+  return $ case Success <$> pure status
+               <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
+               <*> respHdr
+               <*> pure () of
       Validation (Right success) -> success
-      Validation (Left errs) -> Failure $ Left $ ApiError status (toApiErr errs) Nothing Nothing
-    False -> case ApiError
-                  <$> pure status
-                  <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
-                  <*> (Just <$> respHdr)
-                  -- TODO: Handle cookies
-                  <*> pure Nothing of
-               Validation (Right failure) -> (Failure . Left) failure
-               Validation (Left _errs) -> Failure $ Right (OtherError (toException UnknownClientException))
-
+      Validation (Left errs) -> 
+        case ApiError
+              <$> pure status
+              <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
+              <*> (Just <$> respHdr)
+              -- TODO: Handle cookies
+              <*> pure Nothing of
+           Validation (Right failure) -> (Failure . Left) failure
+           Validation (Left _errs) -> Failure $ Right (OtherError (toException UnknownClientException))
     where toParamErr :: Either String a -> Either [ParamErr] a
           toParamErr (Left _str) = Left []
-          toParamErr (Right r)  = Right r
+          toParamErr (Right r)   = Right r
 
           decode' :: ( Decodings (ContentTypes m r) a
                    ) => apiRes m r -> ByteString -> Either String a
@@ -165,7 +162,8 @@ toClientRequest clientReq req = do
         cts'     = Proxy :: Proxy (StripContents (RequestBody m r))
 
 -- | Given a `Request` type, create the request and obtain a response. Gives back a 'Response'.
-client :: ( CookieOut m r ~ ()
+client :: forall m r .
+          ( CookieOut m r ~ ()
           , ToParam (PathParam m r) 'PathParam
           , ToParam (QueryParam m r) 'QueryParam
           , ToParam (FormParam m r) 'FormParam
@@ -174,7 +172,6 @@ client :: ( CookieOut m r ~ ()
           , FromHeader (HeaderOut m r)
           , Decodings (ContentTypes m r) (ApiOut m r)
           , Decodings (ContentTypes m r) (ApiErr m r)
-          , ParamErrToApiErr (ApiErr m r)
           , SingMethod m
           , MkPathFormatString r
           , PartEncodings (RequestBody m r)
@@ -183,7 +180,43 @@ client :: ( CookieOut m r ~ ()
 client sett req = do
   cReqInit <- HC.parseUrl (baseUrl sett)
   cReq <- toClientRequest cReqInit req
-  HC.withResponse cReq (connectionManager sett) fromClientResponse
+  catches (HC.withResponse cReq (connectionManager sett) fromClientResponse)
+    [ Handler (\(ex :: HC.HttpException) -> do
+                case ex of
+                  HC.StatusCodeException status resHeaders _ -> do
+                    let mBody = find ((== "X-Response-Body-Start") . fst) resHeaders
+                        bdy   = case mBody of
+                                  Nothing -> "[]"
+                                  Just (_, body) -> body
+                        removeExtraHeaders = filter (\(x, _) -> (x /= "X-Request-URL") || (x /= "X-Response-Body-Start"))
+                    return $ case ApiError
+                          <$> pure status
+                          <*> (Validation $ toParamErr $ decode' resHeaders (Route' :: Route' m r) bdy)
+                          <*> (Just <$> (fromHeader . removeExtraHeaders $ resHeaders))
+                          -- TODO: Handle cookies
+                          <*> pure Nothing of
+                       Validation (Right failure) -> (Failure . Left) failure
+                       Validation (Left _errs) -> Failure $ Right (OtherError (toException UnknownClientException))
+                  _ -> return . Failure . Right . OtherError $ toException ex
+                      )
+    , Handler (\(ex :: IOException) -> return . Failure . Right . OtherError $ toException ex)
+    ]
+    where toParamErr :: Either String a -> Either [ParamErr] a
+          toParamErr (Left _str) = Left []
+          toParamErr (Right r)   = Right r
+
+          decode' :: ( Decodings (ContentTypes m r) a
+                   ) => [Header] -> apiRes m r -> ByteString -> Either String a
+          decode' h r o = case getContentType h of
+            Just ctype -> let decs = decodings (reproxy r) o
+                          in maybe (firstRight (map snd decs)) id (mapContentMedia decs ctype)
+            Nothing    -> firstRight (map snd (decodings (reproxy r) o))
+
+          reproxy :: apiRes m r -> Proxy (ContentTypes m r)
+          reproxy = const Proxy
+
+          firstRight :: [Either String b] -> Either String b
+          firstRight = maybe (Left "Couldn't find matching Content-Type") id . find isRight
 
 -- | This exception is used to signal an irrecoverable error while deserializing the response.
 data UnknownClientException = UnknownClientException
