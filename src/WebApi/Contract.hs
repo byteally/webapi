@@ -15,6 +15,7 @@ Provides the contract for the web api. The contract consists of 'WebApi' and 'Ap
 
 -}
 
+{-# LANGUAGE CPP                       #-}
 {-# LANGUAGE DataKinds                 #-}
 {-# LANGUAGE FlexibleContexts          #-}
 {-# LANGUAGE KindSignatures            #-}
@@ -23,6 +24,11 @@ Provides the contract for the web api. The contract consists of 'WebApi' and 'Ap
 {-# LANGUAGE TypeFamilies              #-}
 {-# LANGUAGE UndecidableInstances      #-}
 {-# LANGUAGE PatternSynonyms           #-}
+
+#if __GLASGOW_HASKELL__ >= 800
+{-# LANGUAGE UndecidableSuperClasses   #-}
+#endif
+
 module WebApi.Contract
        (-- * API Contract
          WebApi (..)
@@ -182,7 +188,11 @@ data ApiError m r = ApiError
 data OtherError = OtherError { exception :: SomeException }
 
 -- | Used for constructing 'Request'
+#if __GLASGOW_HASKELL__ >= 800
+pattern Request :: (SingMethod m)
+#else
 pattern Request :: () => (SingMethod m)
+#endif
                 => PathParam m r
                 -> QueryParam m r 
                 -> FormParam m r
@@ -199,7 +209,11 @@ pattern Request pp qp fp fip hi ci rb <- Req' pp qp fp fip hi ci rb _ where
 
 -- | Exists only for compatability reasons. This will be removed in the next version.
 -- Use 'Request' pattern instead
+#if __GLASGOW_HASKELL__ >= 800
+pattern Req ::  (SingMethod m, HListToTuple (StripContents (RequestBody m r)) ~ ())
+#else
 pattern Req :: () => (SingMethod m, HListToTuple (StripContents (RequestBody m r)) ~ ())
+#endif
                 => PathParam m r
                 -> QueryParam m r 
                 -> FormParam m r

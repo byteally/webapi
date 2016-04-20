@@ -74,8 +74,7 @@ raise :: ( MonadThrow handM
 raise status errs = raiseWith' (ApiError status errs Nothing Nothing)
 
 -- | This function short circuits returning an `ApiError`.
-raiseWith :: ( Monad handM
-              , MonadThrow handM
+raiseWith :: ( MonadThrow handM
               , Typeable m
               , Typeable r
              ) => Status

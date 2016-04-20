@@ -1,12 +1,18 @@
-{-# LANGUAGE ConstraintKinds       #-}
-{-# LANGUAGE DataKinds             #-}
-{-# LANGUAGE DefaultSignatures     #-}
-{-# LANGUAGE FlexibleContexts      #-}
-{-# LANGUAGE KindSignatures        #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE OverloadedStrings     #-}
-{-# LANGUAGE ScopedTypeVariables   #-}
-{-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE CPP                     #-}
+{-# LANGUAGE ConstraintKinds         #-}
+{-# LANGUAGE DataKinds               #-}
+{-# LANGUAGE DefaultSignatures       #-}
+{-# LANGUAGE FlexibleContexts        #-}
+{-# LANGUAGE KindSignatures          #-}
+{-# LANGUAGE MultiParamTypeClasses   #-}
+{-# LANGUAGE OverloadedStrings       #-}
+{-# LANGUAGE ScopedTypeVariables     #-}
+{-# LANGUAGE TypeFamilies            #-}
+
+#if __GLASGOW_HASKELL__ >= 800
+{-# LANGUAGE UndecidableSuperClasses #-}
+#endif
+
 module WebApi.Internal where
 
 import           Blaze.ByteString.Builder           (Builder, toByteString)
@@ -161,7 +167,7 @@ renderPaths p r = toByteString
         fillHoles  Hole             (segs, dynV: xs) = (decodeUtf8 dynV : segs, xs)
         fillHoles  Hole             (_segs, [])      = error "Panic: fewer pathparams than holes"
 
-        toRoute :: (MkPathFormatString r) => route m r -> Proxy r
+        toRoute :: route m r -> Proxy r
         toRoute = const Proxy
 
 -- | Describes the implementation of a single API end point corresponding to @ApiContract (ApiInterface p) m r@

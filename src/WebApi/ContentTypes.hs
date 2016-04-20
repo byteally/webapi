@@ -4,6 +4,7 @@ License     : BSD3
 Stability   : experimental
 -}
 
+{-# LANGUAGE CPP                   #-}
 {-# LANGUAGE ConstraintKinds       #-}
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE FlexibleInstances     #-}
@@ -14,6 +15,7 @@ Stability   : experimental
 {-# LANGUAGE TypeOperators         #-}
 {-# LANGUAGE UndecidableInstances  #-}
 {-# LANGUAGE TupleSections         #-}
+
 module WebApi.ContentTypes
        (
        -- * Predefined Content Types.
@@ -45,7 +47,11 @@ module WebApi.ContentTypes
 import           Blaze.ByteString.Builder           (Builder)
 import qualified Blaze.ByteString.Builder.Char.Utf8 as Utf8 (fromText)
 import           Data.Aeson                         (ToJSON (..), FromJSON (..), eitherDecodeStrict)
+#if MIN_VERSION_aeson(0,9,0)
+import           Data.Aeson.Encode                  (encodeToBuilder)
+#else
 import           Data.Aeson.Encode                  (encodeToByteStringBuilder)
+#endif
 import           Data.ByteString                    (ByteString)
 import           Data.Maybe                         (fromMaybe)
 import           Data.Proxy
@@ -127,7 +133,11 @@ class (Accept a) => Encode a c where
   encode :: Proxy a -> c -> Builder
 
 instance (ToJSON c) => Encode JSON c where
+#if MIN_VERSION_aeson(0,9,0)  
+  encode _ = encodeToBuilder . toJSON
+#else
   encode _ = encodeToByteStringBuilder . toJSON
+#endif
 
 instance (ToText a) => Encode PlainText a where
   encode _ = Utf8.fromText . toText

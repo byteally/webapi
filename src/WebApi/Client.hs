@@ -91,7 +91,7 @@ fromClientResponse hcResp = do
                <*> respHdr
                <*> pure () of
       Validation (Right success) -> success
-      Validation (Left errs) -> 
+      Validation (Left _errs) -> 
         case ApiError
               <$> pure status
               <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)

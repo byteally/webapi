@@ -447,11 +447,11 @@ newtype NonNested a = NonNested { getNonNestedParam :: a }
                     deriving (Show, Eq, Read)
 
 -- | Serialize a type without nesting.
-toNonNestedParam :: (ToParam (NonNested a) parK, EncodeParam a) => Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
+toNonNestedParam :: (ToParam (NonNested a) parK) => Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
 toNonNestedParam par pfx a = toParam par pfx (NonNested a)
 
 -- | (Try to) Deserialize a type without nesting.
-fromNonNestedParam :: (FromParam (NonNested a) parK, DecodeParam a) => Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
+fromNonNestedParam :: (FromParam (NonNested a) parK) => Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
 fromNonNestedParam par pfx kvs = getNonNestedParam <$> fromParam par pfx kvs
 
 instance (EncodeParam a) => ToParam (NonNested a) 'QueryParam where
@@ -682,13 +682,13 @@ instance (EncodeParam a) => ToParam (OptValue a) 'Cookie where
   toParam _ pfx (OptValue (Just val)) = [(pfx, encodeParam val)]
   toParam _ _ (OptValue Nothing)     = []
 
-instance (ToJSON a, FromJSON a) => ToParam (JsonOf a) 'QueryParam where
+instance (ToJSON a) => ToParam (JsonOf a) 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance (ToJSON a, FromJSON a) => ToParam (JsonOf a) 'FormParam where
+instance (ToJSON a) => ToParam (JsonOf a) 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance (ToJSON a, FromJSON a) => ToParam (JsonOf a) 'Cookie where
+instance (ToJSON a) => ToParam (JsonOf a) 'Cookie where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam a par => ToParam (Maybe a) par where
@@ -1150,7 +1150,7 @@ instance FromParam Day 'Cookie where
      _      -> Validation $ Left [ParseErr key "Unable to cast to Day"]
    _ ->  Validation $ Left [NotFound key]
 
-instance (Show (DeSerializedData par), FromParam a par) => FromParam [a] par where
+instance (FromParam a par) => FromParam [a] par where
   fromParam pt key kvs = case Trie.null kvs' of
     True  ->  Validation $ Right []
     False ->
@@ -1166,7 +1166,7 @@ instance (Show (DeSerializedData par), FromParam a par) => FromParam [a] par whe
             (Validation (Right _), Validation (Left es)) -> Validation $ Left es
             (Validation (Left as), Validation (Left es)) -> Validation $ Left (es ++ as)
 
-instance (Show (DeSerializedData par), FromParam a par) => FromParam (Vector a) par where
+instance (FromParam a par) => FromParam (Vector a) par where
   fromParam pt key kvs = case fromParam pt key kvs of
     Validation (Right v)  -> Validation $ Right (V.fromList v)
     Validation (Left err) -> Validation (Left err)
@@ -1441,18 +1441,18 @@ instance (ToParam a parK) => ToParam (Field s a) parK where
 instance (FromParam a parK) => FromParam (Field s a) parK where
   fromParam pt key kvs = Field <$> fromParam pt key kvs
 
-type family IsMeta a where
-  IsMeta (Field s a) = 'True
-  IsMeta a           = 'False
+type family IsField a where
+  IsField (Field s a) = 'True
+  IsField a           = 'False
 
-class Meta a (b :: Bool) where
-  meta :: Proxy a -> Proxy b -> (ByteString -> ByteString)
+class FieldModifier a (b :: Bool) where
+  fieldMod :: Proxy a -> Proxy b -> (ByteString -> ByteString)
 
-instance (KnownSymbol s) => Meta (Field s a) 'True where
-  meta _ _ = const $ ASCII.pack (symbolVal (Proxy :: Proxy s))
+instance (KnownSymbol s) => FieldModifier (Field s a) 'True where
+  fieldMod _ _ = const $ ASCII.pack (symbolVal (Proxy :: Proxy s))
 
-instance Meta a 'False where
-  meta _ _ = id
+instance FieldModifier a 'False where
+  fieldMod _ _ = id
 
 -- | Serialize a type to the header params
 class ToHeader a where
@@ -1576,9 +1576,9 @@ instance (GFromParam f parK, Datatype t) => GFromParam (M1 D t f) parK where
 
     where dtN = T.pack $ datatypeName (undefined :: (M1 D t f) a)
 
-instance (GFromParam f parK, Selector t, f ~ (K1 i c), Meta c (IsMeta c)) => GFromParam (M1 S t f) parK where
+instance (GFromParam f parK, Selector t, f ~ (K1 i c), FieldModifier c (IsField c)) => GFromParam (M1 S t f) parK where
   gfromParam pt pfx pa psett kvs = let fldN = (ASCII.pack $ (selName (undefined :: (M1 S t f) a)))
-                                       modSelName = meta (Proxy :: Proxy c) (Proxy :: Proxy (IsMeta c))
+                                       modSelName = fieldMod (Proxy :: Proxy c) (Proxy :: Proxy (IsField c))
                                    in case fldN of
                                      "" -> M1 <$> gfromParam pt (pfx `nest` numberedFld pa) pa psett (submap pfx kvs)
                                      _  -> M1 <$> gfromParam pt (pfx `nest` (modSelName fldN)) pa psett (submap pfx kvs)
@@ -1610,9 +1610,9 @@ instance (GToParam f parK, Constructor t) => GToParam (M1 C t f) parK where
 instance (GToParam f parK) => GToParam (M1 D t f) parK where
   gtoParam pt pfx pa psett (M1 x) = gtoParam pt pfx pa psett x
 
-instance (GToParam f parK, Selector t, f ~ (K1 i c), Meta c (IsMeta c)) => GToParam (M1 S t f) parK where
+instance (GToParam f parK, Selector t, f ~ (K1 i c), FieldModifier c (IsField c)) => GToParam (M1 S t f) parK where
   gtoParam pt pfx pa psett  m@(M1 x) = let fldN = ASCII.pack (selName m)
-                                           modSelName = meta (Proxy :: Proxy c) (Proxy :: Proxy (IsMeta c))
+                                           modSelName = fieldMod (Proxy :: Proxy c) (Proxy :: Proxy (IsField c))
                                        in case fldN of
                                          "" -> gtoParam pt (pfx `nest` numberedFld pa) pa psett x
                                          _  -> gtoParam pt (pfx `nest` (modSelName fldN)) pa psett x
