@@ -35,23 +35,23 @@ newtype Age = Age { unAge :: Int }
             deriving (Show, Eq, Generic)
 -}
 
-data QP = QP { qp1 :: Int , qp2 :: Maybe Bool, qp3 :: Either Text Double }
+data QP = QP { _qp1 :: Int , _qp2 :: Maybe Bool, _qp3 :: Either Text Double }
         deriving (Show, Eq, Generic)
 
-data FoP = FoP { fop :: ByteString }
+data FoP = FoP { _fop :: ByteString }
          deriving (Show, Eq, Generic)
 
-data CP = CP { cp :: Bool }
+data CP = CP { _cp :: Bool }
          deriving (Show, Eq, Generic)
 
-data HP =  HP1 { hp1 :: Int }
-         | HP2 { hp2 :: Bool }
+data HP =  HP1 { _hp1 :: Int }
+         | HP2 { _hp2 :: Bool }
          deriving (Show, Eq, Generic)
 
-data FiP = FiP { fip :: FileInfo }
+data FiP = FiP { _fip :: FileInfo }
          deriving (Show, Eq, Generic)
 
-data RB = RB { rb :: Text }
+data RB = RB { _rb :: Text }
         deriving (Show, Eq, Generic)
 
 instance FromParam QP 'QueryParam where
@@ -175,9 +175,9 @@ instance ApiHandler ReqSpecImpl OPTIONS ApiR where
   handler _ _ = respond ["GET", "POST"]
 
 formHeaders :: [(ByteString, ByteString)] -> [(ByteString, ByteString)] -> [Header]
-formHeaders headerKvs cookieKvs = map toHeader headerKvs <> [toCookie cookieKvs]
-  where toHeader (k, v) = (mk k, v)
-        toCookie kvs    = (hCookie, serializeCookie kvs)
+formHeaders headerKvs cookieKvs = map toHeader' headerKvs <> [toCookie' cookieKvs]
+  where toHeader' (k, v) = (mk k, v)
+        toCookie' kvs    = (hCookie, serializeCookie kvs)
 
         serializeCookie = foldl' (\acc (k, v) -> acc <> ";" <> k <> "=" <> v) ""
         
