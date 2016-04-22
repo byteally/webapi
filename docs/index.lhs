@@ -31,14 +31,14 @@ Installation
 
 We recommend using [stack](https://github.com/commercialhaskell/stack#readme) build tool for installation and building. If you don't have [stack](https://github.com/commercialhaskell/stack#readme) already, follow [these](http://docs.haskellstack.org/en/stable/install_and_upgrade/) instructions to install it. To setup your own project:
  
- * Create a project: `stack new <Your-Project-Name> --resolver lts-3.5`
+ * Create a project: `stack new <Your-Project-Name>`
 
  * Add *webapi* to the *extra-deps* section in `stack.yaml` file:
 
 ```
 
 extra-deps:
-- webapi-0.2.1.0
+- webapi-0.2.2.0
 
 ```
   Also add *webapi* to the `build-depends` section of your *cabal* file.
