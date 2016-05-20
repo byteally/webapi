@@ -33,7 +33,7 @@ import qualified Data.Text                          as T (pack)
 import           Data.Text.Encoding                 (decodeUtf8)
 import           Data.Typeable                      (Typeable)
 import           Network.HTTP.Media                 (MediaType, mapAcceptMedia,
-                                                     matchAccept)
+                                                     matchAccept, matchContent)
 import           Network.HTTP.Media.RenderHeader    (renderHeader)
 import           Network.HTTP.Types                 hiding (Query)
 import           Network.URI                        (URI (..))
@@ -74,11 +74,9 @@ fromWaiRequest waiReq pathPar = do
     Just _ -> do
       (formPar, filePar) <- runResourceT $ withInternalState $
                               \internalState -> Wai.parseRequestBody (Wai.tempFileBackEnd internalState) waiReq
-      print $ hasFormData $ getContentType $ Wai.requestHeaders waiReq
       return (formPar, filePar, [])
     Nothing -> do
       bdy <- Wai.requestBody waiReq
-      print bdy
       return ([], [], [(fromMaybe (renderHeader $ contentType (Proxy :: Proxy OctetStream)) mContentTy, bdy)])
 
   return $ Request <$> pure pathPar
@@ -89,7 +87,7 @@ fromWaiRequest waiReq pathPar = do
     <*> (fromCookie $ maybe [] parseCookies (getCookie waiReq))
     <*> (fromBody rBody)
   where
-    hasFormData x = matchAccept [contentType (Proxy :: Proxy MultipartFormData), contentType (Proxy :: Proxy UrlEncoded)] =<< x
+    hasFormData x = matchContent [contentType (Proxy :: Proxy MultipartFormData), contentType (Proxy :: Proxy UrlEncoded)] =<< x
     fromBody x = Validation $ either (const (Left [NotFound "415"])) (Right . fromRecTuple (Proxy :: Proxy (StripContents (RequestBody m r)))) $ partDecodings (Proxy :: Proxy (RequestBody m r)) x
 
 toWaiResponse :: ( ToHeader (HeaderOut m r)
