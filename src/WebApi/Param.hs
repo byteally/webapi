@@ -115,6 +115,7 @@ import           GHC.TypeLits
 import           Network.HTTP.Types
 import           Network.HTTP.Types                 as Http (Header, QueryItem)
 import qualified Network.Wai.Parse                  as Wai (FileInfo (..))
+import           Control.Applicative
 
 -- | A type for holding a file.
 newtype FileInfo = FileInfo { fileInfo :: Wai.FileInfo FilePath }
@@ -1398,6 +1399,14 @@ instance ToJSON ParamErr where
   toJSON (ParseErr bs msg) = case decodeUtf8' bs of
     Left ex -> utf8DecodeError "ToJSON ParamErr" (show ex)
     Right bs' -> A.object ["ParseErr" A..= [bs', msg]]
+
+instance FromJSON ParamErr where
+  parseJSON = A.withObject "ParamErr" $ \obj ->
+    (NotFound . encodeUtf8 <$> obj .: "NotFound")
+    <|> (mkParseErr <$> obj .: "ParseErr")
+    where mkParseErr [key, msg] = ParseErr (encodeUtf8 key) msg
+          mkParseErr vals = error $ "Error parsing ParseErr as JSON. ParseErr accepts exactly two arg but recieved " ++ (show $ Prelude.length vals)
+  
 
 -- | Convert the 'ParamErr' that occured during deserialization into 'ApiErr' type which can then be put in 'Response'.
 class ParamErrToApiErr apiErr where
