@@ -102,6 +102,7 @@ import qualified Data.Text                          as T (Text, pack, uncons)
 import           Data.Text.Encoding                 (decodeUtf8', encodeUtf8)
 import           Data.Time.Calendar                 (Day)
 import           Data.Time.Clock                    (UTCTime)
+import           Data.Time.LocalTime                (LocalTime, TimeOfDay)
 import           Data.Time.Format                   (FormatTime,
                                                      defaultTimeLocale,
                                                      formatTime, parseTimeM)
@@ -375,6 +376,24 @@ instance DecodeParam UTCTime where
     Just d -> Just d
     _      -> Nothing
 
+instance EncodeParam LocalTime where
+  encodeParam t = ASCII.pack $ formatTime defaultTimeLocale format t
+    where
+      format = "%FT%T"
+
+instance DecodeParam LocalTime where
+  decodeParam str = case parseTimeM True defaultTimeLocale "%FT%T" (ASCII.unpack str) of
+    Just d -> Just d
+    _      -> Nothing    
+
+instance EncodeParam TimeOfDay where
+  encodeParam t = ASCII.pack $ formatTime defaultTimeLocale "%T" t
+
+instance DecodeParam TimeOfDay where
+  decodeParam str = case parseTimeM True defaultTimeLocale "%T" (ASCII.unpack str) of
+    Just d -> Just d
+    _      -> Nothing
+    
 formatSubseconds :: (FormatTime t) => t -> String
 formatSubseconds = formatTime defaultTimeLocale "%q"
 
@@ -671,6 +690,24 @@ instance ToParam UTCTime 'FormParam where
 instance ToParam UTCTime 'Cookie where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
+instance ToParam LocalTime 'QueryParam where
+  toParam _ pfx val = [(pfx, Just $ encodeParam val)]
+
+instance ToParam LocalTime 'FormParam where
+  toParam _ pfx val = [(pfx, encodeParam val)]
+
+instance ToParam LocalTime 'Cookie where
+  toParam _ pfx val = [(pfx, encodeParam val)]
+
+instance ToParam TimeOfDay 'QueryParam where
+  toParam _ pfx val = [(pfx, Just $ encodeParam val)]
+
+instance ToParam TimeOfDay 'FormParam where
+  toParam _ pfx val = [(pfx, encodeParam val)]
+
+instance ToParam TimeOfDay 'Cookie where
+  toParam _ pfx val = [(pfx, encodeParam val)]  
+
 instance (EncodeParam a) => ToParam (OptValue a) 'QueryParam where
   toParam _ pfx (OptValue (Just val)) = [(pfx, Just $ encodeParam val)]
   toParam _ pfx (OptValue Nothing)    = [(pfx, Nothing)]
@@ -796,6 +833,48 @@ instance FromParam UTCTime 'Cookie where
          _      -> Validation $ Left [ParseErr key "Unable to cast to UTCTime (ISO-8601)"]
    _ ->  Validation $ Left [NotFound key]
 
+instance FromParam LocalTime 'QueryParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just (Just par) -> case decodeParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to LocalTime (ISO-8601)"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam LocalTime 'FormParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case decodeParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to LocalTime (ISO-8601)"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam LocalTime 'Cookie where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case decodeParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to LocalTime (ISO-8601)"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam TimeOfDay 'QueryParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just (Just par) -> case decodeParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to TimeOfDay (ISO-8601)"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam TimeOfDay 'FormParam where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case decodeParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to TimeOfDay (ISO-8601)"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam TimeOfDay 'Cookie where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case decodeParam par of
+         Just v -> Validation $ Right v
+         _      -> Validation $ Left [ParseErr key "Unable to cast to TimeOfDay (ISO-8601)"]
+   _ ->  Validation $ Left [NotFound key]
+   
 instance FromParam Int 'QueryParam where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
