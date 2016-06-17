@@ -80,7 +80,7 @@ module WebApi.Param
 
 import           Blaze.ByteString.Builder           (toByteString)
 import           Blaze.ByteString.Builder.Char.Utf8 (fromChar)
-import           Data.Aeson                         (FromJSON (..), ToJSON (..))
+import           Data.Aeson                         (FromJSON (..), ToJSON (..), (.:))
 import qualified Data.Aeson                         as A
 import           Data.ByteString                    as SB hiding (index,
                                                            isPrefixOf)
