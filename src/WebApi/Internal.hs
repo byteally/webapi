@@ -118,13 +118,22 @@ toWaiResponse wreq resp = case resp of
         reproxy :: apiRes m r -> Proxy (ContentTypes m r)
         reproxy = const Proxy
 
-        handleHeaders :: Maybe [Header] -> Maybe [(ByteString, ByteString)] -> [Header]
+        handleHeaders :: Maybe [Header] -> Maybe [(ByteString, CookieInfo ByteString)] -> [Header]
         handleHeaders hds cks = handleHeaders' (maybe [] id hds) (maybe [] id cks)
 
-        handleHeaders' :: [Header] -> [(ByteString, ByteString)] -> [Header]
+        handleHeaders' :: [Header] -> [(ByteString, CookieInfo ByteString)] -> [Header]
         handleHeaders' hds cookies = let ckHs = map (\(ck, cv) -> (hSetCookie , renderSC ck cv)) cookies
                                      in hds <> ckHs
-        renderSC k v = toByteString (renderSetCookie (def { setCookieName = k, setCookieValue = v }))
+        renderSC k v = toByteString . renderSetCookie $ def
+          { setCookieName = k
+          , setCookieValue = cookieValue v
+          , setCookiePath = cookiePath v
+          , setCookieExpires = cookieExpires v
+          , setCookieMaxAge  = cookieMaxAge v
+          , setCookieDomain = cookieDomain v
+          , setCookieHttpOnly = fromMaybe False (cookieHttpOnly v)
+          , setCookieSecure   = fromMaybe False (cookieSecure v)
+          }
 
 -- | Generate a type safe URL for a given route type. The URI can be used for setting a base URL if required.
 link :: ( ToParam (QueryParam m r) 'QueryParam

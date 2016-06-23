@@ -65,6 +65,7 @@ module WebApi.Param
        , fromNonNestedParam
 
        -- * Wrappers
+       , CookieInfo (..)
        , Field (..)
        , JsonOf (..)
        , OptValue (..)
@@ -101,7 +102,7 @@ import           Data.Proxy
 import qualified Data.Text                          as T (Text, pack, uncons)
 import           Data.Text.Encoding                 (decodeUtf8', encodeUtf8)
 import           Data.Time.Calendar                 (Day)
-import           Data.Time.Clock                    (UTCTime)
+import           Data.Time.Clock                    (UTCTime, DiffTime)
 import           Data.Time.LocalTime                (LocalTime, TimeOfDay)
 import           Data.Time.Format                   (FormatTime,
                                                      defaultTimeLocale,
@@ -150,13 +151,34 @@ instance ToJSON a => ToJSON (JsonOf a) where
 instance FromJSON a => FromJSON (JsonOf a) where
   parseJSON jval = JsonOf `fmap` parseJSON jval
 
+data CookieInfo a = CookieInfo
+  { cookieValue    :: a
+  , cookiePath     :: Maybe ByteString
+  , cookieExpires  :: Maybe UTCTime
+  , cookieMaxAge   :: Maybe DiffTime
+  , cookieDomain   :: Maybe ByteString
+  , cookieHttpOnly :: Maybe Bool
+  , cookieSecure   :: Maybe Bool
+  }
+
+defCookieInfo :: a -> CookieInfo a
+defCookieInfo val = CookieInfo
+  { cookieValue    = val
+  , cookiePath     = Nothing
+  , cookieExpires  = Nothing
+  , cookieMaxAge   = Nothing
+  , cookieDomain   = Nothing
+  , cookieHttpOnly = Nothing
+  , cookieSecure   = Nothing
+  }
+
 -- | Define result of serialization of a type of kind 'ParamK'.
 type family SerializedData (par :: ParamK) where
   SerializedData 'QueryParam = Http.QueryItem
   SerializedData 'FormParam  = (ByteString, ByteString)
   SerializedData 'FileParam  = (ByteString, Wai.FileInfo FilePath)
   SerializedData 'PathParam  = ByteString
-  SerializedData 'Cookie     = (ByteString, ByteString)
+  SerializedData 'Cookie     = (ByteString, CookieInfo ByteString)
 
 -- | Define result of deserialization of a type of kind 'ParamK'.
 type family DeSerializedData (par :: ParamK) where
@@ -193,7 +215,7 @@ toPathParam :: (ToParam a 'PathParam) => a -> [ByteString]
 toPathParam = toParam (Proxy :: Proxy 'PathParam) ""
 
 -- | Serialize a type into cookie.
-toCookie :: (ToParam a 'Cookie) => a -> [(ByteString, ByteString)]
+toCookie :: (ToParam a 'Cookie) => a -> [(ByteString, CookieInfo ByteString)]
 toCookie = toParam (Proxy :: Proxy 'Cookie) ""
 
 -- | (Try to) Deserialize a type from query params.
@@ -384,7 +406,7 @@ instance EncodeParam LocalTime where
 instance DecodeParam LocalTime where
   decodeParam str = case parseTimeM True defaultTimeLocale "%FT%T" (ASCII.unpack str) of
     Just d -> Just d
-    _      -> Nothing    
+    _      -> Nothing
 
 instance EncodeParam TimeOfDay where
   encodeParam t = ASCII.pack $ formatTime defaultTimeLocale "%T" t
@@ -393,7 +415,7 @@ instance DecodeParam TimeOfDay where
   decodeParam str = case parseTimeM True defaultTimeLocale "%T" (ASCII.unpack str) of
     Just d -> Just d
     _      -> Nothing
-    
+
 formatSubseconds :: (FormatTime t) => t -> String
 formatSubseconds = formatTime defaultTimeLocale "%q"
 
@@ -481,7 +503,7 @@ instance (EncodeParam a) => ToParam (NonNested a) 'FormParam where
   toParam _ pfx (NonNested val) = [(pfx, encodeParam val)]
 
 instance (EncodeParam a) => ToParam (NonNested a) 'Cookie where
-  toParam _ pfx (NonNested val) = [(pfx, encodeParam val)]
+  toParam _ pfx (NonNested val) = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance (DecodeParam a, Typeable a) => FromParam (NonNested a) 'QueryParam where
   fromParam pt key kvs = case lookupParam pt key kvs of
@@ -517,7 +539,7 @@ instance ToParam Unit 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Unit 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam Int 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -526,7 +548,7 @@ instance ToParam Int 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Int 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam Int8 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -535,7 +557,7 @@ instance ToParam Int8 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Int8 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam Int16 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -544,7 +566,7 @@ instance ToParam Int16 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Int16 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam Int32 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -553,7 +575,7 @@ instance ToParam Int32 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Int32 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam Int64 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -562,7 +584,7 @@ instance ToParam Int64 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Int64 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam Word 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -571,7 +593,7 @@ instance ToParam Word 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Word 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam Word8 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -580,7 +602,7 @@ instance ToParam Word8 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Word8 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam Word16 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -589,7 +611,7 @@ instance ToParam Word16 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Word16 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam Word32 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -598,7 +620,7 @@ instance ToParam Word32 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Word32 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam Word64 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -607,7 +629,7 @@ instance ToParam Word64 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Word64 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam Integer 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -616,7 +638,7 @@ instance ToParam Integer 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Integer 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam Bool 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -625,7 +647,7 @@ instance ToParam Bool 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Bool 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam Double 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -634,7 +656,7 @@ instance ToParam Double 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Double 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam Float 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -643,7 +665,7 @@ instance ToParam Float 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Float 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam Char 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -652,7 +674,7 @@ instance ToParam Char 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Char 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam T.Text 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -661,7 +683,7 @@ instance ToParam T.Text 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam T.Text 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam ByteString 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ val)]
@@ -670,7 +692,7 @@ instance ToParam ByteString 'FormParam where
   toParam _ pfx val = [(pfx, val)]
 
 instance ToParam ByteString 'Cookie where
-  toParam _ pfx val = [(pfx, val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ val)]
 
 instance ToParam Day 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -679,7 +701,7 @@ instance ToParam Day 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam Day 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam UTCTime 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -688,7 +710,7 @@ instance ToParam UTCTime 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam UTCTime 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam LocalTime 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -697,7 +719,7 @@ instance ToParam LocalTime 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam LocalTime 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam TimeOfDay 'QueryParam where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
@@ -706,7 +728,10 @@ instance ToParam TimeOfDay 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam TimeOfDay 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]  
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
+
+instance (ToParam a 'Cookie) => ToParam (CookieInfo a) 'Cookie where
+  toParam p pfx val = Prelude.map (\(k, v) -> (k, val { cookieValue = cookieValue v })) $ toParam p pfx (cookieValue val)
 
 instance (EncodeParam a) => ToParam (OptValue a) 'QueryParam where
   toParam _ pfx (OptValue (Just val)) = [(pfx, Just $ encodeParam val)]
@@ -717,7 +742,7 @@ instance (EncodeParam a) => ToParam (OptValue a) 'FormParam where
   toParam _ _ (OptValue Nothing)     = []
 
 instance (EncodeParam a) => ToParam (OptValue a) 'Cookie where
-  toParam _ pfx (OptValue (Just val)) = [(pfx, encodeParam val)]
+  toParam _ pfx (OptValue (Just val)) = [(pfx, defCookieInfo $ encodeParam val)]
   toParam _ _ (OptValue Nothing)     = []
 
 instance (ToJSON a) => ToParam (JsonOf a) 'QueryParam where
@@ -727,7 +752,7 @@ instance (ToJSON a) => ToParam (JsonOf a) 'FormParam where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance (ToJSON a) => ToParam (JsonOf a) 'Cookie where
-  toParam _ pfx val = [(pfx, encodeParam val)]
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam a par => ToParam (Maybe a) par where
   toParam pt pfx (Just val) = toParam pt pfx val
@@ -874,7 +899,7 @@ instance FromParam TimeOfDay 'Cookie where
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to TimeOfDay (ISO-8601)"]
    _ ->  Validation $ Left [NotFound key]
-   
+
 instance FromParam Int 'QueryParam where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
@@ -1485,7 +1510,7 @@ instance FromJSON ParamErr where
     <|> (mkParseErr <$> obj .: "ParseErr")
     where mkParseErr [key, msg] = ParseErr (encodeUtf8 key) msg
           mkParseErr vals = error $ "Error parsing ParseErr as JSON. ParseErr accepts exactly two arg but recieved " ++ (show $ Prelude.length vals)
-  
+
 
 -- | Convert the 'ParamErr' that occured during deserialization into 'ApiErr' type which can then be put in 'Response'.
 class ParamErrToApiErr apiErr where
