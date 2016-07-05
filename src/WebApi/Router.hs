@@ -26,14 +26,15 @@ module WebApi.Router
          Static
        , Root
        , (:/)
-       -- * Default routing implementation  
+       -- * Default routing implementation
        , Route
        , Router (..)
        , router
        , ToPieces
-       -- * Custom routing  
+       -- * Custom routing
        , PathSegment (..)
-       , MkPathFormatString (..)  
+       , MkPathFormatString (..)
+       , handler'
        ) where
 
 import Control.Exception (SomeException (..))
@@ -51,7 +52,7 @@ import WebApi.Internal
 import WebApi.Param
 import WebApi.Util
 
--- | Datatype representing a endpoint. 
+-- | Datatype representing a endpoint.
 data Route (ms :: [*]) (r :: *)
 
 data StaticPiece (s :: Symbol)
@@ -148,7 +149,7 @@ type family MarkDyn (pp :: *) :: * where
 
 instance ( SingMethod m
          , Router s r '(m, '[])
-         , Router s (Route ms r) pr) => 
+         , Router s (Route ms r) pr) =>
          Router s (Route (m ': ms) r) pr where
   route _ _s parsedRoute request respond =
     case requestMethod request == meth of
@@ -203,7 +204,7 @@ instance ( KnownSymbol piece, ApiHandler s m (Static piece)
          , PartDecodings (RequestBody m (Static piece))
          , Typeable m
          , Typeable (Static piece)
-         , WebApiImplementation s  
+         , WebApiImplementation s
          ) => Router s (Static piece) '(m, pp) where
   route _ serv _ request respond =
     case pathInfo request of
@@ -314,7 +315,7 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
          , PartDecodings (RequestBody m route)
          , Typeable m
          , Typeable route
-         , WebApiImplementation s  
+         , WebApiImplementation s
          ) => Router s (DynamicPiece t) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of

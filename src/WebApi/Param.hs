@@ -1298,6 +1298,12 @@ instance (DecodeParam a) => FromParam (OptValue a) 'Cookie where
      _      -> Validation $ Left [ParseErr key "Unable to cast to OptValue"]
    _        -> Validation $ Left [NotFound key]
 
+instance (FromParam a 'Cookie) => FromParam (CookieInfo a) 'Cookie where
+  fromParam pt key kvs = case (fromParam pt key kvs :: Validation [ParamErr] a) of
+    Validation (Right val) -> Validation $ Right $ defCookieInfo val
+    Validation (Left errs) -> Validation $ Left errs
+
+
 instance ToParam FileInfo 'FileParam where
   toParam _ key (FileInfo val) = [(key, val)]
 
