@@ -34,7 +34,7 @@ module WebApi.Router
        -- * Custom routing
        , PathSegment (..)
        , MkPathFormatString (..)
-       , handler'
+       , apiHandler
        ) where
 
 import Control.Exception (SomeException (..))
@@ -214,7 +214,7 @@ instance ( KnownSymbol piece, ApiHandler s m (Static piece)
     where getResponse = do
             apiReq' <- fromWaiRequest request ()
             response <- case apiReq' of
-              Validation (Right apiReq) -> toIO serv $ handler' serv (Proxy :: Proxy '[]) (apiReq :: Request m (Static piece))
+              Validation (Right apiReq) -> toIO serv $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) (apiReq :: Request m (Static piece))
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toWaiResponse request response
 
@@ -253,7 +253,7 @@ instance ( KnownSymbol lpiece
           getResponse = do
             apiReq' <- fromWaiRequest request pathPar
             response <- case apiReq' of
-              Validation (Right apiReq) -> toIO serv $ handler' serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
+              Validation (Right apiReq) -> toIO serv $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) (apiReq :: Request m route)
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toWaiResponse request response
 
@@ -292,7 +292,7 @@ instance ( KnownSymbol rpiece
                 pRoute = snocParsedRoute (snocParsedRoute parsedRoute $ DPiece dynVal) $ SPiece (Proxy :: Proxy rpiece)
             apiReq' <- fromWaiRequest request (fromParsedRoute pRoute)
             response <- case apiReq' of
-              Validation (Right apiReq) -> toIO serv $ handler' serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
+              Validation (Right apiReq) -> toIO serv $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) (apiReq :: Request m route)
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toWaiResponse request response
 
@@ -328,7 +328,7 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
                 pRoute = snocParsedRoute parsedRoute $ DPiece dynVal
             apiReq' <- fromWaiRequest request (fromParsedRoute pRoute)
             response <- case apiReq' of
-              Validation (Right apiReq) -> toIO serv $ handler' serv (Proxy :: Proxy '[]) (apiReq :: Request m route)
+              Validation (Right apiReq) -> toIO serv $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) (apiReq :: Request m route)
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toWaiResponse request response
 
@@ -369,13 +369,14 @@ instance (MkFormatStr xs) => MkFormatStr (DynamicPiece s ': xs) where
 instance MkFormatStr '[] where
   mkFormatStr _ = []
 
-handler' :: forall query p m r.
-       ( query ~ '[]
-       , MonadCatch (HandlerM p)
-       , ApiHandler p m r
-       , Typeable m
-       , Typeable r) => p -> Proxy query -> Request m r -> HandlerM p (Query (Response m r) query)
-handler' serv p req =  (handler (toTagged p serv) req) `catches` excepHandlers
+-- | This function is used to call local handler without incurring the cost of network round trip and se/deserialisation of Request and Response.
+apiHandler :: forall query p m r.
+             ( query ~ '[]
+             , MonadCatch (HandlerM p)
+             , ApiHandler p m r
+             , Typeable m
+             , Typeable r) => Tagged query p -> Request m r -> HandlerM p (Query (Response m r) query)
+apiHandler serv req =  (handler serv req) `catches` excepHandlers
   where excepHandlers :: [Handler (HandlerM p) (Query (Response m r) query)]
-        excepHandlers = [ Handler (\ (ex :: ApiException m r) -> handleApiException serv ex)
-                        , Handler (\ (ex :: SomeException) -> handleSomeException serv ex) ]
+        excepHandlers = [ Handler (\ (ex :: ApiException m r) -> handleApiException (unTagged serv) ex)
+                        , Handler (\ (ex :: SomeException) -> handleSomeException (unTagged serv) ex) ]

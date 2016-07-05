@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -fno-warn-unused-binds #-}
 {-# LANGUAGE MultiParamTypeClasses, TypeFamilies, OverloadedStrings, DataKinds, TypeOperators, TypeSynonymInstances, FlexibleInstances, DeriveGeneric #-}
 module WebApi.MockSpec (spec) where
 
@@ -19,12 +20,12 @@ data MockSpec
 
 type MockApi = Static "mock"
 
-data QP = QP { _qp1 :: Int, _qp2 :: Bool }
+data QP = QP { qp1 :: Int, qp2 :: Bool }
         deriving (Show, Eq, Generic)
 
-data MockOut = MockOut { _out1 :: Int
-                       , _out2 :: Bool
-                       , _out3 :: Char
+data MockOut = MockOut { out1 :: Int
+                       , out2 :: Bool
+                       , out3 :: Char
                        } deriving (Show, Eq, Generic)
 
 instance ToJSON MockOut where

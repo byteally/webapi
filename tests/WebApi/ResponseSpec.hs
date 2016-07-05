@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -fno-warn-unused-binds #-}
 {-# LANGUAGE MultiParamTypeClasses, TypeFamilies, OverloadedStrings, DataKinds, TypeOperators, TypeSynonymInstances, FlexibleInstances, DeriveGeneric #-}
 
 module WebApi.ResponseSpec (spec) where
@@ -21,13 +22,13 @@ respSpecApp = serverApp serverSettings RespSpecImpl
 data RespSpec
 data RespSpecImpl = RespSpecImpl
 
-data Out = Out { _out :: Text }
+data Out = Out { out :: Text }
          deriving (Show, Eq, Generic) 
-data HOut = HOut { _hOut :: Text }
+data HOut = HOut { hOut :: Text }
          deriving (Show, Eq, Generic) 
-data COut = COut { _cOut :: Text }
+data COut = COut { cOut :: Text }
          deriving (Show, Eq, Generic)
-data Err = Err { _err :: Text }
+data Err = Err { err :: Text }
          deriving (Show, Eq, Generic)
 
 instance ToJSON Err

@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -fno-warn-unused-binds #-}
 {-# LANGUAGE MultiParamTypeClasses, TypeFamilies, OverloadedStrings, DataKinds, TypeOperators, TypeSynonymInstances, FlexibleInstances, DeriveGeneric #-}
 module WebApi.RequestSpec (spec) where
 
@@ -35,23 +36,23 @@ newtype Age = Age { unAge :: Int }
             deriving (Show, Eq, Generic)
 -}
 
-data QP = QP { _qp1 :: Int , _qp2 :: Maybe Bool, _qp3 :: Either Text Double }
+data QP = QP { qp1 :: Int , qp2 :: Maybe Bool, qp3 :: Either Text Double }
         deriving (Show, Eq, Generic)
 
-data FoP = FoP { _fop :: ByteString }
+data FoP = FoP { fop :: ByteString }
          deriving (Show, Eq, Generic)
 
-data CP = CP { _cp :: Bool }
+data CP = CP { cp :: Bool }
          deriving (Show, Eq, Generic)
 
-data HP =  HP1 { _hp1 :: Int }
-         | HP2 { _hp2 :: Bool }
+data HP =  HP1 { hp1 :: Int }
+         | HP2 { hp2 :: Bool }
          deriving (Show, Eq, Generic)
 
-data FiP = FiP { _fip :: FileInfo }
+data FiP = FiP { fip :: FileInfo }
          deriving (Show, Eq, Generic)
 
-data RB = RB { _rb :: Text }
+data RB = RB { rb :: Text }
         deriving (Show, Eq, Generic)
 
 instance FromParam QP 'QueryParam where
