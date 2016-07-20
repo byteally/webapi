@@ -33,8 +33,8 @@ library
                      , WebApi.Param
                      , WebApi.Method
                      , WebApi.Mock
+                     , WebApi.Util
 
-  other-modules:     WebApi.Util
   -- other-extensions:
   build-depends:       base               >= 4.7  && < 5
                      , text               >= 1.2  && < 1.3

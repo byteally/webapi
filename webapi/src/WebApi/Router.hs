@@ -26,15 +26,28 @@ module WebApi.Router
          Static
        , Root
        , (:/)
+         
        -- * Default routing implementation
        , Route
        , Router (..)
        , router
        , ToPieces
+       , FromPieces
+
        -- * Custom routing
        , PathSegment (..)
        , MkPathFormatString (..)
        , apiHandler
+
+       -- * Internal
+       , FilterDynP
+       , StaticPiece
+       , DynamicPiece
+       , ParsedRoute (..)
+       , PieceType (..)
+       , fromParsedRoute
+       , snocParsedRoute
+       , symTxt
        ) where
 
 import Control.Exception (SomeException (..))
@@ -131,11 +144,6 @@ type family FilterDynP (ps :: [*]) :: [*] where
   FilterDynP (DynamicPiece p1 ': p2) = p1 ': FilterDynP p2
   FilterDynP (p1 ': p2)              = FilterDynP p2
   FilterDynP '[]                     = '[]
-
-infixr 5 :++
-type family (:++) (as :: [k]) (bs :: [k]) :: [k] where
-  '[] :++ bs       = bs
-  (a ': as) :++ bs = a ': (as :++ bs)
 
 -- | Class to do the default routing.
 class Router (server :: *) (r :: k) (pr :: (*, [*])) where

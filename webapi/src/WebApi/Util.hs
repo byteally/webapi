@@ -3,6 +3,8 @@
 {-# LANGUAGE KindSignatures        #-}
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
+{-# LANGUAGE PolyKinds             #-}
+
 module WebApi.Util where
 
 import Data.Proxy (Proxy)
@@ -66,3 +68,8 @@ instance ToHListRecTuple '[p1, p2, p3, p4, p5, p6, p7, p8] where
 instance ToHListRecTuple '[p1, p2, p3, p4, p5, p6, p7, p8, p9] where
   toRecTuple _ (p1, p2, p3, p4, p5, p6, p7, p8, p9) = (p1, (p2, (p3, (p4, (p5, (p6, (p7, (p8, (p9, ())))))))))
   fromRecTuple _ (p1, (p2, (p3, (p4, (p5, (p6, (p7, (p8, (p9, ()))))))))) = (p1, p2, p3, p4, p5, p6, p7, p8, p9)
+
+infixr 5 :++
+type family (:++) (as :: [k]) (bs :: [k]) :: [k] where
+  '[] :++ bs       = bs
+  (a ': as) :++ bs = a ': (as :++ bs)
