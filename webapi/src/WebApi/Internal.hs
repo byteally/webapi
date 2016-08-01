@@ -67,26 +67,36 @@ fromWaiRequest :: forall m r.
                    , SingMethod m
                    ) => Wai.Request
                  -> PathParam m r
-                 -> IO (Validation [ParamErr] (Request m r))
-fromWaiRequest waiReq pathPar = do
+                 -> (Request m r -> IO (Response m r))
+                 -> IO (Validation [ParamErr] (Response m r))
+fromWaiRequest waiReq pathPar handlerFn = do
   let mContentTy = getContentType $ Wai.requestHeaders waiReq
-  (formPar, filePar, rBody) <- case hasFormData mContentTy of
+  case hasFormData mContentTy of
     Just _ -> do
-      (formPar, filePar) <- runResourceT $ withInternalState $
-                              \internalState -> Wai.parseRequestBody (Wai.tempFileBackEnd internalState) waiReq
-      return (formPar, filePar, [])
+      runResourceT $ withInternalState $ \internalState -> do
+        (formPar, filePar) <- Wai.parseRequestBody (Wai.tempFileBackEnd internalState) waiReq
+        let request = Request <$> pure pathPar
+                              <*> (fromQueryParam $ Wai.queryString waiReq)
+                              <*> (fromFormParam formPar)
+                              <*> (fromFileParam filePar)
+                              <*> (fromHeader $ Wai.requestHeaders waiReq)
+                              <*> (fromCookie $ maybe [] parseCookies (getCookie waiReq))
+                              <*> (fromBody [])
+        handler' request
     Nothing -> do
       bdy <- Wai.requestBody waiReq
-      return ([], [], [(fromMaybe (renderHeader $ contentType (Proxy :: Proxy OctetStream)) mContentTy, bdy)])
-
-  return $ Request <$> pure pathPar
-    <*> (fromQueryParam $ Wai.queryString waiReq)
-    <*> (fromFormParam formPar)
-    <*> (fromFileParam filePar)
-    <*> (fromHeader $ Wai.requestHeaders waiReq)
-    <*> (fromCookie $ maybe [] parseCookies (getCookie waiReq))
-    <*> (fromBody rBody)
+      let rBody = [(fromMaybe (renderHeader $ contentType (Proxy :: Proxy OctetStream)) mContentTy, bdy)]
+      let request = Request <$> pure pathPar
+                            <*> (fromQueryParam $ Wai.queryString waiReq)
+                            <*> (fromFormParam [])
+                            <*> (fromFileParam [])
+                            <*> (fromHeader $ Wai.requestHeaders waiReq)
+                            <*> (fromCookie $ maybe [] parseCookies (getCookie waiReq))
+                            <*> (fromBody rBody)
+      handler' request
   where
+    handler' (Validation (Right req)) = handlerFn req >>= \resp -> return $ Validation (Right resp)
+    handler' (Validation (Left parErr)) = return $ Validation (Left parErr)
     hasFormData x = matchContent [contentType (Proxy :: Proxy MultipartFormData), contentType (Proxy :: Proxy UrlEncoded)] =<< x
     fromBody x = Validation $ either (const (Left [NotFound "415"])) (Right . fromRecTuple (Proxy :: Proxy (StripContents (RequestBody m r)))) $ partDecodings (Proxy :: Proxy (RequestBody m r)) x
 
