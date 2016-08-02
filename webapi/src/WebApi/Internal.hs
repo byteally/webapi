@@ -210,7 +210,7 @@ type family Query (t :: *) (query :: [*]) :: * where
 class ( MonadCatch (HandlerM p)
       , MonadIO (HandlerM p)
       , WebApi (ApiInterface p)
-      ) => WebApiImplementation (p :: *) where
+      ) => WebApiServer (p :: *) where
   -- | Type of the handler 'Monad'. It should implement 'MonadCatch' and 'MonadIO' classes. Defaults to 'IO'.
   type HandlerM p :: * -> *
   type ApiInterface p :: *

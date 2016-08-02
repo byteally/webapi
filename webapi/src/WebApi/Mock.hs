@@ -52,7 +52,7 @@ data MockServerSettings = MockServerSettings { responseData :: ResponseData }
 mockServerSettings :: MockServerSettings
 mockServerSettings = MockServerSettings SuccessData
 
-instance (WebApi p) => WebApiImplementation (MockServer p) where
+instance (WebApi p) => WebApiServer (MockServer p) where
   type ApiInterface (MockServer p) = p
 
 instance ( ApiContract p m r

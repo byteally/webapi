@@ -212,7 +212,7 @@ instance ( KnownSymbol piece, ApiHandler s m (Static piece)
          , PartDecodings (RequestBody m (Static piece))
          , Typeable m
          , Typeable (Static piece)
-         , WebApiImplementation s
+         , WebApiServer s
          ) => Router s (Static piece) '(m, pp) where
   route _ serv _ request respond =
     case pathInfo request of
@@ -247,7 +247,7 @@ instance ( KnownSymbol lpiece
          , PartDecodings (RequestBody m route)
          , Typeable m
          , Typeable route
-         , WebApiImplementation s
+         , WebApiServer s
          ) => Router s ((lpiece :: Symbol) :/ (rpiece :: Symbol)) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
@@ -286,7 +286,7 @@ instance ( KnownSymbol rpiece
          , PartDecodings (RequestBody m route)
          , Typeable m
          , Typeable route
-         , WebApiImplementation s
+         , WebApiServer s
          ) => Router s ((lpiece :: *) :/ (rpiece :: Symbol)) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
@@ -323,7 +323,7 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
          , PartDecodings (RequestBody m route)
          , Typeable m
          , Typeable route
-         , WebApiImplementation s
+         , WebApiServer s
          ) => Router s (DynamicPiece t) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of

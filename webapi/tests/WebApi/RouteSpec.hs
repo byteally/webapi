@@ -52,7 +52,7 @@ instance ApiContract RoutingSpec GET RouteWithParams where
 instance ApiContract RoutingSpec GET OverlappingRoute where
   type ApiOut GET OverlappingRoute = Text
 
-instance WebApiImplementation RoutingSpecImpl where
+instance WebApiServer RoutingSpecImpl where
   type HandlerM RoutingSpecImpl = IO
   type ApiInterface RoutingSpecImpl = RoutingSpec
 

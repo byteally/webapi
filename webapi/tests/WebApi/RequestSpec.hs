@@ -87,7 +87,7 @@ instance WebApi ReqSpec where
                                    ] ApiR
                           ]
 
-instance WebApiImplementation ReqSpecImpl where
+instance WebApiServer ReqSpecImpl where
   type ApiInterface ReqSpecImpl = ReqSpec
 
 instance ApiContract ReqSpec GET ApiR where

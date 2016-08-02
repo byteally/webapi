@@ -3,9 +3,9 @@ Module      : WebApi.Server
 License     : BSD3
 Stability   : experimental
 
-Provides the implementation of web api. Given a contract, an implementation of the web api can be provided by using 'WebApiImplementation' and 'ApiHandler'. 'WebApiImplementation' has the information pertaining to web api as a whole. 'ApiHandler' provides a way to write the handler for a particular API end point.
+Provides the implementation of web api. Given a contract, an implementation of the web api can be provided by using 'WebApiServer' and 'ApiHandler'. 'WebApiServer' has the information pertaining to web api as a whole. 'ApiHandler' provides a way to write the handler for a particular API end point.
 
-Comparing with the "WebApi.Contract", 'WebApi' and 'ApiContract' has the same relationship as 'WebApiImplementation' and 'ApiHandler'.
+Comparing with the "WebApi.Contract", 'WebApi' and 'ApiContract' has the same relationship as 'WebApiServer' and 'ApiHandler'.
 -}
 
 {-# LANGUAGE DataKinds             #-}
@@ -23,7 +23,7 @@ module WebApi.Server
        -- * Implementation of Api 
        , ApiHandler (..)
        , ApiException (..)
-       , WebApiImplementation (..)  
+       , WebApiServer (..)  
        , respond
        , respondWith
        , raise
@@ -91,7 +91,7 @@ raiseWith' :: ( MonadThrow handM
                -> handM (Response m r)
 raiseWith' = throwM . ApiException
 
--- | Create a WAI application from the information specified in `WebApiImplementation`, `WebApi`, `ApiContract` and `ApiHandler` classes.
+-- | Create a WAI application from the information specified in `WebApiServer`, `WebApi`, `ApiContract` and `ApiHandler` classes.
 serverApp :: ( iface ~ (ApiInterface server)
              , Router server (Apis iface) '(CUSTOM "", '[])
              ) => ServerSettings -> server -> Wai.Application

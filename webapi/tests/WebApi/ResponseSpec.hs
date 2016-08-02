@@ -54,7 +54,7 @@ instance WebApi RespSpec where
                            , Route '[GET] TextCType
                            , Route '[GET] LazyEncoding]
 
-instance WebApiImplementation RespSpecImpl where
+instance WebApiServer RespSpecImpl where
   type ApiInterface RespSpecImpl = RespSpec
   type HandlerM     RespSpecImpl = IO
 
