@@ -57,11 +57,11 @@ toApplication app request respond =
     NotMatched -> respond (Wai.responseLBS notFound404 [] "")
 
 fromWaiRequest :: forall m r.
-                   ( FromParam (QueryParam m r) 'QueryParam
-                   , FromParam (FormParam m r) 'FormParam
-                   , FromParam (FileParam m r) 'FileParam
+                   ( FromParam 'QueryParam (QueryParam m r)
+                   , FromParam 'FormParam (FormParam m r)
+                   , FromParam 'FileParam (FileParam m r)
                    , FromHeader (HeaderIn m r)
-                   , FromParam (CookieIn m r) 'Cookie
+                   , FromParam 'Cookie (CookieIn m r)
                    , ToHListRecTuple (StripContents (RequestBody m r))
                    , PartDecodings (RequestBody m r)
                    , SingMethod m
@@ -101,7 +101,7 @@ fromWaiRequest waiReq pathPar handlerFn = do
     fromBody x = Validation $ either (const (Left [NotFound "415"])) (Right . fromRecTuple (Proxy :: Proxy (StripContents (RequestBody m r)))) $ partDecodings (Proxy :: Proxy (RequestBody m r)) x
 
 toWaiResponse :: ( ToHeader (HeaderOut m r)
-                  , ToParam (CookieOut m r) 'Cookie
+                  , ToParam 'Cookie (CookieOut m r)
                   , Encodings (ContentTypes m r) (ApiOut m r)
                   , Encodings (ContentTypes m r) (ApiErr m r)
                   ) => Wai.Request -> Response m r -> Wai.Response
@@ -146,9 +146,9 @@ toWaiResponse wreq resp = case resp of
           }
 
 -- | Generate a type safe URL for a given route type. The URI can be used for setting a base URL if required.
-link :: ( ToParam (QueryParam m r) 'QueryParam
+link :: ( ToParam 'QueryParam (QueryParam m r)
         , MkPathFormatString r
-        , ToParam (PathParam m r) 'PathParam
+        , ToParam 'PathParam (PathParam m r)
         ) =>
           route m r
         -> URI
@@ -159,10 +159,10 @@ link r base paths query = base
                           { uriPath = unpack $ renderUriPath (pack $ uriPath base) paths r
                           , uriQuery = maybe "" renderQuery' query
                           }
-  where renderQuery' :: (ToParam query 'QueryParam) => query -> String
+  where renderQuery' :: (ToParam 'QueryParam query) => query -> String
         renderQuery' = unpack . renderQuery True . toQueryParam
 
-renderUriPath ::  ( ToParam path 'PathParam
+renderUriPath ::  ( ToParam 'PathParam path
                    , MkPathFormatString r
                    ) => ByteString -> path -> route m r -> ByteString
 renderUriPath basePth p r = case basePth of
@@ -170,7 +170,7 @@ renderUriPath basePth p r = case basePth of
           "/" -> renderPaths p r
           _   -> basePth `mappend` renderPaths p r
 
-renderPaths :: ( ToParam path 'PathParam
+renderPaths :: ( ToParam 'PathParam path
                 , MkPathFormatString r
                 ) => path -> route m r -> ByteString
 renderPaths p r = toByteString

@@ -198,12 +198,12 @@ instance (Router s (MarkDyn rest) '(m, (pp :++ '[StaticPiece piece])), KnownSymb
 -- Base Cases
 instance ( KnownSymbol piece, ApiHandler s m (Static piece)
          , ToHeader (HeaderOut m (Static piece))
-         , ToParam (CookieOut m (Static piece)) 'Cookie
-         , FromParam (QueryParam m (Static piece)) 'QueryParam
-         , FromParam (FormParam m (Static piece)) 'FormParam
-         , FromParam (FileParam m (Static piece)) 'FileParam
+         , ToParam 'Cookie (CookieOut m (Static piece))
+         , FromParam 'QueryParam (QueryParam m (Static piece))
+         , FromParam 'FormParam (FormParam m (Static piece))
+         , FromParam 'FileParam (FileParam m (Static piece))
          , FromHeader (HeaderIn m (Static piece))
-         , FromParam (CookieIn m (Static piece)) 'Cookie
+         , FromParam 'Cookie (CookieIn m (Static piece))
          , Encodings (ContentTypes m (Static piece)) (ApiOut m (Static piece))
          , Encodings (ContentTypes m (Static piece)) (ApiErr m (Static piece))
          , PathParam m (Static piece) ~ ()
@@ -233,15 +233,15 @@ instance ( KnownSymbol lpiece
          , route ~ (FromPieces paths)
          , ApiHandler s m route
          , PathParam m route ~ HListToTuple (FilterDynP paths)
-         , FromParam (QueryParam m route) 'QueryParam
-         , FromParam (FormParam m route) 'FormParam
-         , FromParam (FileParam m route) 'FileParam
-         , FromParam (CookieIn m route) 'Cookie
+         , FromParam 'QueryParam (QueryParam m route)
+         , FromParam 'FormParam (FormParam m route)
+         , FromParam 'FileParam (FileParam m route)
+         , FromParam 'Cookie (CookieIn m route)
          , FromHeader (HeaderIn m route)
          , Encodings (ContentTypes m route) (ApiErr m route)
          , Encodings (ContentTypes m route) (ApiOut m route)
          , ToHeader (HeaderOut m route)
-         , ToParam (CookieOut m route) 'Cookie
+         , ToParam 'Cookie (CookieOut m route)
          , ParamErrToApiErr (ApiErr m route)
          , ToHListRecTuple (StripContents (RequestBody m route))
          , PartDecodings (RequestBody m route)
@@ -271,15 +271,15 @@ instance ( KnownSymbol rpiece
          , route ~ (FromPieces paths)
          , ApiHandler s m route
          , PathParam m route ~ HListToTuple (FilterDynP paths)
-         , FromParam (QueryParam m route) 'QueryParam
-         , FromParam (FormParam m route) 'FormParam
-         , FromParam (FileParam m route) 'FileParam
-         , FromParam (CookieIn m route) 'Cookie
+         , FromParam 'QueryParam (QueryParam m route)
+         , FromParam 'FormParam (FormParam m route)
+         , FromParam 'FileParam (FileParam m route)
+         , FromParam 'Cookie (CookieIn m route)
          , FromHeader (HeaderIn m route)
          , Encodings (ContentTypes m route) (ApiErr m route)
          , Encodings (ContentTypes m route) (ApiOut m route)
          , ToHeader (HeaderOut m route)
-         , ToParam (CookieOut m route) 'Cookie
+         , ToParam 'Cookie (CookieOut m route)
          , DecodeParam lpiece
          , ParamErrToApiErr (ApiErr m route)
          , ToHListRecTuple (StripContents (RequestBody m route))
@@ -308,15 +308,15 @@ instance ( KnownSymbol rpiece
 instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
          , ApiHandler s m route
          , PathParam m route ~ HListToTuple (FilterDynP (pp :++ '[DynamicPiece t]))
-         , FromParam (QueryParam m route) 'QueryParam
-         , FromParam (FormParam m route) 'FormParam
-         , FromParam (FileParam m route) 'FileParam
-         , FromParam (CookieIn m route) 'Cookie
+         , FromParam 'QueryParam (QueryParam m route)
+         , FromParam 'FormParam (FormParam m route)
+         , FromParam 'FileParam (FileParam m route)
+         , FromParam 'Cookie (CookieIn m route)
          , FromHeader (HeaderIn m route)
          , Encodings (ContentTypes m route) (ApiErr m route)
          , Encodings (ContentTypes m route) (ApiOut m route)
          , ToHeader (HeaderOut m route)
-         , ToParam (CookieOut m route) 'Cookie
+         , ToParam 'Cookie (CookieOut m route)
          , DecodeParam t
          , ParamErrToApiErr (ApiErr m route)
          , ToHListRecTuple (StripContents (RequestBody m route))

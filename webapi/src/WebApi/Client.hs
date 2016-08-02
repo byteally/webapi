@@ -118,11 +118,11 @@ fromClientResponse hcResp = do
           firstRight = maybe (Left "Couldn't find matching Content-Type") id . find isRight
 
 -- | Creates a request from the 'Request' type.
-toClientRequest :: forall m r.( ToParam (PathParam m r) 'PathParam
-                          , ToParam (QueryParam m r) 'QueryParam
-                          , ToParam (FormParam m r) 'FormParam
+toClientRequest :: forall m r.( ToParam 'PathParam (PathParam m r)
+                          , ToParam 'QueryParam (QueryParam m r)
+                          , ToParam 'FormParam (FormParam m r)
                           , ToHeader (HeaderIn m r)
-                          , ToParam (FileParam m r) 'FileParam
+                          , ToParam 'FileParam (FileParam m r)
                           , SingMethod m
                           , MkPathFormatString r
                           , PartEncodings (RequestBody m r)
@@ -164,11 +164,11 @@ toClientRequest clientReq req = do
 -- | Given a `Request` type, create the request and obtain a response. Gives back a 'Response'.
 client :: forall m r .
           ( CookieOut m r ~ ()
-          , ToParam (PathParam m r) 'PathParam
-          , ToParam (QueryParam m r) 'QueryParam
-          , ToParam (FormParam m r) 'FormParam
+          , ToParam 'PathParam (PathParam m r)
+          , ToParam 'QueryParam (QueryParam m r)
+          , ToParam 'FormParam (FormParam m r)
           , ToHeader (HeaderIn m r)
-          , ToParam (FileParam m r) 'FileParam
+          , ToParam 'FileParam (FileParam m r)
           , FromHeader (HeaderOut m r)
           , Decodings (ContentTypes m r) (ApiOut m r)
           , Decodings (ContentTypes m r) (ApiErr m r)

@@ -35,7 +35,7 @@ instance ToJSON Err
 instance ToJSON Out
 instance ToHeader HOut
 
-instance ToParam COut 'Cookie
+instance ToParam 'Cookie COut
 
 
 instance ParamErrToApiErr Err where

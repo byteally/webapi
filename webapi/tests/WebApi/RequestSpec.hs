@@ -55,17 +55,17 @@ data FiP = FiP { fip :: FileInfo }
 data RB = RB { rb :: Text }
         deriving (Show, Eq, Generic)
 
-instance FromParam QP 'QueryParam where
-instance FromParam FoP 'FormParam where   
-instance FromParam CP 'Cookie where
+instance FromParam 'QueryParam QP where
+instance FromParam 'FormParam FoP where   
+instance FromParam 'Cookie CP where
 instance FromHeader HP where
-instance FromParam FiP 'FileParam where
+instance FromParam 'FileParam FiP where
 
-instance ToParam QP 'QueryParam where
-instance ToParam FoP 'FormParam where   
-instance ToParam CP 'Cookie where
+instance ToParam 'QueryParam QP where
+instance ToParam 'FormParam FoP where   
+instance ToParam 'Cookie CP where
 instance ToHeader HP where
-instance ToParam FiP 'FileParam where
+instance ToParam 'FileParam FiP where
 
 instance FromJSON RB
   

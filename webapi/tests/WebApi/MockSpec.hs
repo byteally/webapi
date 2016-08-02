@@ -29,7 +29,7 @@ data MockOut = MockOut { out1 :: Int
                        } deriving (Show, Eq, Generic)
 
 instance ToJSON MockOut where
-instance FromParam QP 'QueryParam where
+instance FromParam 'QueryParam QP where
 instance Arbitrary MockOut where
   arbitrary = MockOut <$> arbitrary
                       <*> arbitrary

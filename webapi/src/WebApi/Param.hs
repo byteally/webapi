@@ -211,39 +211,39 @@ instance Monoid e => Applicative (Validation e) where
       Left ea -> either (Left . mappend ea) (const $ Left ea) b
 
 -- | Serialize a type into query params.
-toQueryParam :: (ToParam a 'QueryParam) => a -> Query
+toQueryParam :: (ToParam 'QueryParam a) => a -> Query
 toQueryParam = toParam (Proxy :: Proxy 'QueryParam) ""
 
 -- | Serialize a type into form params.
-toFormParam :: (ToParam a 'FormParam) => a -> [(ByteString, ByteString)]
+toFormParam :: (ToParam 'FormParam a) => a -> [(ByteString, ByteString)]
 toFormParam = toParam (Proxy :: Proxy 'FormParam) ""
 
 -- | Serialize a type into file params.
-toFileParam :: (ToParam a 'FileParam) => a -> [(ByteString, Wai.FileInfo FilePath)]
+toFileParam :: (ToParam 'FileParam a) => a -> [(ByteString, Wai.FileInfo FilePath)]
 toFileParam = toParam (Proxy :: Proxy 'FileParam) ""
 
 -- | Serialize a type into path params.
-toPathParam :: (ToParam a 'PathParam) => a -> [ByteString]
+toPathParam :: (ToParam 'PathParam a) => a -> [ByteString]
 toPathParam = toParam (Proxy :: Proxy 'PathParam) ""
 
 -- | Serialize a type into cookie.
-toCookie :: (ToParam a 'Cookie) => a -> [(ByteString, CookieInfo ByteString)]
+toCookie :: (ToParam 'Cookie a) => a -> [(ByteString, CookieInfo ByteString)]
 toCookie = toParam (Proxy :: Proxy 'Cookie) ""
 
 -- | (Try to) Deserialize a type from query params.
-fromQueryParam :: (FromParam a 'QueryParam) => Query -> Validation [ParamErr] a
+fromQueryParam :: (FromParam 'QueryParam a) => Query -> Validation [ParamErr] a
 fromQueryParam par = fromParam (Proxy :: Proxy 'QueryParam) "" $ Trie.fromList par
 
 -- | (Try to) Deserialize a type from form params.
-fromFormParam :: (FromParam a 'FormParam) => [(ByteString, ByteString)] -> Validation [ParamErr] a
+fromFormParam :: (FromParam 'FormParam a) => [(ByteString, ByteString)] -> Validation [ParamErr] a
 fromFormParam par = fromParam (Proxy :: Proxy 'FormParam) "" $ Trie.fromList par
 
 -- | (Try to) Deserialize a type from file params.
-fromFileParam :: (FromParam a 'FileParam) => [(ByteString, Wai.FileInfo FilePath)] -> Validation [ParamErr] a
+fromFileParam :: (FromParam 'FileParam a) => [(ByteString, Wai.FileInfo FilePath)] -> Validation [ParamErr] a
 fromFileParam par = fromParam (Proxy :: Proxy 'FileParam) "" $ Trie.fromList par
 
 -- | (Try to) Deserialize a type from cookie.
-fromCookie :: (FromParam a 'Cookie) => [(ByteString, ByteString)] -> Validation [ParamErr] a
+fromCookie :: (FromParam 'Cookie a) => [(ByteString, ByteString)] -> Validation [ParamErr] a
 fromCookie par = fromParam (Proxy :: Proxy 'Cookie) "" $ Trie.fromList par
 
 genericToQueryParam :: (Generic a, GToParam (Rep a) 'QueryParam) => ParamSettings -> ByteString -> a -> [Http.QueryItem]
@@ -277,14 +277,14 @@ genericFromCookie :: (Generic a, GFromParam (Rep a) 'Cookie) => ParamSettings ->
 genericFromCookie opts pfx = (fmap to) . gfromParam (Proxy :: Proxy 'Cookie) pfx (ParamAcc 0 False) opts
 
 -- | Serialize a type to a given type of kind 'ParamK'.
-class ToParam a (parK :: ParamK) where
+class ToParam (parK :: ParamK) a where
   toParam :: Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
 
   default toParam :: (Generic a, GToParam (Rep a) parK) => Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
   toParam pt pfx = gtoParam pt pfx (ParamAcc 0 False) defaultParamSettings . from
 
 -- | (Try to) Deserialize a type from a given type of kind 'ParamK'.
-class FromParam a (parK :: ParamK) where
+class FromParam (parK :: ParamK) a where
   fromParam :: Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
 
   default fromParam :: (Generic a, GFromParam (Rep a) parK) => Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
@@ -531,712 +531,712 @@ newtype NonNested a = NonNested { getNonNestedParam :: a }
                     deriving (Show, Eq, Read)
 
 -- | Serialize a type without nesting.
-toNonNestedParam :: (ToParam (NonNested a) parK) => Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
+toNonNestedParam :: (ToParam parK (NonNested a)) => Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
 toNonNestedParam par pfx a = toParam par pfx (NonNested a)
 
 -- | (Try to) Deserialize a type without nesting.
-fromNonNestedParam :: (FromParam (NonNested a) parK) => Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
+fromNonNestedParam :: (FromParam parK (NonNested a)) => Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
 fromNonNestedParam par pfx kvs = getNonNestedParam <$> fromParam par pfx kvs
 
-instance (EncodeParam a) => ToParam (NonNested a) 'QueryParam where
+instance (EncodeParam a) => ToParam 'QueryParam (NonNested a) where
   toParam _ pfx (NonNested val) = [(pfx, Just $ encodeParam val)]
 
-instance (EncodeParam a) => ToParam (NonNested a) 'FormParam where
+instance (EncodeParam a) => ToParam 'FormParam (NonNested a) where
   toParam _ pfx (NonNested val) = [(pfx, encodeParam val)]
 
-instance (EncodeParam a) => ToParam (NonNested a) 'Cookie where
+instance (EncodeParam a) => ToParam 'Cookie (NonNested a) where
   toParam _ pfx (NonNested val) = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance (DecodeParam a, Typeable a) => FromParam (NonNested a) 'QueryParam where
+instance (DecodeParam a, Typeable a) => FromParam 'QueryParam (NonNested a) where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
          Just v -> Validation $ Right $ NonNested v
          _      -> Validation $ Left [ParseErr key $ T.pack $ "Unable to cast to " ++ (show $ typeOf (Proxy :: Proxy a))]
    _ ->  Validation $ Left [NotFound key]
 
-instance (DecodeParam a, Typeable a) => FromParam (NonNested a) 'FormParam where
+instance (DecodeParam a, Typeable a) => FromParam 'FormParam (NonNested a) where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right $ NonNested v
          _      -> Validation $ Left [ParseErr key $ T.pack $ "Unable to cast to " ++ (show $ typeOf (Proxy :: Proxy a))]
    _ ->  Validation $ Left [NotFound key]
 
-instance (DecodeParam a, Typeable a) => FromParam (NonNested a) 'Cookie where
+instance (DecodeParam a, Typeable a) => FromParam 'Cookie (NonNested a) where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right $ NonNested v
          _      -> Validation $ Left [ParseErr key $ T.pack $ "Unable to cast to " ++ (show $ typeOf (Proxy :: Proxy a))]
    _ ->  Validation $ Left [NotFound key]
 
-instance ToParam () parK where
+instance ToParam parK () where
   toParam _ _ _ = []
 
 instance ToHeader () where
   toHeader _ = []
 
-instance ToParam Unit 'QueryParam where
+instance ToParam 'QueryParam Unit where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Unit 'FormParam where
+instance ToParam 'FormParam Unit where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Unit 'Cookie where
+instance ToParam 'Cookie Unit where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam Int 'QueryParam where
+instance ToParam 'QueryParam Int where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Int 'FormParam where
+instance ToParam 'FormParam Int where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Int 'Cookie where
+instance ToParam 'Cookie Int where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam Int8 'QueryParam where
+instance ToParam 'QueryParam Int8 where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Int8 'FormParam where
+instance ToParam 'FormParam Int8 where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Int8 'Cookie where
+instance ToParam 'Cookie Int8 where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam Int16 'QueryParam where
+instance ToParam 'QueryParam Int16 where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Int16 'FormParam where
+instance ToParam 'FormParam Int16 where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Int16 'Cookie where
+instance ToParam 'Cookie Int16 where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam Int32 'QueryParam where
+instance ToParam 'QueryParam Int32 where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Int32 'FormParam where
+instance ToParam 'FormParam Int32 where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Int32 'Cookie where
+instance ToParam 'Cookie Int32 where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam Int64 'QueryParam where
+instance ToParam 'QueryParam Int64 where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Int64 'FormParam where
+instance ToParam 'FormParam Int64 where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Int64 'Cookie where
+instance ToParam 'Cookie Int64 where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam Word 'QueryParam where
+instance ToParam 'QueryParam Word where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Word 'FormParam where
+instance ToParam 'FormParam Word where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Word 'Cookie where
+instance ToParam 'Cookie Word where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam Word8 'QueryParam where
+instance ToParam 'QueryParam Word8 where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Word8 'FormParam where
+instance ToParam 'FormParam Word8 where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Word8 'Cookie where
+instance ToParam 'Cookie Word8 where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam Word16 'QueryParam where
+instance ToParam 'QueryParam Word16 where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Word16 'FormParam where
+instance ToParam 'FormParam Word16 where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Word16 'Cookie where
+instance ToParam 'Cookie Word16 where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam Word32 'QueryParam where
+instance ToParam 'QueryParam Word32 where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Word32 'FormParam where
+instance ToParam 'FormParam Word32 where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Word32 'Cookie where
+instance ToParam 'Cookie Word32 where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam Word64 'QueryParam where
+instance ToParam 'QueryParam Word64 where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Word64 'FormParam where
+instance ToParam 'FormParam Word64 where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Word64 'Cookie where
+instance ToParam 'Cookie Word64 where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam Integer 'QueryParam where
+instance ToParam 'QueryParam Integer where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Integer 'FormParam where
+instance ToParam 'FormParam Integer where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Integer 'Cookie where
+instance ToParam 'Cookie Integer where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam Bool 'QueryParam where
+instance ToParam 'QueryParam Bool where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Bool 'FormParam where
+instance ToParam 'FormParam Bool where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Bool 'Cookie where
+instance ToParam 'Cookie Bool where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam Double 'QueryParam where
+instance ToParam 'QueryParam Double where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Double 'FormParam where
+instance ToParam 'FormParam Double where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Double 'Cookie where
+instance ToParam 'Cookie Double where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam Float 'QueryParam where
+instance ToParam 'QueryParam Float where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Float 'FormParam where
+instance ToParam 'FormParam Float where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Float 'Cookie where
+instance ToParam 'Cookie Float where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam Char 'QueryParam where
+instance ToParam 'QueryParam Char where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Char 'FormParam where
+instance ToParam 'FormParam Char where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Char 'Cookie where
+instance ToParam 'Cookie Char where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam T.Text 'QueryParam where
+instance ToParam 'QueryParam T.Text where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam T.Text 'FormParam where
+instance ToParam 'FormParam T.Text where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam T.Text 'Cookie where
+instance ToParam 'Cookie T.Text where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam ByteString 'QueryParam where
+instance ToParam 'QueryParam ByteString where
   toParam _ pfx val = [(pfx, Just $ val)]
 
-instance ToParam ByteString 'FormParam where
+instance ToParam 'FormParam ByteString where
   toParam _ pfx val = [(pfx, val)]
 
-instance ToParam ByteString 'Cookie where
+instance ToParam 'Cookie ByteString where
   toParam _ pfx val = [(pfx, defCookieInfo $ val)]
 
-instance ToParam Day 'QueryParam where
+instance ToParam 'QueryParam Day where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam Day 'FormParam where
+instance ToParam 'FormParam Day where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam Day 'Cookie where
+instance ToParam 'Cookie Day where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam UTCTime 'QueryParam where
+instance ToParam 'QueryParam UTCTime where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam UTCTime 'FormParam where
+instance ToParam 'FormParam UTCTime where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam UTCTime 'Cookie where
+instance ToParam 'Cookie UTCTime where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam LocalTime 'QueryParam where
+instance ToParam 'QueryParam LocalTime where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam LocalTime 'FormParam where
+instance ToParam 'FormParam LocalTime where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam LocalTime 'Cookie where
+instance ToParam 'Cookie LocalTime where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam TimeOfDay 'QueryParam where
+instance ToParam 'QueryParam TimeOfDay where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance ToParam TimeOfDay 'FormParam where
+instance ToParam 'FormParam TimeOfDay where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance ToParam TimeOfDay 'Cookie where
+instance ToParam 'Cookie TimeOfDay where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance (ToParam a 'Cookie) => ToParam (CookieInfo a) 'Cookie where
+instance (ToParam 'Cookie a) => ToParam 'Cookie (CookieInfo a) where
   toParam p pfx val = Prelude.map (\(k, v) -> (k, val { cookieValue = cookieValue v })) $ toParam p pfx (cookieValue val)
 
-instance (EncodeParam a) => ToParam (OptValue a) 'QueryParam where
+instance (EncodeParam a) => ToParam 'QueryParam (OptValue a) where
   toParam _ pfx (OptValue (Just val)) = [(pfx, Just $ encodeParam val)]
   toParam _ pfx (OptValue Nothing)    = [(pfx, Nothing)]
 
-instance (EncodeParam a) => ToParam (OptValue a) 'FormParam where
+instance (EncodeParam a) => ToParam 'FormParam (OptValue a) where
   toParam _ pfx (OptValue (Just val)) = [(pfx, encodeParam val)]
   toParam _ _ (OptValue Nothing)     = []
 
-instance (EncodeParam a) => ToParam (OptValue a) 'Cookie where
+instance (EncodeParam a) => ToParam 'Cookie (OptValue a) where
   toParam _ pfx (OptValue (Just val)) = [(pfx, defCookieInfo $ encodeParam val)]
   toParam _ _ (OptValue Nothing)     = []
 
-instance (ToJSON a) => ToParam (JsonOf a) 'QueryParam where
+instance (ToJSON a) => ToParam 'QueryParam (JsonOf a) where
   toParam _ pfx val = [(pfx, Just $ encodeParam val)]
 
-instance (ToJSON a) => ToParam (JsonOf a) 'FormParam where
+instance (ToJSON a) => ToParam 'FormParam (JsonOf a) where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
-instance (ToJSON a) => ToParam (JsonOf a) 'Cookie where
+instance (ToJSON a) => ToParam 'Cookie (JsonOf a) where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
-instance ToParam a par => ToParam (Maybe a) par where
+instance ToParam par a => ToParam par (Maybe a) where
   toParam pt pfx (Just val) = toParam pt pfx val
   toParam _ _ Nothing      = []
 
-instance (ToParam a par, ToParam b par) => ToParam (Either a b) par where
+instance (ToParam par a, ToParam par b) => ToParam par (Either a b) where
   toParam pt pfx (Left e)  = toParam pt (pfx `nest` "Left") e
   toParam pt pfx (Right v) = toParam pt (pfx `nest` "Right") v
 
-instance ToParam a par => ToParam [a] par where
+instance ToParam par a => ToParam par [a] where
   toParam pt pfx vals = Prelude.concatMap (\(ix, v) -> toParam pt (pfx `nest` (ASCII.pack $ show ix)) v) $ Prelude.zip [(0 :: Word)..] vals
 
-instance ToParam a par => ToParam (Vector a) par where
+instance ToParam par a => ToParam par (Vector a) where
   toParam pt pfx vals = toParam pt pfx (V.toList vals)
 
-instance FromParam () parK where
+instance FromParam parK () where
   fromParam _ _ _ = pure ()
 
 instance FromHeader () where
   fromHeader _ = pure ()
 
-instance FromParam Unit 'QueryParam where
+instance FromParam 'QueryParam Unit where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to NullaryConstructor"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Unit 'FormParam where
+instance FromParam 'FormParam Unit where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to NullaryConstructor"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Unit 'Cookie where
+instance FromParam 'Cookie Unit where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to NullaryConstructor"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Bool 'QueryParam where
+instance FromParam 'QueryParam Bool where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to Bool"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Bool 'FormParam where
+instance FromParam 'FormParam Bool where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to Bool"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Bool 'Cookie where
+instance FromParam 'Cookie Bool where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to Bool"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Char 'QueryParam where
+instance FromParam 'QueryParam Char where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to Char"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Char 'FormParam where
+instance FromParam 'FormParam Char where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to Char"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Char 'Cookie where
+instance FromParam 'Cookie Char where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to Char"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam UTCTime 'QueryParam where
+instance FromParam 'QueryParam UTCTime where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to UTCTime (ISO-8601)"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam UTCTime 'FormParam where
+instance FromParam 'FormParam UTCTime where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to UTCTime (ISO-8601)"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam UTCTime 'Cookie where
+instance FromParam 'Cookie UTCTime where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to UTCTime (ISO-8601)"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam LocalTime 'QueryParam where
+instance FromParam 'QueryParam LocalTime where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to LocalTime (ISO-8601)"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam LocalTime 'FormParam where
+instance FromParam 'FormParam LocalTime where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to LocalTime (ISO-8601)"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam LocalTime 'Cookie where
+instance FromParam 'Cookie LocalTime where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to LocalTime (ISO-8601)"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam TimeOfDay 'QueryParam where
+instance FromParam 'QueryParam TimeOfDay where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to TimeOfDay (ISO-8601)"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam TimeOfDay 'FormParam where
+instance FromParam 'FormParam TimeOfDay where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to TimeOfDay (ISO-8601)"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam TimeOfDay 'Cookie where
+instance FromParam 'Cookie TimeOfDay where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to TimeOfDay (ISO-8601)"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Int 'QueryParam where
+instance FromParam 'QueryParam Int where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Int 'FormParam where
+instance FromParam 'FormParam Int where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Int 'Cookie where
+instance FromParam 'Cookie Int where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Int8 'QueryParam where
+instance FromParam 'QueryParam Int8 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int8"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Int8 'FormParam where
+instance FromParam 'FormParam Int8 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int8"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Int8 'Cookie where
+instance FromParam 'Cookie Int8 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int8"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Int16 'QueryParam where
+instance FromParam 'QueryParam Int16 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int16"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Int16 'FormParam where
+instance FromParam 'FormParam Int16 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int16"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Int16 'Cookie where
+instance FromParam 'Cookie Int16 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int16"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Int32 'QueryParam where
+instance FromParam 'QueryParam Int32 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int32"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Int32 'FormParam where
+instance FromParam 'FormParam Int32 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int32"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Int32 'Cookie where
+instance FromParam 'Cookie Int32 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int32"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Int64 'QueryParam where
+instance FromParam 'QueryParam Int64 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int64"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Int64 'FormParam where
+instance FromParam 'FormParam Int64 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int64"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Int64 'Cookie where
+instance FromParam 'Cookie Int64 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int64"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Integer 'QueryParam where
+instance FromParam 'QueryParam Integer where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int64"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Integer 'FormParam where
+instance FromParam 'FormParam Integer where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int64"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Integer 'Cookie where
+instance FromParam 'Cookie Integer where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Int64"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Word 'QueryParam where
+instance FromParam 'QueryParam Word where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to Word"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Word 'FormParam where
+instance FromParam 'FormParam Word where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to Word"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Word 'Cookie where
+instance FromParam 'Cookie Word where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to Word"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Word8 'QueryParam where
+instance FromParam 'QueryParam Word8 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Word8"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Word8 'FormParam where
+instance FromParam 'FormParam Word8 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Word8"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Word8 'Cookie where
+instance FromParam 'Cookie Word8 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Word8"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Word16 'QueryParam where
+instance FromParam 'QueryParam Word16 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Word16"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Word16 'FormParam where
+instance FromParam 'FormParam Word16 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Word16"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Word16 'Cookie where
+instance FromParam 'Cookie Word16 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Word16"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Word32 'QueryParam where
+instance FromParam 'QueryParam Word32 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Word32"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Word32 'FormParam where
+instance FromParam 'FormParam Word32 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Word32"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Word32 'Cookie where
+instance FromParam 'Cookie Word32 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Word32"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Word64 'QueryParam where
+instance FromParam 'QueryParam Word64 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Word64"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Word64 'FormParam where
+instance FromParam 'FormParam Word64 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Word64"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Word64 'Cookie where
+instance FromParam 'Cookie Word64 where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Word64"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Double 'QueryParam where
+instance FromParam 'QueryParam Double where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to Double"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Double 'FormParam where
+instance FromParam 'FormParam Double where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to Double"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Double 'Cookie where
+instance FromParam 'Cookie Double where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to Double"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Float 'QueryParam where
+instance FromParam 'QueryParam Float where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to Float"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Float 'FormParam where
+instance FromParam 'FormParam Float where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to Float"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Float 'Cookie where
+instance FromParam 'Cookie Float where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to Float"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam ByteString 'QueryParam where
+instance FromParam 'QueryParam ByteString where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to ByteString"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam ByteString 'FormParam where
+instance FromParam 'FormParam ByteString where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to ByteString"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam ByteString 'Cookie where
+instance FromParam 'Cookie ByteString where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to ByteString"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam a par => FromParam (Maybe a) par where
+instance FromParam par a => FromParam par (Maybe a) where
   fromParam pt key kvs = case Trie.null kvs' of
     True  ->  Validation $ Right Nothing
     False -> case (fromParam pt key kvs' :: Validation [ParamErr] a) of
@@ -1244,7 +1244,7 @@ instance FromParam a par => FromParam (Maybe a) par where
       Validation (Left errs) -> Validation $ Left errs
     where kvs' = submap key kvs
 
-instance (FromParam a par, FromParam b par) => FromParam (Either a b) par where
+instance (FromParam par a, FromParam par b) => FromParam par (Either a b) where
   fromParam pt key kvs = case Trie.null kvsL of
     True -> case Trie.null kvsR of
       True -> Validation $ Left [ParseErr key "Unable to cast to Either"]
@@ -1255,49 +1255,49 @@ instance (FromParam a par, FromParam b par) => FromParam (Either a b) par where
           keyL = (key `nest` "Left")
           keyR = (key `nest` "Right")
 
-instance FromParam T.Text 'QueryParam where
+instance FromParam 'QueryParam T.Text where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Text"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam T.Text 'FormParam where
+instance FromParam 'FormParam T.Text where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Text"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam T.Text 'Cookie where
+instance FromParam 'Cookie T.Text where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Text"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Day 'QueryParam where
+instance FromParam 'QueryParam Day where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Day"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Day 'FormParam where
+instance FromParam 'FormParam Day where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Day"]
    _ ->  Validation $ Left [NotFound key]
 
-instance FromParam Day 'Cookie where
+instance FromParam 'Cookie Day where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right v
      _      -> Validation $ Left [ParseErr key "Unable to cast to Day"]
    _ ->  Validation $ Left [NotFound key]
 
-instance (FromParam a par) => FromParam [a] par where
+instance (FromParam par a) => FromParam par [a] where
   fromParam pt key kvs = case Trie.null kvs' of
     True  ->  Validation $ Right []
     False ->
@@ -1313,12 +1313,12 @@ instance (FromParam a par) => FromParam [a] par where
             (Validation (Right _), Validation (Left es)) -> Validation $ Left es
             (Validation (Left as), Validation (Left es)) -> Validation $ Left (es ++ as)
 
-instance (FromParam a par) => FromParam (Vector a) par where
+instance (FromParam par a) => FromParam par (Vector a) where
   fromParam pt key kvs = case fromParam pt key kvs of
     Validation (Right v)  -> Validation $ Right (V.fromList v)
     Validation (Left err) -> Validation (Left err)
 
-instance (DecodeParam a) => FromParam (OptValue a) 'QueryParam where
+instance (DecodeParam a) => FromParam 'QueryParam (OptValue a) where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
      Just v     -> Validation $ Right $ OptValue $ Just v
@@ -1326,103 +1326,103 @@ instance (DecodeParam a) => FromParam (OptValue a) 'QueryParam where
    Just Nothing -> Validation $ Right $ OptValue Nothing
    _            -> Validation $ Left [NotFound key]
 
-instance (DecodeParam a) => FromParam (OptValue a) 'FormParam where
+instance (DecodeParam a) => FromParam 'FormParam (OptValue a) where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right $ OptValue $ Just v
      _      -> Validation $ Left [ParseErr key "Unable to cast to OptValue"]
    _        -> Validation $ Left [NotFound key]
 
-instance (DecodeParam a) => FromParam (OptValue a) 'Cookie where
+instance (DecodeParam a) => FromParam 'Cookie (OptValue a) where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just par -> case decodeParam par of
      Just v -> Validation $ Right $ OptValue $ Just v
      _      -> Validation $ Left [ParseErr key "Unable to cast to OptValue"]
    _        -> Validation $ Left [NotFound key]
 
-instance (FromParam a 'Cookie) => FromParam (CookieInfo a) 'Cookie where
+instance (FromParam 'Cookie a) => FromParam 'Cookie (CookieInfo a) where
   fromParam pt key kvs = case (fromParam pt key kvs :: Validation [ParamErr] a) of
     Validation (Right val) -> Validation $ Right $ defCookieInfo val
     Validation (Left errs) -> Validation $ Left errs
 
 
-instance ToParam FileInfo 'FileParam where
+instance ToParam 'FileParam FileInfo where
   toParam _ key (FileInfo val) = [(key, val)]
 
-instance FromParam FileInfo 'FileParam where
+instance FromParam 'FileParam FileInfo where
   fromParam pt key kvs = case lookupParam pt key kvs of
     Just par -> Validation $ Right (FileInfo par)
     Nothing  -> Validation $ Left [NotFound key]
 
-instance ToParam ByteString 'PathParam where
+instance ToParam 'PathParam ByteString where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam Int 'PathParam where
+instance ToParam 'PathParam Int where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam Int8 'PathParam where
+instance ToParam 'PathParam Int8 where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam Int16 'PathParam where
+instance ToParam 'PathParam Int16 where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam Int32 'PathParam where
+instance ToParam 'PathParam Int32 where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam Int64 'PathParam where
+instance ToParam 'PathParam Int64 where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam Word 'PathParam where
+instance ToParam 'PathParam Word where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam Word8 'PathParam where
+instance ToParam 'PathParam Word8 where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam Word16 'PathParam where
+instance ToParam 'PathParam Word16 where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam Word32 'PathParam where
+instance ToParam 'PathParam Word32 where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam Word64 'PathParam where
+instance ToParam 'PathParam Word64 where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam Float 'PathParam where
+instance ToParam 'PathParam Float where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam Double 'PathParam where
+instance ToParam 'PathParam Double where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam Char 'PathParam where
+instance ToParam 'PathParam Char where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam T.Text 'PathParam where
+instance ToParam 'PathParam T.Text where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam Day 'PathParam where
+instance ToParam 'PathParam Day where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam UTCTime 'PathParam where
+instance ToParam 'PathParam UTCTime where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam Bool 'PathParam where
+instance ToParam 'PathParam Bool where
   toParam _ _ v = [encodeParam v]
 
-instance ToParam Integer 'PathParam where
+instance ToParam 'PathParam Integer where
   toParam _ _ v = [encodeParam v]
 
-instance (ToJSON a) => ToParam (JsonOf a) 'PathParam where
+instance (ToJSON a) => ToParam 'PathParam (JsonOf a) where
   toParam _ _ v = [encodeParam v]
 
 instance ( EncodeParam a
          , EncodeParam b
-         ) => ToParam (a, b) 'PathParam where
+         ) => ToParam 'PathParam (a, b) where
   toParam _ _ (a, b) = [encodeParam a, encodeParam b]
 
 instance ( EncodeParam a
          , EncodeParam b
          , EncodeParam c
-         ) => ToParam (a, b, c) 'PathParam where
+         ) => ToParam 'PathParam (a, b, c) where
   toParam _ _ (a, b, c) = [ encodeParam a
                           , encodeParam b
                           , encodeParam c
@@ -1432,7 +1432,7 @@ instance ( EncodeParam a
          , EncodeParam b
          , EncodeParam c
          , EncodeParam d
-         ) => ToParam (a, b, c, d) 'PathParam where
+         ) => ToParam 'PathParam (a, b, c, d) where
   toParam _ _ (a, b, c, d)
     = [ encodeParam a
       , encodeParam b
@@ -1445,7 +1445,7 @@ instance ( EncodeParam a
          , EncodeParam c
          , EncodeParam d
          , EncodeParam e
-         ) => ToParam (a, b, c, d, e) 'PathParam where
+         ) => ToParam 'PathParam (a, b, c, d, e) where
   toParam _ _ (a, b, c, d, e)
     = [ encodeParam a
       , encodeParam b
@@ -1460,7 +1460,7 @@ instance ( EncodeParam a
          , EncodeParam d
          , EncodeParam e
          , EncodeParam f
-         ) => ToParam (a, b, c, d, e, f) 'PathParam where
+         ) => ToParam 'PathParam (a, b, c, d, e, f) where
   toParam _ _ (a, b, c, d, e, f)
     = [ encodeParam a
       , encodeParam b
@@ -1478,7 +1478,7 @@ instance ( EncodeParam a
          , EncodeParam f
          , EncodeParam g
          , EncodeParam h
-         ) => ToParam (a, b, c, d, e, f, g, h) 'PathParam where
+         ) => ToParam 'PathParam (a, b, c, d, e, f, g, h) where
   toParam _ _ (a, b, c, d, e, f, g, h)
     = [ encodeParam a
       , encodeParam b
@@ -1499,7 +1499,7 @@ instance ( EncodeParam a
          , EncodeParam g
          , EncodeParam h
          , EncodeParam i
-         ) => ToParam (a, b, c, d, e, f, g, h, i) 'PathParam where
+         ) => ToParam 'PathParam (a, b, c, d, e, f, g, h, i) where
   toParam _ _ (a, b, c, d, e, f, g, h, i)
     = [ encodeParam a
       , encodeParam b
@@ -1522,7 +1522,7 @@ instance ( EncodeParam a
          , EncodeParam h
          , EncodeParam i
          , EncodeParam j
-         ) => ToParam (a, b, c, d, e, f, g, h, i, j) 'PathParam where
+         ) => ToParam 'PathParam (a, b, c, d, e, f, g, h, i, j) where
   toParam _ _ (a, b, c, d, e, f, g, h, i, j)
     = [ encodeParam a
       , encodeParam b
@@ -1723,10 +1723,10 @@ instance (GFromParam f parK, Selector t, f ~ (K1 i c)) => GFromParam (M1 S t f) 
                                      "" -> M1 <$> gfromParam pt (pfx `nest` numberedFld pa) pa psett (submap pfx kvs)
                                      _  -> M1 <$> gfromParam pt (pfx `nest` fldN) pa psett (submap pfx kvs)
 
-instance (FromParam c parK) => GFromParam (K1 i c) parK where
+instance (FromParam parK c) => GFromParam (K1 i c) parK where
   gfromParam pt pfx _ _ kvs = K1 <$> fromParam pt pfx kvs
 
-instance (FromParam Unit parK) => GFromParam U1 parK where
+instance (FromParam parK Unit) => GFromParam U1 parK where
   gfromParam pt key _ _ kvs = const U1 <$> (fromParam pt key kvs :: Validation [ParamErr] Unit)
 
 class GToParam f (parK :: ParamK) where
@@ -1739,7 +1739,7 @@ instance (GToParam f parK, GToParam g parK) => GToParam (f :+: g) parK where
   gtoParam pt pfx pa psett(L1 x) = gtoParam pt pfx (pa { isSum = True }) psett x
   gtoParam pt pfx pa psett (R1 y) = gtoParam pt pfx (pa { isSum = True }) psett y
 
-instance (ToParam c parK) => GToParam (K1 i c) parK where
+instance (ToParam parK c) => GToParam (K1 i c) parK where
   gtoParam pt pfx _ _ (K1 x) = toParam pt pfx x
 
 instance (GToParam f parK, Constructor t) => GToParam (M1 C t f) parK where
@@ -1756,7 +1756,7 @@ instance (GToParam f parK, Selector t, f ~ (K1 i c)) => GToParam (M1 S t f) parK
                                          "" -> gtoParam pt (pfx `nest` numberedFld pa) pa psett x
                                          _  -> gtoParam pt (pfx `nest` fldN) pa psett x
 
-instance (ToParam Unit parK) => GToParam U1 parK where
+instance (ToParam parK Unit) => GToParam U1 parK where
   gtoParam pt pfx _ _ _ = toParam pt pfx Unit
 
 numberedFld :: ParamAcc -> ByteString
