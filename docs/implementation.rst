@@ -1,28 +1,28 @@
 
 Implementation
-==============================
+==============
 
-An ApiContract is just a schematic representation of your API service. We still need to implement our handlers that actually does the work. You would have already read about this in the *Getting started* section.
+An ApiContract is just a schematic representation of your API service. We still need to implement our handlers that actually does the work. You would have already read about this in the :doc:`start` section.
 
-Implementation of a contract consists of 
+Implementation of a contract consists of
 
 * Writing a :code:`WebApiImplementation` instance.
 * Writing :code:`ApiHandler` instances for all your end-points.
 
 Writing WebApiImplementation instance
-----------------------------------------------
+-------------------------------------
 The :code:`WebApiImplementation` typeclass has
 
   - Two associated types
-      - **HandlerM** - It is the type of monad in which our handler should run (defaults to IO).
+      - **HandlerM** - It is the type of monad in which our handler should run (defaults to :code:`IO`).
         This monad should implement :code:`MonadCatch` and :code:`MonadIO` classes.
 
-      - **ApiInterface** - ApiInterface links the implementation with the contract. This lets us have
+      - **ApiInterface** - :code:`ApiInterface` links the implementation with the contract. This lets us have
         multiple implementations for the same contract
 
   - One method
-      - **toIO** - It is a method which is used to convert our handler monad's action to IO.
-        (defaults to :code:`id`)  
+      - **toIO** - It is a method which is used to convert our handler monad's action to :code:`IO`.
+        (defaults to :code:`id`)
 
 Let's define a type for our implementation and write a :code:`WebApiImplementation` instance for the same.
 
@@ -35,23 +35,25 @@ Let's define a type for our implementation and write a :code:`WebApiImplementati
         type ApiInterface MyApiImpl = MyApp
         toIO _                      = id
 
+::
 
-
-Note: You can skip writing :code:`HandlerM`'s and :code:`toIO`'s definitions if
-you want your :code:`HandlerM` to be :code:`IO`.
+    Note: You can skip writing :code:`HandlerM`'s and :code:`toIO`'s definitions if
+    you want your :code:`HandlerM` to be :code:`IO`.
 
 Writing instances for your handlers
 ------------------------------------
 
-Now we can write handler for _____ as
-::
+Now we can write handler for our :code:`User` route as ::
 
   instance ApiHandler MyApiImpl POST User where
     handler _ req = do
       let _userInfo = formParam req
-      respond ()
- 
+      respond (UserToken "Foo" "Bar")
 
+:code:`handler` returns a :code:`Response`. Here we used :code:`respond` to
+build a :code:`Success` :wahackage:`Response</WebApi-Contract.html#t:Response>`.
+You can use its counter-part :code:`raise` as discussed in :doc:`error-handling`
+to send :code:`Failure` :wahackage:`Response</WebApi-Contract.html#t:Response>`
 
 Doing more with your handler monad
 ----------------------------------
@@ -105,16 +107,16 @@ would look like: ::
 
 A sample :code:`ApiHandler` for this would be something like: ::
 
-    instance ApiHandler MyApiImpl POST _userInfo where
+    instance ApiHandler MyApiImpl POST User where
         handler _ req = do
             settings <- ask
             -- do something with settings
             return ()
 
 .. _implementation:
-Adding a logger
-~~~~~~~~~~~~~~~~~~~~~~
 
+Adding a logger
+~~~~~~~~~~~~~~~
 
 Adding a logging system to our implementation is similar to adding a :code:`Reader`.
 We use :code:`LoggingT` transformer to achieve that. ::

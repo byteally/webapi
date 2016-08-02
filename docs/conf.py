@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# DBRecord documentation build configuration file, created by
+# WebApi documentation build configuration file, created by
 # sphinx-quickstart on Thu Jun  2 16:18:58 2016.
 #
 # This file is execfile()d with the current directory set to its

@@ -1,19 +1,16 @@
 Content Serialization / Deserealization
 =======================================
 
-In `WebApi`, :code:`ToParam` and :code:`FromParam` are the typeclasses responsible for serializing and deserializing data. Serialization and deserialization for your data types are automatically take care of if they have generic instances without you having to write anything. You still have to derive them though.
+In WebApi_, :code:`ToParam` and :code:`FromParam` are the typeclasses responsible for serializing and deserializing data. Serialization and deserialization for your data types are automatically take care of if they have generic instances without you having to write anything. You still have to derive them though.
 
-Lets look at an example
-
-
-::
+Lets look at an example ::
 
      data LatLng = LatLng
         { lat :: Double
         , lng :: Double
         } deriving Generic
 
-To let :code:`WebApi` automatically deserialize this type, we just need to give
+To let WebApi_ automatically deserialize this type, we just need to give
 an empty instance declaration ::
 
     instance FromParam LatLng 'QueryParam
@@ -26,16 +23,14 @@ a similar ToParam instance. ::
 Nested Types
 ------------
 
-Nested types are serialized with a dot notation.
+Nested types are serialized with a dot notation. ::
 
-::
-
-     data UserData = UserData { age     :: Int
-                              , address :: Text
-                              , name    :: Text
-                              , location :: LatLng
-                              } deriving (Show, Eq, Generic)
-
+    data UserData = UserData
+        { age     :: Int
+        , address :: Text
+        , name    :: Text
+        , location :: LatLng
+        } deriving (Show, Eq, Generic)
 
 Here the location field would be serialized as
 :code:`location.lat` and :code:`location.lng`
@@ -97,7 +92,7 @@ other param types.
 Content Types
 -------------
 
-You can tell :code:`WebApi` about the content-type of :code:`ApiOut/ApiErr` using
+You can tell WebApi_ about the content-type of :code:`ApiOut/ApiErr` using
 :code:`ContentTypes`. ::
 
     instance ApiContract MyApiService POST User where
@@ -111,4 +106,6 @@ while writing server side component and :code:`FromJSON` instances while writing
 client side version.
 
 Apart from :code:`JSON` you can give other types such as :code:`HTML`, :code:`PlainText`
-etc. You can see a complete list here<give hackage doc link>
+etc. You can see a complete list :wahackage:`here</WebApi-ContentTypes.html>`
+
+.. _WebApi: https://hackage.haskell.org/package/webapi

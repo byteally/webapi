@@ -50,6 +50,7 @@ module WebApi.Contract
        , Response (..)
        , ApiError (..)
        , OtherError (..)
+       , Resource (..)
        
        -- * Methods   
        , module WebApi.Method
@@ -223,6 +224,9 @@ pattern Req :: () => (SingMethod m, HListToTuple (StripContents (RequestBody m r
                 -> Text
                 -> Request m r
 pattern Req pp qp fp fip hi ci m = Req' pp qp fp fip hi ci () m
+
+-- | Datatype representing a Api Resource. This is a Phantom type similar to 'Proxy', usually used to fix the parameter method (m) and route (r) of functions without resorting to pass 'undefined' as witness
+data Resource m r = Res
 
 _reqToRoute :: Request m r -> Proxy m
 _reqToRoute _ = Proxy

@@ -34,8 +34,6 @@ import WebApi.Server
 import WebApi.Util
 import Test.QuickCheck (Arbitrary, generate, arbitrary)
 
-data Route' m r = Route'
-
 -- | Datatype representing a mock server. The parameterization over `p` allows it to be a mock server for any `p`.
 newtype MockServer p = MockServer { mockServerSett :: MockServerSettings }
                      deriving (Eq, Show)
@@ -65,7 +63,7 @@ instance ( ApiContract p m r
          , Typeable m
          , Typeable r 
          ) => ApiHandler (MockServer p) m r where
-  handler mock _ = mockResponse (Route' :: Route' m r) ((mockServerSett . unTagged) mock)
+  handler mock _ = mockResponse (Res :: Resource m r) ((mockServerSett . unTagged) mock)
 
 -- | Create a mock response from endpoint information and `MockServerSettings`
 mockResponse :: forall route m r. ( Arbitrary (ApiOut m r)

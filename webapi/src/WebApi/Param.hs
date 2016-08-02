@@ -66,7 +66,6 @@ module WebApi.Param
 
        -- * Wrappers
        , CookieInfo (..)
-       , Field (..)
        , JsonOf (..)
        , OptValue (..)
        , FileInfo (..)
@@ -74,8 +73,21 @@ module WebApi.Param
 
        -- * Helpers
        , ParamK (..)
+       , ParamSettings, fieldModifier
        , filePath
        , nest
+       , defaultParamSettings
+       -- * Generic (De)Serialization fn
+       , genericToQueryParam
+       , genericFromQueryParam
+       , genericToFormParam
+       , genericFromFormParam
+       , genericToFileParam
+       , genericFromFileParam
+       , genericToPathParam
+       , genericFromPathParam
+       , genericToCookie
+       , genericFromCookie
        ) where
 
 
@@ -113,7 +125,6 @@ import           Data.Vector                        (Vector)
 import qualified Data.Vector                        as V
 import           Data.Word
 import           GHC.Generics
-import           GHC.TypeLits
 import           Network.HTTP.Types
 import           Network.HTTP.Types                 as Http (Header, QueryItem)
 import qualified Network.Wai.Parse                  as Wai (FileInfo (..))
@@ -185,6 +196,7 @@ type family DeSerializedData (par :: ParamK) where
   DeSerializedData 'QueryParam = Maybe ByteString
   DeSerializedData 'FormParam  = ByteString
   DeSerializedData 'FileParam  = Wai.FileInfo FilePath
+  DeSerializedData 'PathParam  = ByteString
   DeSerializedData 'Cookie     = ByteString
 
 -- | Datatype representing the parsed result of params.
@@ -234,19 +246,49 @@ fromFileParam par = fromParam (Proxy :: Proxy 'FileParam) "" $ Trie.fromList par
 fromCookie :: (FromParam a 'Cookie) => [(ByteString, ByteString)] -> Validation [ParamErr] a
 fromCookie par = fromParam (Proxy :: Proxy 'Cookie) "" $ Trie.fromList par
 
+genericToQueryParam :: (Generic a, GToParam (Rep a) 'QueryParam) => ParamSettings -> ByteString -> a -> [Http.QueryItem]
+genericToQueryParam opts pfx = gtoParam (Proxy :: Proxy 'QueryParam) pfx (ParamAcc 0 False) opts . from
+
+genericFromQueryParam :: (Generic a, GFromParam (Rep a) 'QueryParam) => ParamSettings -> ByteString -> Trie (Maybe ByteString) -> Validation [ParamErr] a
+genericFromQueryParam opts pfx = (fmap to) . gfromParam (Proxy :: Proxy 'QueryParam) pfx (ParamAcc 0 False) opts
+
+genericToFormParam :: (Generic a, GToParam (Rep a) 'FormParam) => ParamSettings -> ByteString -> a -> [(ByteString, ByteString)]
+genericToFormParam opts pfx = gtoParam (Proxy :: Proxy 'FormParam) pfx (ParamAcc 0 False) opts . from
+
+genericFromFormParam :: (Generic a, GFromParam (Rep a) 'FormParam) => ParamSettings -> ByteString -> Trie ByteString -> Validation [ParamErr] a
+genericFromFormParam opts pfx = (fmap to) . gfromParam (Proxy :: Proxy 'FormParam) pfx (ParamAcc 0 False) opts
+
+genericToFileParam :: (Generic a, GToParam (Rep a) 'FileParam) => ParamSettings -> ByteString -> a -> [(ByteString, Wai.FileInfo FilePath)]
+genericToFileParam opts pfx = gtoParam (Proxy :: Proxy 'FileParam) pfx (ParamAcc 0 False) opts . from
+
+genericFromFileParam :: (Generic a, GFromParam (Rep a) 'FileParam) => ParamSettings -> ByteString -> Trie (Wai.FileInfo FilePath) -> Validation [ParamErr] a
+genericFromFileParam opts pfx = (fmap to) . gfromParam (Proxy :: Proxy 'FileParam) pfx (ParamAcc 0 False) opts
+
+genericToPathParam :: (Generic a, GToParam (Rep a) 'PathParam) => ParamSettings -> ByteString -> a -> [ByteString]
+genericToPathParam opts pfx = gtoParam (Proxy :: Proxy 'PathParam) pfx (ParamAcc 0 False) opts . from
+
+genericFromPathParam :: (Generic a, GFromParam (Rep a) 'PathParam) => ParamSettings -> ByteString -> Trie ByteString -> Validation [ParamErr] a
+genericFromPathParam opts pfx = (fmap to) . gfromParam (Proxy :: Proxy 'PathParam) pfx (ParamAcc 0 False) opts
+
+genericToCookie :: (Generic a, GToParam (Rep a) 'Cookie) => ParamSettings -> ByteString -> a -> [(ByteString, CookieInfo ByteString)]
+genericToCookie opts pfx = gtoParam (Proxy :: Proxy 'Cookie) pfx (ParamAcc 0 False) opts . from
+
+genericFromCookie :: (Generic a, GFromParam (Rep a) 'Cookie) => ParamSettings -> ByteString -> Trie ByteString -> Validation [ParamErr] a
+genericFromCookie opts pfx = (fmap to) . gfromParam (Proxy :: Proxy 'Cookie) pfx (ParamAcc 0 False) opts
+
 -- | Serialize a type to a given type of kind 'ParamK'.
 class ToParam a (parK :: ParamK) where
   toParam :: Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
 
   default toParam :: (Generic a, GToParam (Rep a) parK) => Proxy (parK :: ParamK) -> ByteString -> a -> [SerializedData parK]
-  toParam pt pfx = gtoParam pt pfx (ParamAcc 0 False) ParamSettings . from
+  toParam pt pfx = gtoParam pt pfx (ParamAcc 0 False) defaultParamSettings . from
 
 -- | (Try to) Deserialize a type from a given type of kind 'ParamK'.
 class FromParam a (parK :: ParamK) where
   fromParam :: Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
 
   default fromParam :: (Generic a, GFromParam (Rep a) parK) => Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Validation [ParamErr] a
-  fromParam pt pfx = (fmap to) . gfromParam pt pfx (ParamAcc 0 False) ParamSettings
+  fromParam pt pfx = (fmap to) . gfromParam pt pfx (ParamAcc 0 False) defaultParamSettings
 
 -- | Serialize a type to 'ByteString'.
 class EncodeParam (t :: *) where
@@ -1547,45 +1589,25 @@ data ParamAcc = ParamAcc { index :: Int, isSum :: Bool }
               deriving (Show, Eq)
 
 data ParamSettings = ParamSettings
-                   deriving (Show, Eq)
+  { fieldModifier :: (ByteString -> ByteString)
+  }
 
--- | Used to alias the field name while serailizing FromParam/ToParam instances
---
--- > data Foo = Foo { foobar :: Field "foo_bar" Int} -- fieldname would be aliased to foo_bar instead of foobar
-newtype Field (s :: Symbol) a = Field { unField :: a }
-
-instance (ToParam a parK) => ToParam (Field s a) parK where
-  toParam pt pfx = toParam pt pfx . unField
-
-instance (FromParam a parK) => FromParam (Field s a) parK where
-  fromParam pt key kvs = Field <$> fromParam pt key kvs
-
-type family IsField a where
-  IsField (Field s a) = 'True
-  IsField a           = 'False
-
-class FieldModifier a (b :: Bool) where
-  fieldMod :: Proxy a -> Proxy b -> (ByteString -> ByteString)
-
-instance (KnownSymbol s) => FieldModifier (Field s a) 'True where
-  fieldMod _ _ = const $ ASCII.pack (symbolVal (Proxy :: Proxy s))
-
-instance FieldModifier a 'False where
-  fieldMod _ _ = id
+defaultParamSettings :: ParamSettings
+defaultParamSettings = ParamSettings {fieldModifier = id}
 
 -- | Serialize a type to the header params
 class ToHeader a where
   toHeader :: a -> [Http.Header]
 
   default toHeader :: (Generic a, GToHeader (Rep a)) => a -> [Http.Header]
-  toHeader = gtoHeader "" (ParamAcc 0 False) ParamSettings . from
+  toHeader = gtoHeader "" (ParamAcc 0 False) defaultParamSettings . from
 
 -- | (Try to) Deserialize a type from the header params
 class FromHeader a where
   fromHeader :: [Http.Header] -> Validation [ParamErr] a
 
   default fromHeader :: (Generic a, GFromHeader (Rep a)) => [Http.Header] -> Validation [ParamErr] a
-  fromHeader = (fmap to) . gfromHeader "" (ParamAcc 0 False) ParamSettings
+  fromHeader = (fmap to) . gfromHeader "" (ParamAcc 0 False) defaultParamSettings
 
 class GToHeader f where
   gtoHeader :: ByteString -> ParamAcc -> ParamSettings -> f a -> [Http.Header]
@@ -1695,12 +1717,11 @@ instance (GFromParam f parK, Datatype t) => GFromParam (M1 D t f) parK where
 
     where dtN = T.pack $ datatypeName (undefined :: (M1 D t f) a)
 
-instance (GFromParam f parK, Selector t, f ~ (K1 i c), FieldModifier c (IsField c)) => GFromParam (M1 S t f) parK where
+instance (GFromParam f parK, Selector t, f ~ (K1 i c)) => GFromParam (M1 S t f) parK where
   gfromParam pt pfx pa psett kvs = let fldN = (ASCII.pack $ (selName (undefined :: (M1 S t f) a)))
-                                       modSelName = fieldMod (Proxy :: Proxy c) (Proxy :: Proxy (IsField c))
                                    in case fldN of
                                      "" -> M1 <$> gfromParam pt (pfx `nest` numberedFld pa) pa psett (submap pfx kvs)
-                                     _  -> M1 <$> gfromParam pt (pfx `nest` (modSelName fldN)) pa psett (submap pfx kvs)
+                                     _  -> M1 <$> gfromParam pt (pfx `nest` fldN) pa psett (submap pfx kvs)
 
 instance (FromParam c parK) => GFromParam (K1 i c) parK where
   gfromParam pt pfx _ _ kvs = K1 <$> fromParam pt pfx kvs
@@ -1729,12 +1750,11 @@ instance (GToParam f parK, Constructor t) => GToParam (M1 C t f) parK where
 instance (GToParam f parK) => GToParam (M1 D t f) parK where
   gtoParam pt pfx pa psett (M1 x) = gtoParam pt pfx pa psett x
 
-instance (GToParam f parK, Selector t, f ~ (K1 i c), FieldModifier c (IsField c)) => GToParam (M1 S t f) parK where
+instance (GToParam f parK, Selector t, f ~ (K1 i c)) => GToParam (M1 S t f) parK where
   gtoParam pt pfx pa psett  m@(M1 x) = let fldN = ASCII.pack (selName m)
-                                           modSelName = fieldMod (Proxy :: Proxy c) (Proxy :: Proxy (IsField c))
                                        in case fldN of
                                          "" -> gtoParam pt (pfx `nest` numberedFld pa) pa psett x
-                                         _  -> gtoParam pt (pfx `nest` (modSelName fldN)) pa psett x
+                                         _  -> gtoParam pt (pfx `nest` fldN) pa psett x
 
 instance (ToParam Unit parK) => GToParam U1 parK where
   gtoParam pt pfx _ _ _ = toParam pt pfx Unit
