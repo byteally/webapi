@@ -30,7 +30,7 @@ Lets first define the type for the API service, call it :code:`UberApi` and type
 
 
 
-Now lets define what methods (GET, POST etc.) can be used on these routes. For this we need to define `WebApi <https://hackage.haskell.org/package/webapi-0.2.2.0/docs/WebApi-Contract.html#t:WebApi>`_ instance for our service :code:`UberApi` .
+Now lets define what methods (GET, POST etc.) can be used on these routes. For this we need to define :wahackage:`WebApi </WebApi-Contract.html#t:WebApi>` instance for our service :code:`UberApi` .
 
 ::
 
@@ -75,7 +75,7 @@ We'll start with the :code:`TimeEstimateR` route. As defined in the Uber API `do
 
 As request to Uber API requires an Authorization header, we include that in our contract for each route. The data type `Token <https://hackage.haskell.org/package/uber-0.1.0.0/docs/Uber-Auth.html#t:Token>`_ used in the header is defined `here <https://hackage.haskell.org/package/uber-0.1.0.0/docs/Uber-Auth.html>`_
 
-There is still one piece missing though. Serialization/ de-serialization of request/response data types. To do that, we need to give `FromJSON <http://hackage.haskell.org/package/aeson-0.3.2.0/docs/Data-Aeson.html#t:FromJSON>`_ instance for our response and `ToParam <https://hackage.haskell.org/package/webapi-0.2.2.0/docs/WebApi-Param.html#t:ToParam>`_ instance for the query param datatype. 
+There is still one piece missing though. Serialization/ de-serialization of request/response data types. To do that, we need to give `FromJSON <http://hackage.haskell.org/package/aeson-0.3.2.0/docs/Data-Aeson.html#t:FromJSON>`_ instance for our response and :wahackage:`ToParam </WebApi-Param.html#t:ToParam>` instance for the query param datatype. 
 
 ::
 
@@ -103,9 +103,9 @@ And that's it! By simply defining a contract we have built a Haskell client for 
       times' <- client cSettings (Request () timeQuery () () auth () () :: WebApi.Request GET TimeEstimateR)
 
 
-We use `client <https://hackage.haskell.org/package/webapi-0.2.2.0/docs/WebApi-Client.html>`_ function to send the request. It takes `ClientSettings <https://hackage.haskell.org/package/webapi-0.2.2.0/docs/WebApi-Client.html#t:ClientSettings>`_ and `Request <https://hackage.haskell.org/package/webapi-0.2.2.0/docs/WebApi-Contract.html#t:Request>`_ as input and gives us the `Response <https://hackage.haskell.org/package/webapi-0.2.2.0/docs/WebApi-Contract.html#t:Response>`_ . If you see the `Request <https://hackage.haskell.org/package/webapi-0.2.2.0/docs/WebApi-Contract.html#v:Request>`_ pattern synonym, we need to give it all the params, headers etc. to construct a `Request <https://hackage.haskell.org/package/webapi-0.2.2.0/docs/WebApi-Contract.html#t:Request>`_ . So for a particular route, the params which we declare in the contract are filled with the declared datatypes and the rest defaults to :code:`()` **unit**
+We use :wahackage:`client</WebApi-Client.html>` function to send the request. It takes :wahackage:`ClientSettings </WebApi-Client.html#t:ClientSettings>` and :wahackage:`Request </WebApi-Contract.html#t:Request>` as input and gives us the :wahackage:`Response </WebApi-Contract.html#t:Response>` . If you see the :wahackage:`Request </WebApi-Contract.html#v:Request>` pattern synonym, we need to give it all the params, headers etc. to construct a :wahackage:`Request </WebApi-Contract.html#t:Request>` . So for a particular route, the params which we declare in the contract are filled with the declared datatypes and the rest defaults to :code:`()` **unit**
 
-When the endpoint gives a response back, WebApi_ deserializes it into `Response <https://hackage.haskell.org/package/webapi-0.2.2.0/docs/WebApi-Contract.html#t:Response>`_ . Lets write a function to handle the response.
+When the endpoint gives a response back, WebApi_ deserializes it into :wahackage:`Response </WebApi-Contract.html#t:Response>` . Lets write a function to handle the response.
 
 ::
 
