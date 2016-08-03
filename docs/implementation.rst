@@ -1,17 +1,17 @@
 
-Implementation
+Server implementation
 ==============
 
-An ApiContract is just a schematic representation of your API service. We still need to implement our handlers that actually does the work. You would have already read about this in the :doc:`start` section.
+An :wahackage:`ApiContract <WebApi-Contract.html#t:ApiContract>` is just a schematic representation of your API service. We still need to implement our handlers that actually does the work. You would have already read about this in the :doc:`start` section.
 
 Implementation of a contract consists of
 
-* Writing a :code:`WebApiImplementation` instance.
-* Writing :code:`ApiHandler` instances for all your end-points.
+* Writing a :wahackage:`WebApiServer <WebApi-Server.html>` instance.
+* Writing :wahackage:`ApiHandler <WebApi-Server.html#t:ApiHandler>` instances for all your end-points.
 
-Writing WebApiImplementation instance
+Writing WebApiServer instance
 -------------------------------------
-The :code:`WebApiImplementation` typeclass has
+The :code:`WebApiServer` typeclass has
 
   - Two associated types
       - **HandlerM** - It is the type of monad in which our handler should run (defaults to :code:`IO`).
@@ -24,20 +24,20 @@ The :code:`WebApiImplementation` typeclass has
       - **toIO** - It is a method which is used to convert our handler monad's action to :code:`IO`.
         (defaults to :code:`id`)
 
-Let's define a type for our implementation and write a :code:`WebApiImplementation` instance for the same.
+Let's define a type for our implementation and write a :code:`WebApiServer` instance for the same.
 
 ::
 
-    data MyApiImpl = MyApiImpl
+    data MyApiServiceImpl = MyApiServiceImpl
 
-    instance WebApiImplementation MyApiImpl where
-        type HandlerM MyApiImpl     = IO
-        type ApiInterface MyApiImpl = MyApp
+    instance WebApiServer MyApiServiceImpl where
+        type HandlerM MyApiServiceImpl     = IO
+        type ApiInterface MyApiServiceImpl = MyApiService
         toIO _                      = id
 
-::
 
-    Note: You can skip writing :code:`HandlerM`'s and :code:`toIO`'s definitions if
+
+.. note:: You can skip writing :code:`HandlerM`'s and :code:`toIO`'s definitions if
     you want your :code:`HandlerM` to be :code:`IO`.
 
 Writing instances for your handlers
@@ -45,7 +45,7 @@ Writing instances for your handlers
 
 Now we can write handler for our :code:`User` route as ::
 
-  instance ApiHandler MyApiImpl POST User where
+  instance ApiHandler MyApiServiceImpl POST User where
     handler _ req = do
       let _userInfo = formParam req
       respond (UserToken "Foo" "Bar")
@@ -66,13 +66,13 @@ Adding a config Reader
 
 Most of the times our app would need some kind of initial setting which could
 come from a config file or some environment variables. To accomodate for that, we
-can change :code:`MyApiImpl` to ::
+can change :code:`MyApiServiceImpl` to ::
 
     data AppSettings = AppSettings
 
-    data MyApiImpl = MyApiImpl AppSettings
+    data MyApiServiceImpl = MyApiServiceImpl AppSettings
 
-Just adding :code:`AppSettings` to our :code:`MyApiImpl` is useless unless our
+Just adding :code:`AppSettings` to our :code:`MyApiServiceImpl` is useless unless our
 monad gives a way to access those settings. So we need a monad in which we can
 read these settings, anytime we require. A :code:`ReaderT` transformer would fit
 perfectly for this scenario.
@@ -92,22 +92,22 @@ instances. Thats why you see them in the :code:`deriving` clause.
 
 There is still one more piece left, before we can use this. We need to define
 :code:`toIO` function to convert :code:`MyApiMonad`'s actions to :code:`IO`.
-We can use `runReaderT` to pass the initial :code:`Reader`'s environment settings
+We can use `runReaderT <https://hackage.haskell.org/package/mtl-2.2.1/docs/Control-Monad-Reader.html#t:ReaderT>`_ to pass the initial :code:`Reader`'s environment settings
 and execute the computation in the underlying monad(IO in this case). ::
 
-    toIO (MyApiImpl settings) (MyApiMonad r) = runReaderT r settings
+    toIO (MyApiServiceImpl settings) (MyApiMonad r) = runReaderT r settings
 
-So the :code:`WebApiImplementation` instance for our modified :code:`MyApiImpl`
+So the :code:`WebApiServer` instance for our modified :code:`MyApiServiceImpl`
 would look like: ::
 
-    instance WebApiImplementation MyApiImpl where
-        type HandlerM MyApiImpl = MyApiMonad
-        type ApiInterface MyApiImpl = MyApp
-        toIO (MyApiImpl settings) (MyApiMonad r) = runReaderT r settings
+    instance WebApiServer MyApiServiceImpl where
+        type HandlerM MyApiServiceImpl = MyApiMonad
+        type ApiInterface MyApiServiceImpl = MyAppService
+        toIO (MyApiServiceImpl settings) (MyApiMonad r) = runReaderT r settings
 
 A sample :code:`ApiHandler` for this would be something like: ::
 
-    instance ApiHandler MyApiImpl POST User where
+    instance ApiHandler MyApiServiceImpl POST User where
         handler _ req = do
             settings <- ask
             -- do something with settings
@@ -124,7 +124,7 @@ We use :code:`LoggingT` transformer to achieve that. ::
     newtype MyApiMonad a = MyApiMonad (LoggingT (ReaderT AppSettings IO) a)
         deriving (Monad, MonadIO, MonadCatch, MonadLogger)
 
-    instance WebApiImplementation MyApiImpl where
-        type HandlerM MyApiImpl = MyApiMonad
-        type ApiInterface MyApiImpl = MyApp
-        toIO (MyApiImpl settings) (MyApiMonad r) = runReaderT (runStdoutLoggingT r) settings
+    instance WebApiServer MyApiServiceImpl where
+        type HandlerM MyApiServiceImpl = MyApiMonad
+        type ApiInterface MyApiServiceImpl = MyAppService
+        toIO (MyApiServiceImpl settings) (MyApiMonad r) = runReaderT (runStdoutLoggingT r) settings

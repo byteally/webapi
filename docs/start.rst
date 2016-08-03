@@ -3,8 +3,8 @@ Quick start
 
 Writing your API service comprises of two steps
 
-  * Writing a contract (definition below)
-  * Providing an implementation
+  * Writing a contract (schematic representation of your API)
+  * Providing a server implementation
 
 Contract
 --------
@@ -27,7 +27,7 @@ To define your contract using the framework, you need to
 ::
 
   type User   = Static "user"
-  type UserId = "user":/Int
+  type UserId = "user" :/ Int
 
   
 * Write a :wahackage:`WebApi <WebApi-Contract.html#t:WebApi>` instance which declares the endpoints.
@@ -35,9 +35,9 @@ To define your contract using the framework, you need to
 ::
 
   instance WebApi MyApiService where
-    -- Route <Method  <Route Name 
+    -- Route <Method>  <Route Name> 
      type Apis MyApiService = '[ Route '[GET, POST]        User
-                              , Route '[GET, PUT, DELETE] UserId
+                               , Route '[GET, PUT, DELETE] UserId
                                ]
 
   
@@ -82,7 +82,7 @@ An equivalent curl syntax would be:
  
   instance FromJSON UserData
   instance ToJSON   UserData
-  instance FromParam UserData 'FormParam
+  instance FromParam 'FormParam UserData
 
   {--We dont need a FromParam instance since UserToken according
    to our example is not sent us form params or query params -}
@@ -92,24 +92,26 @@ An equivalent curl syntax would be:
 This completes the contract part of the API.
 
 
-Implementation
+Server implementation
 --------------
 
-First step is to create a type for the implementation and define :wahackage:`WebApiImplementation <WebApi-Server.html#t:WebApiImplementation>` instance for it.
+* First step is to create a type for the implementation and define :wahackage:`WebApiServer <WebApi-Server.html#t:WebApiServer>` instance for it.
 
 ::
 
   data MyApiServiceImpl = MyApiServiceImpl 
  
-  instance WebApiImplementation MyApiServiceImpl where
+  instance WebApiServer MyApiServiceImpl where
     type HandlerM MyApiServiceImpl = IO
     type ApiInterface MyApiServiceImpl = MyApiService
 
 
 
-`HandlerM <https://hackage.haskell.org/package/webapi-0.2.2.0/docs/WebApi-Server.html#t:HandlerM>`_ is the base monad in which the :wahackage:`handler <WebApi-Server.html#v:handler>` will run. We also state that :code:`MyApiServiceImpl` is an implementation of the :wahackage:`ApiInterface <WebApi-Server.html#t:ApiInterface>` provided by :code:`MyApiServiceApi`.
+`HandlerM <https://hackage.haskell.org/package/webapi-0.2.2.0/docs/WebApi-Server.html#t:HandlerM>`_ is the base monad in which the :wahackage:`handler <WebApi-Server.html#v:handler>` will run. We also state that :code:`MyApiServiceImpl` is the implementation for the contract :code:`MyApiServiceApi`.
 
-Now let's create the :wahackage:`ApiHandler <WebApi-Server.html#t:ApiHandler>`
+By keeping the implementation separate from the contract, it is possible for a contract to have multiple implementations. Hypothetically, there could be a **websocket** implementation as well as a **REST** implementation for a single contract.
+
+* Now let's create the :wahackage:`ApiHandler <WebApi-Server.html#t:ApiHandler>` for one of our end-point :code:`POST /user`
 
 ::
 
@@ -120,10 +122,7 @@ Now let's create the :wahackage:`ApiHandler <WebApi-Server.html#t:ApiHandler>`
  
 
 
-
-By keeping the implementation separate from the contract, it is possible for a contract to have multiple implementations. Hypothetically, there could be a **websocket** implementation as well as a **ReST** implementation for a single contract.
-
-The last thing that is left is to create a `WAI <https://hackage.haskell.org/package/wai/docs/Network-Wai.html>`_ application from all the aforementioned information. For that we use :wahackage:`serverApp <WebApi-Server.html#v:serverApp>` .
+* The last thing that is left is to create a `WAI <https://hackage.haskell.org/package/wai/docs/Network-Wai.html>`_ application from all the aforementioned information. For that we use :wahackage:`serverApp <WebApi-Server.html#v:serverApp>` .
 
 ::
 
@@ -136,4 +135,4 @@ The last thing that is left is to create a `WAI <https://hackage.haskell.org/pac
 
 That's it - now :code:`myApiApp` could be run like any other `WAI <https://hackage.haskell.org/package/wai/docs/Network-Wai.html>`_ application.
 
-There's more you could do with **WebApi** apart from building API services. You can also build haskell clients for existing API services by defining just the contract, build full-stack webapps that serve html & javascript and generate mock servers.
+There's more you could do with **WebApi** apart from building API services. You can also :doc:`build  haskell clients</haskell-client>` for existing API services by defining just the contract, build full-stack webapps that serve html & javascript and :doc:`generate mock servers. </mock>`

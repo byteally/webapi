@@ -79,7 +79,7 @@ There is still one piece missing though. Serialization/ de-serialization of requ
 
 ::
 
-  instance ToParam TimeParams 'QueryParam
+  instance ToParam 'QueryParam TimeParams
   instance FromJSON Times
   instance FromJSON TimeEstimate where
       parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = drop 2 }

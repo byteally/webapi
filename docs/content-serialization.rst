@@ -13,12 +13,12 @@ Lets look at an example ::
 To let WebApi_ automatically deserialize this type, we just need to give
 an empty instance declaration ::
 
-    instance FromParam LatLng 'QueryParam
+    instance FromParam 'QueryParam LatLng
 
 And to serialize a type (in case you are writing a client), you can give
 a similar ToParam instance. ::
 
-    instance ToParam LatLng 'QueryParam
+    instance ToParam 'QueryParam LatLng
 
 Nested Types
 ------------
@@ -55,17 +55,22 @@ Lets say we want to deserialize query parameter :code:`loc=10,20` to
 :code:`lng` respectively. We can write a :code:`FromParam` instance for this as
 follows: ::
 
-    instance FromParam Location 'QueryParam where
-        fromParam pt key trie = case lookupParam pt key trie of
-            Just par -> case splitOnComma par of
-                Just (lt, lg) -> LatLng <$> decodeParam lt <*> decodeParam lg
-                Nothing       -> Validation $ Left [ParseErr key "Unable to cast to LatLng"]
-            _ -> Validation $ Left [NotFound key]
-      where
-        splitOnComma :: ByteString -> (ByteString, ByteString)
-        splitOnComma x =
-          let (a, b) = break (== ',') x
-          in if (BS.null a) || (BS.null b) then Nothing else Just (a, b)
+    instance FromParam 'QueryParam Location where
+       fromParam pt key trie = case lookupParam pt key trie of
+           Just (Just par) -> case splitOnComma par of
+               Just (lt, lg) -> case (LatLng <$> decodeParam lt <*> decodeParam lg) of
+                   Just ll -> Validation $ Right (Location ll)
+                   _       -> Validation $ Left [ParseErr key "Unable to cast to LatLng"]
+               Nothing       -> Validation $ Left [ParseErr key "Unable to cast to LatLng"]
+           Just Nothing -> Validation $ Left [ParseErr key "Value not found"]
+           _ -> Validation $ Left [NotFound key]
+         where
+           splitOnComma :: ByteString -> Maybe (ByteString, ByteString)
+           splitOnComma x =
+               let (a, b) = C.break (== ',') x  -- Data.ByteString.Char8 imported as C
+               in if (BS.null a) || (BS.null b) -- Data.ByteString imported as BS
+                   then Nothing
+                   else Just (a, b)
 
 :code:`fromParam` takes a :code:`Proxy` of our type (here, :code:`Location`),
 a key (:code:`ByteString`) and a :code:`Trie`.
@@ -80,7 +85,7 @@ of type :code:`LatLng` using these.
 
 Similarly, a :code:`ToParam` instance for :code:`Location` can be written as: ::
 
-    instance ToParam Location 'QueryParam where
+    instance ToParam 'QueryParam Location where
       toParam pt pfx (Location (LatLng lt lg)) = [("loc", Just $ encodeParam lt <> "," <> encodeParam lg)]
 
 Here we take a value of type :code:`Location` and convert it into a key-value pair.
