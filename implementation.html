@@ -5,36 +5,36 @@
 <!--[if gt IE 8]><!--> <html class="no-js" lang="en" > <!--<![endif]-->
 <head>
   <meta charset="utf-8">
-  
+
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  
+
   <title>4. Server implementation &mdash; WebApi 0.3 documentation</title>
-  
 
-  
-  
 
-  
 
-  
-  
-    
 
-  
 
-  
-  
+
+
+
+
+
+
+
+
+
+
     <link rel="stylesheet" href="_static/css/theme.css" type="text/css" />
-  
 
-  
 
-  
+
+
+
     <link rel="top" title="WebApi 0.3 documentation" href="index.html"/>
         <link rel="next" title="5. Content Serialization / Deserialization" href="content-serialization.html"/>
-        <link rel="prev" title="3. Routing" href="routing.html"/> 
+        <link rel="prev" title="3. Routing" href="routing.html"/>
 
-  
+
   <script src="_static/js/modernizr.min.js"></script>
 
 </head>
@@ -43,29 +43,29 @@
 
   <div class="wy-grid-for-nav">
 
-    
+
     <nav data-toggle="wy-nav-shift" class="wy-nav-side">
       <div class="wy-side-scroll">
         <div class="wy-side-nav-search">
-          
 
-          
+
+
             <a href="index.html" class="icon icon-home"> WebApi
-          
 
-          
+
+
           </a>
 
-          
-            
-            
+
+
+
               <div class="version">
                 0.3
               </div>
-            
-          
 
-          
+
+
+
 <div role="search">
   <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
     <input type="text" name="q" placeholder="Search docs" />
@@ -74,13 +74,13 @@
   </form>
 </div>
 
-          
+
         </div>
 
         <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="main navigation">
-          
-            
-            
+
+
+
                 <p class="caption"><span class="caption-text">Contents:</span></p>
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="index.html">Introduction</a></li>
@@ -103,25 +103,31 @@
 <li class="toctree-l1"><a class="reference internal" href="mock.html">8. Mocking Data</a></li>
 </ul>
 
-            
-          
+
+<div class="git-button-wrapper">
+  <a href="https://github.com/byteally/webapi" class="git-button">
+          <img class="" src="_images/octocat.png">
+          <span>Git Repo</span>
+        </a>
+</div>
+
         </div>
       </div>
     </nav>
 
     <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
 
-      
+
       <nav class="wy-nav-top" role="navigation" aria-label="top navigation">
         <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
         <a href="index.html">WebApi</a>
       </nav>
 
 
-      
+
       <div class="wy-nav-content">
         <div class="rst-content">
-          
+
 
 
 
@@ -130,21 +136,21 @@
 <div role="navigation" aria-label="breadcrumbs navigation">
   <ul class="wy-breadcrumbs">
     <li><a href="index.html">Docs</a> &raquo;</li>
-      
+
     <li>4. Server implementation</li>
       <li class="wy-breadcrumbs-aside">
-        
-          
+
+
             <a href="_sources/implementation.txt" rel="nofollow"> View page source</a>
-          
-        
+
+
       </li>
   </ul>
   <hr/>
 </div>
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
-            
+
   <div class="section" id="server-implementation">
 <h1>4. Server implementation<a class="headerlink" href="#server-implementation" title="Permalink to this headline">¶</a></h1>
 <p>An <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs/WebApi-Contract.html#t:ApiContract">ApiContract</a> is just a schematic representation of your API service. We still need to implement our handlers that actually does the work. You would have already read about this in the <a class="reference internal" href="start.html"><em>Quick start</em></a> section.</p>
@@ -284,16 +290,16 @@ We use <code class="code docutils literal"><span class="pre">LoggingT</span></co
            </div>
           </div>
           <footer>
-  
+
     <div class="rst-footer-buttons" role="navigation" aria-label="footer navigation">
-      
+
         <a href="content-serialization.html" class="btn btn-neutral float-right" title="5. Content Serialization / Deserialization" accesskey="n">Next <span class="fa fa-arrow-circle-right"></span></a>
-      
-      
+
+
         <a href="routing.html" class="btn btn-neutral" title="3. Routing" accesskey="p"><span class="fa fa-arrow-circle-left"></span> Previous</a>
-      
+
     </div>
-  
+
 
   <hr/>
 
@@ -303,7 +309,7 @@ We use <code class="code docutils literal"><span class="pre">LoggingT</span></co
 
     </p>
   </div>
-  Built with <a href="http://sphinx-doc.org/">Sphinx</a> using a <a href="https://github.com/snide/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>. 
+  Built with <a href="http://sphinx-doc.org/">Sphinx</a> using a <a href="https://github.com/snide/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
 
 </footer>
 
@@ -313,10 +319,10 @@ We use <code class="code docutils literal"><span class="pre">LoggingT</span></co
     </section>
 
   </div>
-  
 
 
-  
+
+
 
     <script type="text/javascript">
         var DOCUMENTATION_OPTIONS = {
@@ -331,21 +337,21 @@ We use <code class="code docutils literal"><span class="pre">LoggingT</span></co
       <script type="text/javascript" src="_static/underscore.js"></script>
       <script type="text/javascript" src="_static/doctools.js"></script>
 
-  
 
-  
-  
+
+
+
     <script type="text/javascript" src="_static/js/theme.js"></script>
-  
 
-  
-  
+
+
+
   <script type="text/javascript">
       jQuery(function () {
           SphinxRtdTheme.StickyNav.enable();
       });
   </script>
-   
+
 
 </body>
 </html>
