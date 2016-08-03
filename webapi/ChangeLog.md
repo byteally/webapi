@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3
+* WebApiImplementation typeclass is renamed to WebApiServer
+* Swapped the order of FromParam and ToParam class parameters.
+* Fixed TmpFileBackend for file upload.
+* Added fieldModifier to ParamSettings.
+* Added support for cookie attributes.
+* Fixed RequestBody content type matching.
+
 ## 0.2.2
 * Added support for GHC 8
 
