@@ -14,11 +14,13 @@ Lets create a mock server for the contract mentioned in :doc:`start` by writing 
     instance Arbitrary UserToken where
         arbitrary = UserToken <$> arbitrary
                               <*> arbitrary
+    instance Arbitrary Text where
+        arbitrary = elements ["Foo", "Bar", "Baz"]
 
 Now we can create a :code:`Wai.Application` for our mock server as ::
 
     mockApp :: Wai.Application
-    mockApp = mockServer serverSettings (MockServer mockServerSettings)
+    mockApp = mockServer serverSettings (MockServer mockServerSettings :: MockServer MyApiService)
 
 :code:`mockServer` takes :code:`ServerSettings` and :code:`MockServer` as arguments.
 :code:`MockServer` lets you decide what kind of mock data is to be returned
