@@ -1721,7 +1721,7 @@ instance (GFromParam f parK, Selector t, f ~ (K1 i c)) => GFromParam (M1 S t f) 
   gfromParam pt pfx pa psett kvs = let fldN = (ASCII.pack $ (selName (undefined :: (M1 S t f) a)))
                                    in case fldN of
                                      "" -> M1 <$> gfromParam pt (pfx `nest` numberedFld pa) pa psett (submap pfx kvs)
-                                     _  -> M1 <$> gfromParam pt (pfx `nest` fldN) pa psett (submap pfx kvs)
+                                     _  -> M1 <$> gfromParam pt (pfx `nest` fieldModifier psett fldN) pa psett (submap pfx kvs)
 
 instance (FromParam parK c) => GFromParam (K1 i c) parK where
   gfromParam pt pfx _ _ kvs = K1 <$> fromParam pt pfx kvs
@@ -1754,7 +1754,7 @@ instance (GToParam f parK, Selector t, f ~ (K1 i c)) => GToParam (M1 S t f) parK
   gtoParam pt pfx pa psett  m@(M1 x) = let fldN = ASCII.pack (selName m)
                                        in case fldN of
                                          "" -> gtoParam pt (pfx `nest` numberedFld pa) pa psett x
-                                         _  -> gtoParam pt (pfx `nest` fldN) pa psett x
+                                         _  -> gtoParam pt (pfx `nest` (fieldModifier psett fldN)) pa psett x
 
 instance (ToParam parK Unit) => GToParam U1 parK where
   gtoParam pt pfx _ _ _ = toParam pt pfx Unit
