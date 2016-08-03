@@ -111,7 +111,7 @@ A sample :code:`ApiHandler` for this would be something like: ::
         handler _ req = do
             settings <- ask
             -- do something with settings
-            return ()
+            respond (UserToken "Foo" "Bar")
 
 .. _implementation:
 

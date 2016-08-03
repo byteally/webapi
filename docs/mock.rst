@@ -33,8 +33,8 @@ server. ::
     main :: IO ()
     main = run 8000 mockApp
 
-You can even mock the requests for the routes. To create a mock :code:`Request`
-for route :code:`User` declared in <Section name here>, we can write: ::
+You can even mock the requests. To create a mock :code:`Request`
+for route :code:`User` declared in :doc:`start`, we can write: ::
 
     req <- mockClient (Res :: Resource GET User)
 

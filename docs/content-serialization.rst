@@ -1,4 +1,4 @@
-Content Serialization / Deserealization
+Content Serialization / Deserialization
 =======================================
 
 In WebApi_, :code:`ToParam` and :code:`FromParam` are the typeclasses responsible for serializing and deserializing data. Serialization and deserialization for your data types are automatically take care of if they have generic instances without you having to write anything. You still have to derive them though.
@@ -16,14 +16,14 @@ an empty instance declaration ::
     instance FromParam 'QueryParam LatLng
 
 And to serialize a type (in case you are writing a client), you can give
-a similar ToParam instance. ::
+a similar :code:`ToParam` instance. ::
 
     instance ToParam 'QueryParam LatLng
 
 Nested Types
 ------------
 
-Nested types are serialized with a dot notation. ::
+If you use :code:`Generic` instance for nested types, they will be serialized with a dot notation. ::
 
     data UserData = UserData
         { age     :: Int

@@ -21,7 +21,7 @@ To define your contract using the framework, you need to
 
   data MyApiService
 
-  
+
 * Declare your routes as types.
 
 ::
@@ -29,18 +29,18 @@ To define your contract using the framework, you need to
   type User   = Static "user"
   type UserId = "user" :/ Int
 
-  
+
 * Write a :wahackage:`WebApi <WebApi-Contract.html#t:WebApi>` instance which declares the endpoints.
 
 ::
 
   instance WebApi MyApiService where
-    -- Route <Method>  <Route Name> 
+    -- Route <Method>  <Route Name>
      type Apis MyApiService = '[ Route '[GET, POST]        User
                                , Route '[GET, PUT, DELETE] UserId
                                ]
 
-  
+
 * Write :wahackage:`ApiContract <WebApi-Contract.html#t:ApiContract>` instances describing what goes in an **request** and what comes out as **response** from each API endpoint. Let's write our first :wahackage:`ApiContract <WebApi-Contract.html#t:ApiContract>` instance for :code:`POST /user`.
 
 
@@ -58,28 +58,28 @@ To define your contract using the framework, you need to
                             } deriving (Show, Eq, Generic)
 
 
-  -- Takes a User type in form params and returns unit.
+  -- Takes a User type in form params and returns UserToken.
   instance ApiContract MyApiService POST User where
     type FormParam POST User = UserData
     type ApiOut    POST User = UserToken
- 
+
 
 
 
 In our code snippet above, the end-point :code:`POST /user` takes user's information (**name, age** and **address**) as **post params** and gives out the user's **token** and **userId**
 
-An equivalent curl syntax would be: 
+An equivalent curl syntax would be:
 ::
 
-`curl -H "Content-Type: application/x-www-form-urlencoded" -d 'age=30&address=nazareth&name=Brian' http://api.peoplefrontofjudia.com/users `                            
+`curl -H "Content-Type: application/x-www-form-urlencoded" -d 'age=30&address=nazareth&name=Brian' http://api.peoplefrontofjudia.com/users `
 
 
 
 
 * Finally to complete our contract, we have to write instances for json, param serialization & deserialization for :code:`UserData` and :code:`UserToken` types.  A definition needn't be provided since `GHC.Generics <https://hackage.haskell.org/package/base/docs/GHC-Generics.html>`_ provides a generic implementation.
-    
+
 ::
- 
+
   instance FromJSON UserData
   instance ToJSON   UserData
   instance FromParam 'FormParam UserData
@@ -99,8 +99,8 @@ Server implementation
 
 ::
 
-  data MyApiServiceImpl = MyApiServiceImpl 
- 
+  data MyApiServiceImpl = MyApiServiceImpl
+
   instance WebApiServer MyApiServiceImpl where
     type HandlerM MyApiServiceImpl = IO
     type ApiInterface MyApiServiceImpl = MyApiService
@@ -109,7 +109,7 @@ Server implementation
 
 `HandlerM <https://hackage.haskell.org/package/webapi-0.2.2.0/docs/WebApi-Server.html#t:HandlerM>`_ is the base monad in which the :wahackage:`handler <WebApi-Server.html#v:handler>` will run. We also state that :code:`MyApiServiceImpl` is the implementation for the contract :code:`MyApiServiceApi`.
 
-By keeping the implementation separate from the contract, it is possible for a contract to have multiple implementations. Hypothetically, there could be a **websocket** implementation as well as a **REST** implementation for a single contract.
+By keeping the implementation separate from the contract, it is possible for a contract to have multiple implementations.
 
 * Now let's create the :wahackage:`ApiHandler <WebApi-Server.html#t:ApiHandler>` for one of our end-point :code:`POST /user`
 
@@ -118,20 +118,19 @@ By keeping the implementation separate from the contract, it is possible for a c
   instance ApiHandler MyApiServiceImpl POST User where
     handler _ req = do
       let _userInfo = formParam req
-      respond ()
- 
+      respond (UserToken "Foo" "Bar")
 
 
-* The last thing that is left is to create a `WAI <https://hackage.haskell.org/package/wai/docs/Network-Wai.html>`_ application from all the aforementioned information. For that we use :wahackage:`serverApp <WebApi-Server.html#v:serverApp>` .
+The last thing that is left is to create a `WAI <https://hackage.haskell.org/package/wai/docs/Network-Wai.html>`_ application from all the aforementioned information. For that we use :wahackage:`serverApp <WebApi-Server.html#v:serverApp>` .
 
 ::
 
   myApiApp :: Wai.Application
   myApiApp = serverApp serverSettings MyApiServiceImpl
- 
+
   main :: IO ()
   main = run 8000 myApiApp
-  
+
 
 That's it - now :code:`myApiApp` could be run like any other `WAI <https://hackage.haskell.org/package/wai/docs/Network-Wai.html>`_ application.
 
