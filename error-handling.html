@@ -1,0 +1,243 @@
+
+
+<!DOCTYPE html>
+<!--[if IE 8]><html class="no-js lt-ie9" lang="en" > <![endif]-->
+<!--[if gt IE 8]><!--> <html class="no-js" lang="en" > <!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <title>6. Error Handling &mdash; WebApi 0.3 documentation</title>
+  
+
+  
+  
+
+  
+
+  
+  
+    
+
+  
+
+  
+  
+    <link rel="stylesheet" href="_static/css/theme.css" type="text/css" />
+  
+
+  
+
+  
+    <link rel="top" title="WebApi 0.3 documentation" href="index.html"/>
+        <link rel="next" title="7. Building haskell client for third-party API" href="haskell-client.html"/>
+        <link rel="prev" title="5. Content Serialization / Deserealization" href="content-serialization.html"/> 
+
+  
+  <script src="_static/js/modernizr.min.js"></script>
+
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+
+    
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search">
+          
+
+          
+            <a href="index.html" class="icon icon-home"> WebApi
+          
+
+          
+          </a>
+
+          
+            
+            
+              <div class="version">
+                0.3
+              </div>
+            
+          
+
+          
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+
+          
+        </div>
+
+        <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="main navigation">
+          
+            
+            
+                <p class="caption"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="index.html">Introduction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">1. <strong>Installation</strong></a></li>
+<li class="toctree-l1"><a class="reference internal" href="start.html">2. Quick start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="routing.html">3. <strong>Routing</strong></a></li>
+<li class="toctree-l1"><a class="reference internal" href="implementation.html">4. Server implementation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="content-serialization.html">5. Content Serialization / Deserealization</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="">6. Error Handling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="haskell-client.html">7. Building haskell client for third-party API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mock.html">8. Mocking Data</a></li>
+</ul>
+
+            
+          
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+
+      
+      <nav class="wy-nav-top" role="navigation" aria-label="top navigation">
+        <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+        <a href="index.html">WebApi</a>
+      </nav>
+
+
+      
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          
+
+
+
+
+
+<div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="index.html">Docs</a> &raquo;</li>
+      
+    <li>6. Error Handling</li>
+      <li class="wy-breadcrumbs-aside">
+        
+          
+            <a href="_sources/error-handling.txt" rel="nofollow"> View page source</a>
+          
+        
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+            
+  <div class="section" id="error-handling">
+<h1>6. Error Handling<a class="headerlink" href="#error-handling" title="Permalink to this headline">¶</a></h1>
+<p><a class="reference external" href="https://hackage.haskell.org/package/webapi">WebApi</a> gives you a way to raise errors in your handler using <code class="code docutils literal"><span class="pre">raise</span></code>.
+The following handler is an example that raises a 404 error</p>
+<blockquote>
+<div><div class="highlight-haskell"><div class="highlight"><pre><span class="kr">instance</span> <span class="kt">ApiHandler</span> <span class="kt">MyApiImpl</span> <span class="kt">GET</span> <span class="kt">User</span> <span class="kr">where</span>
+  <span class="n">handler</span> <span class="kr">_</span> <span class="n">req</span> <span class="ow">=</span> <span class="kr">do</span>
+    <span class="n">hasUser</span> <span class="ow">&lt;-</span> <span class="n">isUserInDB</span>
+    <span class="kr">if</span> <span class="p">(</span><span class="n">hasUser</span><span class="p">)</span>
+        <span class="kr">then</span> <span class="n">respond</span> <span class="p">(</span><span class="kt">UserToken</span> <span class="s">&quot;Foo&quot;</span> <span class="s">&quot;Bar&quot;</span><span class="p">)</span>
+        <span class="kr">else</span> <span class="n">raise</span> <span class="n">status404</span> <span class="nb">()</span>
+</pre></div>
+</div>
+</div></blockquote>
+<p><code class="code docutils literal"><span class="pre">raise</span></code> takes two arguments. First one is the status code which we need to
+send with the <code class="code docutils literal"><span class="pre">Response</span></code>. Second argument is of type <code class="code docutils literal"><span class="pre">ApiErr</span> <span class="pre">m</span> <span class="pre">r</span></code>
+which defaults to Unit <code class="code docutils literal"><span class="pre">()</span></code>.</p>
+<p>If you want to send some additional information with your error response, you can write a data type for error and specify that as <code class="code docutils literal"><span class="pre">ApiErr</span></code> in your contract.</p>
+<p>An example,</p>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="kr">data</span> <span class="kt">Error</span> <span class="ow">=</span> <span class="kt">Error</span> <span class="p">{</span> <span class="ne">error</span> <span class="ow">::</span> <span class="kt">Text</span> <span class="p">}</span> <span class="kr">deriving</span> <span class="p">(</span><span class="kt">Show</span><span class="p">,</span> <span class="kt">Generic</span><span class="p">)</span>
+<span class="kr">instance</span> <span class="kt">ToJSON</span> <span class="kt">Error</span>
+<span class="kr">instance</span> <span class="kt">ParamErrToApiErr</span> <span class="kt">Error</span> <span class="kr">where</span>
+    <span class="n">toApiErr</span> <span class="n">errs</span> <span class="ow">=</span> <span class="kt">Error</span> <span class="p">(</span><span class="n">toApiErr</span> <span class="n">errs</span><span class="p">)</span>
+
+<span class="kr">instance</span> <span class="kt">ApiContract</span> <span class="kt">MyApiService</span> <span class="kt">POST</span> <span class="kt">User</span> <span class="kr">where</span>
+ <span class="kr">type</span> <span class="kt">FormParam</span> <span class="kt">POST</span> <span class="kt">User</span> <span class="ow">=</span> <span class="kt">UserData</span>
+ <span class="kr">type</span> <span class="kt">ApiOut</span>    <span class="kt">POST</span> <span class="kt">User</span> <span class="ow">=</span> <span class="kt">UserToken</span>
+ <span class="kr">type</span> <span class="kt">ApiErr</span>    <span class="kt">POST</span> <span class="kt">User</span> <span class="ow">=</span> <span class="kt">Error</span>
+</pre></div>
+</div>
+<p>Any type which you associate with <code class="code docutils literal"><span class="pre">ApiErr</span></code>, should have a <code class="code docutils literal"><span class="pre">ParamErrToApiErr</span></code>
+instance. This is needed for <code class="code docutils literal"><span class="pre">WebApi</span></code> to map all the failures to this type.
+Also based on <code class="code docutils literal"><span class="pre">ContentType</span></code> set in the contract (which defaults to <code class="code docutils literal"><span class="pre">JSON</span></code>),
+we need to give the required instance. In this case it is <code class="code docutils literal"><span class="pre">ToJSON</span></code>.</p>
+</div>
+
+
+           </div>
+          </div>
+          <footer>
+  
+    <div class="rst-footer-buttons" role="navigation" aria-label="footer navigation">
+      
+        <a href="haskell-client.html" class="btn btn-neutral float-right" title="7. Building haskell client for third-party API" accesskey="n">Next <span class="fa fa-arrow-circle-right"></span></a>
+      
+      
+        <a href="content-serialization.html" class="btn btn-neutral" title="5. Content Serialization / Deserealization" accesskey="p"><span class="fa fa-arrow-circle-left"></span> Previous</a>
+      
+    </div>
+  
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>
+        &copy; Copyright 2016, ByteAlly Software Pvt Ltd.
+
+    </p>
+  </div>
+  Built with <a href="http://sphinx-doc.org/">Sphinx</a> using a <a href="https://github.com/snide/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>. 
+
+</footer>
+
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+  
+
+
+  
+
+    <script type="text/javascript">
+        var DOCUMENTATION_OPTIONS = {
+            URL_ROOT:'./',
+            VERSION:'0.3',
+            COLLAPSE_INDEX:false,
+            FILE_SUFFIX:'.html',
+            HAS_SOURCE:  true
+        };
+    </script>
+      <script type="text/javascript" src="_static/jquery.js"></script>
+      <script type="text/javascript" src="_static/underscore.js"></script>
+      <script type="text/javascript" src="_static/doctools.js"></script>
+
+  
+
+  
+  
+    <script type="text/javascript" src="_static/js/theme.js"></script>
+  
+
+  
+  
+  <script type="text/javascript">
+      jQuery(function () {
+          SphinxRtdTheme.StickyNav.enable();
+      });
+  </script>
+   
+
+</body>
+</html>

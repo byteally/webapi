@@ -1,229 +1,261 @@
+
+
 <!DOCTYPE html>
-<html>
+<!--[if IE 8]><html class="no-js lt-ie9" lang="en" > <![endif]-->
+<!--[if gt IE 8]><!--> <html class="no-js" lang="en" > <!--<![endif]-->
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="X-UA-Compatible" content="IE=edge">
-  <meta name="description" content="WebApi - Lightweight framework to build Web APIs in Haskell">
+  
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WebApi - Lightweight framework to build Web APIs in Haskell</title>
-  <link href="https://fonts.googleapis.com/css?family=Lato" rel="stylesheet" type="text/css">
-  <link rel="stylesheet" href="./css/normalize.css">
-  <link rel="stylesheet" href="./css/syntax.css">
-  <link rel="stylesheet" href="./css/webapi.css">
+  
+  <title>Introduction &mdash; WebApi 0.3 documentation</title>
+  
+
+  
+  
+
+  
+
+  
+  
+    
+
+  
+
+  
+  
+    <link rel="stylesheet" href="_static/css/theme.css" type="text/css" />
+  
+
+  
+
+  
+    <link rel="top" title="WebApi 0.3 documentation" href="#"/>
+        <link rel="next" title="1. Installation" href="installation.html"/> 
+
+  
+  <script src="_static/js/modernizr.min.js"></script>
+
 </head>
-<body>
-  <header>
-    <section>
-      <a href="http://byteally.com/">
-        <img src="./img/logo.png" alt="ByteAlly logo" class="logo" />
-      </a>
-      <a href="https://github.com/byteally/webapi" class="git-button">
-        <img class src="./img/octocat.png" />
-        <span>Git Repo</span>
-      </a>
-      <h1>WebApi</h1>
-      <small>Lightweight framework to build Web APIs in Haskell</small>
-    </section>
-  </header>
-  <main>
-    <div class="sourceCode"><pre class="sourceCode literate literatehaskell"><code class="sourceCode literatehaskell"><span class="ot">&gt;</span> <span class="co">{-# LANGUAGE DataKinds, TypeFamilies, MultiParamTypeClasses, TypeOperators, </span>
-<span class="co">&gt;              TypeSynonymInstances, FlexibleInstances, OverloadedStrings, DeriveGeneric #-}</span>
-<span class="ot">&gt;</span> <span class="kw">import </span><span class="dt">WebApi</span>
-<span class="ot">&gt;</span> <span class="kw">import </span><span class="dt">Data.Aeson</span>
-<span class="ot">&gt;</span> <span class="kw">import </span><span class="dt">Data.Text</span>
-<span class="ot">&gt;</span> <span class="kw">import </span><span class="dt">GHC.Generics</span>
-<span class="ot">&gt;</span> <span class="kw">import </span><span class="dt">Network.Wai.Handler.Warp</span> (run)
-<span class="ot">&gt;</span> <span class="kw">import qualified</span> <span class="dt">Network.Wai</span> <span class="kw">as</span> <span class="dt">Wai</span></code></pre></div>
-<h1 id="introduction-to-webapi">Introduction to <strong>WebApi</strong></h1>
-<p><a href="https://hackage.haskell.org/package/webapi"><code>Webapi</code></a> is a Haskell library that lets you</p>
-<ul>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+
+    
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search">
+          
+
+          
+            <a href="#" class="icon icon-home"> WebApi
+          
+
+          
+          </a>
+
+          
+            
+            
+              <div class="version">
+                0.3
+              </div>
+            
+          
+
+          
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+
+          
+        </div>
+
+        <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="main navigation">
+          
+            
+            
+                <p class="caption"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="current reference internal" href="">Introduction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">1. <strong>Installation</strong></a></li>
+<li class="toctree-l1"><a class="reference internal" href="start.html">2. Quick start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="routing.html">3. <strong>Routing</strong></a></li>
+<li class="toctree-l1"><a class="reference internal" href="implementation.html">4. Server implementation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="content-serialization.html">5. Content Serialization / Deserialization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="error-handling.html">6. Error Handling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="haskell-client.html">7. Building haskell client for third-party API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mock.html">8. Mocking Data</a></li>
+</ul>
+
+            
+          
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+
+      
+      <nav class="wy-nav-top" role="navigation" aria-label="top navigation">
+        <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+        <a href="#">WebApi</a>
+      </nav>
+
+
+      
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          
+
+
+
+
+
+<div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="#">Docs</a> &raquo;</li>
+      
+    <li><strong>Introduction</strong></li>
+      <li class="wy-breadcrumbs-aside">
+        
+          
+            <a href="_sources/index.txt" rel="nofollow"> View page source</a>
+          
+        
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+            
+  <div class="section" id="introduction">
+<h1><strong>Introduction</strong><a class="headerlink" href="#introduction" title="Permalink to this headline">¶</a></h1>
+<a class="reference internal image-reference" href="_images/webapi.png"><img alt="webapi" src="_images/webapi.png" style="width: 170.0px; height: 48.0px;" /></a>
+<p><a class="reference external" href="https://hackage.haskell.org/package/webapi">WebApi</a> is a Haskell library that lets you</p>
+<blockquote>
+<div><ul class="simple">
 <li>Write web API services</li>
 <li>Quickly build Haskell client for existing API services</li>
-<li>Generate API console interface for your web API (<a href="https://github.com/byteally/webapi-console">coming soon</a>)</li>
-<li>Generate a mock server that can mock your responses and requests too.</li>
+<li>Generate API console interface for your web API (<a class="reference external" href="https://github.com/byteally/webapi-console">coming soon</a>)</li>
+<li>Generate a mock server that can mock your responses and requests</li>
 </ul>
-<p><a href="https://hackage.haskell.org/package/webapi"><code>Webapi</code></a> is built with <a href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html"><code>WAI</code></a>. It makes use of the strong type system of haskell which lets to</p>
-<ul>
+</div></blockquote>
+<p><a class="reference external" href="https://hackage.haskell.org/package/webapi">WebApi</a> is built with <a class="reference external" href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html">WAI</a>. It makes use of the strong type system of haskell which lets to</p>
+<blockquote>
+<div><ul class="simple">
 <li>Create a type safe routing system.</li>
 <li>Enable type safe generation of links.</li>
 <li>Specify a contract for the APIs.</li>
 <li>Auto serialization and deserialization of the request and response based on api contract.</li>
 <li>Write handlers which respect the contract.</li>
 </ul>
-<h2 id="installation">Installation</h2>
-<p>We recommend using <a href="https://github.com/commercialhaskell/stack#readme">stack</a> build tool for installation and building. If you don’t have <a href="https://github.com/commercialhaskell/stack#readme">stack</a> already, follow <a href="http://docs.haskellstack.org/en/stable/install_and_upgrade/">these</a> instructions to install it. To setup your own project:</p>
-<ul>
-<li><p>Create a project: <code>stack new &lt;Your-Project-Name&gt;</code></p></li>
-<li><p>Add <em>webapi</em> to the <em>extra-deps</em> section in <code>stack.yaml</code> file:</p></li>
+</div></blockquote>
+<p><strong>WebApi</strong> is <a class="reference external" href="https://github.com/byteally/webapi">available on github</a> . Contributions and feedback are most welcome!</p>
+<div class="toctree-wrapper compound" id="contents">
+<p class="caption"><span class="caption-text">Contents:</span><a class="headerlink" href="#contents" title="Permalink to this toctree">¶</a></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="current reference internal" href="">Introduction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">1. <strong>Installation</strong></a></li>
+<li class="toctree-l1"><a class="reference internal" href="start.html">2. Quick start</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="start.html#contract">2.1. Contract</a></li>
+<li class="toctree-l2"><a class="reference internal" href="start.html#server-implementation">2.2. Server implementation</a></li>
 </ul>
-<pre><code>
-extra-deps:
-- webapi-0.2.2.0
-</code></pre>
-<p>Also add <em>webapi</em> to the <code>build-depends</code> section of your <em>cabal</em> file.</p>
-<pre><code>
-build-depends:    webapi
-</code></pre>
-<p>You can find the whole source code for this post in literate haskell <a href="https://github.com/byteally/webapi/blob/master/docs/index.lhs">here</a>. You can fire up <code>ghci</code> by running <code>stack exec ghci</code> and load this file with: <code>:l index.lhs</code> command.</p>
-<h2 id="a-first-taste-of-webapi">A First taste of WebApi</h2>
-<p>Writing your web API service comprises of two steps</p>
-<ul>
-<li>Writing a contract (definition below)</li>
-<li>Providing an implementation</li>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="routing.html">3. <strong>Routing</strong></a><ul>
+<li class="toctree-l2"><a class="reference internal" href="routing.html#routes-as-types">3.1. Routes as types</a></li>
+<li class="toctree-l2"><a class="reference internal" href="routing.html#more-examples">3.2. More examples</a></li>
 </ul>
-<h2 id="contract">Contract</h2>
-<p>A contract is the list of end-points in your API service and the definition of each API endpoint. We define what goes in (Eg Query params, form params) and what comes out (the response) of each API endpoint.</p>
-<p>As an example, consider a web API service that lets you do create, update, delete and fetch users. First step is to create a datatype for our service. Lets call it <code>MyApiService</code></p>
-<p>To define your contract using the framework, you need to</p>
-<ul>
-<li>Declare a data type for your API service.</li>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="implementation.html">4. Server implementation</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="implementation.html#writing-webapiserver-instance">4.1. Writing WebApiServer instance</a></li>
+<li class="toctree-l2"><a class="reference internal" href="implementation.html#writing-instances-for-your-handlers">4.2. Writing instances for your handlers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="implementation.html#doing-more-with-your-handler-monad">4.3. Doing more with your handler monad</a></li>
 </ul>
-<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
-<span class="fu">&gt;</span> <span class="kw">data</span> <span class="dt">MyApiService</span></code></pre></div>
-<ul>
-<li>List down the routes of your API service.</li>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="content-serialization.html">5. Content Serialization / Deserialization</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="content-serialization.html#nested-types">5.1. Nested Types</a></li>
+<li class="toctree-l2"><a class="reference internal" href="content-serialization.html#writing-custom-instances">5.2. Writing Custom instances</a></li>
+<li class="toctree-l2"><a class="reference internal" href="content-serialization.html#content-types">5.3. Content Types</a></li>
 </ul>
-<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
-<span class="fu">&gt;</span> <span class="kw">type</span> <span class="dt">User</span>   <span class="fu">=</span> <span class="dt">Static</span> <span class="st">&quot;user&quot;</span>
-<span class="fu">&gt;</span> <span class="kw">type</span> <span class="dt">UserId</span> <span class="fu">=</span> <span class="st">&quot;user&quot;</span><span class="fu">:/</span><span class="dt">Int</span></code></pre></div>
-<ul>
-<li>Write a <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Contract.html#t:WebApi"><code>WebApi</code></a> instance which declares the endpoints.</li>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="error-handling.html">6. Error Handling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="haskell-client.html">7. Building haskell client for third-party API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mock.html">8. Mocking Data</a></li>
 </ul>
-<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">WebApi</span> <span class="dt">MyApiService</span> <span class="kw">where</span>
-<span class="fu">&gt;</span>   <span class="co">-- Route &lt;Method&gt; &lt;Route Name&gt;</span>
-<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">Apis</span> <span class="dt">MyApiService</span> <span class="fu">=</span> <span class="ch">'[ Route '</span>[<span class="dt">GET</span>, <span class="dt">POST</span>]        <span class="dt">User</span>
-<span class="fu">&gt;</span>                             , <span class="dt">Route</span> <span class="ch">'[GET, PUT, DELETE] UserId</span>
-<span class="fu">&gt;</span>                             ]</code></pre></div>
-<ul>
-<li><p>Write <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Contract.html#t:ApiContract"><code>ApiContract</code></a> instances describing what goes in and what comes out from each API endpoint.</p>
-<p>In the following code snippet, the first instance declares that the <code>POST</code> method on route <code>/user</code> takes <code>UserData</code> as form parameters and responds with nothing (<code>()</code>).</p>
-<p>An equivalent curl syntax would be: <code>curl -H &quot;Content-Type: application/x-www-form-urlencoded&quot; -d 'age=12&amp;address=Velachery&amp;name=Bhishag' &lt;URL&gt;</code></p></li>
-</ul>
-<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
-<span class="fu">&gt;</span> <span class="co">-- Takes a User type in form params and returns unit.</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">MyApiService</span> <span class="dt">POST</span> <span class="dt">User</span> <span class="kw">where</span>
-<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">FormParam</span> <span class="dt">POST</span> <span class="dt">User</span> <span class="fu">=</span> <span class="dt">UserData</span>
-<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiOut</span>    <span class="dt">POST</span> <span class="dt">User</span> <span class="fu">=</span> ()
-<span class="fu">&gt;</span>
-<span class="fu">&gt;</span> <span class="co">-- Takes a User type in form params and returns updated users.</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">MyApiService</span> <span class="dt">PUT</span> <span class="dt">UserId</span> <span class="kw">where</span>
-<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">FormParam</span> <span class="dt">PUT</span> <span class="dt">UserId</span> <span class="fu">=</span> <span class="dt">UserData</span>
-<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiOut</span>    <span class="dt">PUT</span> <span class="dt">UserId</span> <span class="fu">=</span> [<span class="dt">UserData</span>]
-<span class="fu">&gt;</span>
-<span class="fu">&gt;</span>  <span class="co">-- Removes the specified user and returns unit.</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">MyApiService</span> <span class="dt">DELETE</span> <span class="dt">UserId</span> <span class="kw">where</span>
-<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiOut</span> <span class="dt">DELETE</span> <span class="dt">UserId</span> <span class="fu">=</span> ()
-<span class="fu">&gt;</span>
-<span class="fu">&gt;</span> <span class="co">-- Gets a specific user</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">MyApiService</span> <span class="dt">GET</span> <span class="dt">UserId</span> <span class="kw">where</span>
-<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiOut</span> <span class="dt">GET</span> <span class="dt">UserId</span> <span class="fu">=</span> <span class="dt">UserData</span>
-<span class="fu">&gt;</span>
-<span class="fu">&gt;</span> <span class="co">-- Gets all users</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiContract</span> <span class="dt">MyApiService</span> <span class="dt">GET</span> <span class="dt">User</span> <span class="kw">where</span>
-<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiOut</span> <span class="dt">GET</span> <span class="dt">User</span> <span class="fu">=</span> [<span class="dt">UserData</span>]
-<span class="fu">&gt;</span> 
-<span class="fu">&gt;</span> <span class="co">-- Our user type</span>
-<span class="fu">&gt;</span> <span class="kw">data</span> <span class="dt">UserData</span> <span class="fu">=</span> <span class="dt">UserData</span> {<span class="ot"> age     ::</span> <span class="dt">Int</span>
-<span class="fu">&gt;</span>                          ,<span class="ot"> address ::</span> <span class="dt">Text</span>
-<span class="fu">&gt;</span>                          ,<span class="ot"> name    ::</span> <span class="dt">Text</span>
-<span class="fu">&gt;</span>                          ,<span class="ot"> userId  ::</span> <span class="dt">Maybe</span> <span class="dt">Int</span>
-<span class="fu">&gt;</span>                          } <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>, <span class="dt">Generic</span>)</code></pre></div>
-<p>We also have to define instances for json and param serialization &amp; deserialization for <code>UserData</code> type. A definition needn’t be provided since <a href="https://hackage.haskell.org/package/base/docs/GHC-Generics.html"><code>GHC.Generics</code></a> provides a generic implementation.</p>
-<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
-<span class="fu">&gt;</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">FromJSON</span> <span class="dt">UserData</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ToJSON</span>   <span class="dt">UserData</span>
-<span class="fu">&gt;</span>   
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">FromParam</span> <span class="dt">UserData</span> <span class="ch">'FormParam</span></code></pre></div>
-<p>This completes the contract part of the API.</p>
-<h2 id="implementation">Implementation</h2>
-<p>First step is to create a type for the implementation and define <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#t:WebApiImplementation"><code>WebApiImplementation</code></a> instance for it.</p>
-<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
-<span class="fu">&gt;</span> <span class="kw">data</span> <span class="dt">MyApiServiceImpl</span> <span class="fu">=</span> <span class="dt">MyApiServiceImpl</span> 
-<span class="fu">&gt;</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">WebApiImplementation</span> <span class="dt">MyApiServiceImpl</span> <span class="kw">where</span>
-<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">HandlerM</span> <span class="dt">MyApiServiceImpl</span> <span class="fu">=</span> <span class="dt">IO</span>
-<span class="fu">&gt;</span>   <span class="kw">type</span> <span class="dt">ApiInterface</span> <span class="dt">MyApiServiceImpl</span> <span class="fu">=</span> <span class="dt">MyApiService</span></code></pre></div>
-<p><a href="http://hackage.haskell.org/package/webapi-0.1.0.0/candidate/docs/WebApi-Server.html#t:HandlerM"><code>HandlerM</code></a> is the base monad in which the <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#v:handler"><code>handler</code></a> will run. We also state that <code>MyApiServiceImpl</code> is an implementation of the <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#t:ApiInterface"><code>ApiInterface</code></a> provided by <code>MyApiServiceApi</code>.</p>
-<p>Now let’s create the <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#t:ApiHandler"><code>ApiHandler</code></a>s</p>
-<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">MyApiServiceImpl</span> <span class="dt">POST</span> <span class="dt">User</span> <span class="kw">where</span>
-<span class="fu">&gt;</span>   handler _ req <span class="fu">=</span> <span class="kw">do</span>
-<span class="fu">&gt;</span>     <span class="kw">let</span> _userInfo <span class="fu">=</span> formParam req
-<span class="fu">&gt;</span>     respond ()
-<span class="fu">&gt;</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">MyApiServiceImpl</span> <span class="dt">GET</span> <span class="dt">User</span> <span class="kw">where</span>
-<span class="fu">&gt;</span>   handler _ _ <span class="fu">=</span> <span class="kw">do</span>
-<span class="fu">&gt;</span>     <span class="kw">let</span> users <span class="fu">=</span> []
-<span class="fu">&gt;</span>     respond users
-<span class="fu">&gt;</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">MyApiServiceImpl</span> <span class="dt">PUT</span> <span class="dt">UserId</span> <span class="kw">where</span>
-<span class="fu">&gt;</span>   handler _ req <span class="fu">=</span> <span class="kw">do</span>
-<span class="fu">&gt;</span>     <span class="kw">let</span> userInfo <span class="fu">=</span> formParam req
-<span class="fu">&gt;</span>     respond [userInfo]
-<span class="fu">&gt;</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">MyApiServiceImpl</span> <span class="dt">DELETE</span> <span class="dt">UserId</span> <span class="kw">where</span>
-<span class="fu">&gt;</span>   handler _ req <span class="fu">=</span> <span class="kw">do</span>
-<span class="fu">&gt;</span>     <span class="kw">let</span> _userID <span class="fu">=</span> pathParam req
-<span class="fu">&gt;</span>     respond ()
-<span class="fu">&gt;</span>
-<span class="fu">&gt;</span> <span class="kw">instance</span> <span class="dt">ApiHandler</span> <span class="dt">MyApiServiceImpl</span> <span class="dt">GET</span> <span class="dt">UserId</span> <span class="kw">where</span>
-<span class="fu">&gt;</span>   handler _ req <span class="fu">=</span> <span class="kw">do</span>
-<span class="fu">&gt;</span>     <span class="kw">let</span> userID <span class="fu">=</span> pathParam req
-<span class="fu">&gt;</span>         userInfo <span class="fu">=</span> <span class="dt">UserData</span> <span class="dv">10</span> <span class="st">&quot;Address&quot;</span> <span class="st">&quot;Name&quot;</span> (<span class="dt">Just</span> userID)
-<span class="fu">&gt;</span>     respond userInfo</code></pre></div>
-<p>By keeping the implementation separate from the contract, it is possible for a contract to have multiple implementations. Hypothetically, there could be a websocket implementation as well as a ReST implementation for a single contract.</p>
-<p>The last thing that is left is to create a <a href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html"><code>WAI</code></a> application from all the aforementioned information. For that we use <a href="https://hackage.haskell.org/package/webapi-0.1.0.0/docs/WebApi-Server.html#v:serverApp"><code>serverApp</code></a>.</p>
-<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell">
-<span class="fu">&gt;</span><span class="ot"> myApiApp ::</span> <span class="dt">Wai.Application</span>
-<span class="fu">&gt;</span> myApiApp <span class="fu">=</span> serverApp serverSettings <span class="dt">MyApiServiceImpl</span>
-<span class="fu">&gt;</span>
-<span class="fu">&gt;</span><span class="ot"> main ::</span> <span class="dt">IO</span> ()
-<span class="fu">&gt;</span> main <span class="fu">=</span> run <span class="dv">8000</span> myApiApp
-<span class="fu">&gt;</span> </code></pre></div>
-<p>That’s it - now <code>myApiApp</code> could be run like any other <a href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html"><code>WAI</code></a> application.</p>
-    <div id="disqus_thread"></div>
-    <script>
-    (function() { // DON'T EDIT BELOW THIS LINE
-    var d = document, s = d.createElement('script');
+</div>
+</div>
 
-    s.src = '//byteally-webapi.disqus.com/embed.js';
 
-    s.setAttribute('data-timestamp', +new Date());
-    (d.head || d.body).appendChild(s);
-    })();
-    </script>
-    <noscript>Please enable JavaScript to view the <a href="https://disqus.com/?ref_noscript" rel="nofollow">comments powered by Disqus.</a></noscript>
-  </main>
-  <footer>
-    <div>
-        <a href="http://byteally.com" class="inline-block ba-logo">
-          <img src="./img/logo_black.png" alt="ByteAlly" />
-        </a>
+           </div>
+          </div>
+          <footer>
+  
+    <div class="rst-footer-buttons" role="navigation" aria-label="footer navigation">
+      
+        <a href="installation.html" class="btn btn-neutral float-right" title="1. Installation" accesskey="n">Next <span class="fa fa-arrow-circle-right"></span></a>
+      
+      
+    </div>
+  
 
-      <div class="inline-block">
-        <ul class="unstyled-list">
-            <li><a href="http://byteally.com/contact-us.html">Talk to Us</a></li>
-            <li><a href="http://blog.byteally.com/">Blog</a></li>
-            <li><a href="http://code.byteally.com/">Engineering</a></li>
-            <li><a href="http://byteally.com/careers.html">Careers</a></li>
-            <li><a href="https://github.com/byteally/">Github</a></li>
-        </ul>
-        <div class="copyright">
-            <span>ByteAlly &copy; 2015</span>
+  <hr/>
+
+  <div role="contentinfo">
+    <p>
+        &copy; Copyright 2016, ByteAlly Software Pvt Ltd.
+
+    </p>
+  </div>
+  Built with <a href="http://sphinx-doc.org/">Sphinx</a> using a <a href="https://github.com/snide/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>. 
+
+</footer>
+
         </div>
       </div>
-    </div>
-    <script>
-        (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
-        (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
-        m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
-        })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
-        ga('create', 'UA-71903268-2', 'auto');
-        ga('send', 'pageview');
+
+    </section>
+
+  </div>
+  
+
+
+  
+
+    <script type="text/javascript">
+        var DOCUMENTATION_OPTIONS = {
+            URL_ROOT:'./',
+            VERSION:'0.3',
+            COLLAPSE_INDEX:false,
+            FILE_SUFFIX:'.html',
+            HAS_SOURCE:  true
+        };
     </script>
-    <script id="dsq-count-scr" src="//byteally-webapi.disqus.com/count.js" async></script>
-  </footer>
+      <script type="text/javascript" src="_static/jquery.js"></script>
+      <script type="text/javascript" src="_static/underscore.js"></script>
+      <script type="text/javascript" src="_static/doctools.js"></script>
+
+  
+
+  
+  
+    <script type="text/javascript" src="_static/js/theme.js"></script>
+  
+
+  
+  
+  <script type="text/javascript">
+      jQuery(function () {
+          SphinxRtdTheme.StickyNav.enable();
+      });
+  </script>
+   
+
 </body>
 </html>

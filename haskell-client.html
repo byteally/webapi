@@ -1,0 +1,317 @@
+
+
+<!DOCTYPE html>
+<!--[if IE 8]><html class="no-js lt-ie9" lang="en" > <![endif]-->
+<!--[if gt IE 8]><!--> <html class="no-js" lang="en" > <!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <title>7. Building haskell client for third-party API &mdash; WebApi 0.3 documentation</title>
+  
+
+  
+  
+
+  
+
+  
+  
+    
+
+  
+
+  
+  
+    <link rel="stylesheet" href="_static/css/theme.css" type="text/css" />
+  
+
+  
+
+  
+    <link rel="top" title="WebApi 0.3 documentation" href="index.html"/>
+        <link rel="next" title="8. Mocking Data" href="mock.html"/>
+        <link rel="prev" title="6. Error Handling" href="error-handling.html"/> 
+
+  
+  <script src="_static/js/modernizr.min.js"></script>
+
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+
+    
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search">
+          
+
+          
+            <a href="index.html" class="icon icon-home"> WebApi
+          
+
+          
+          </a>
+
+          
+            
+            
+              <div class="version">
+                0.3
+              </div>
+            
+          
+
+          
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+
+          
+        </div>
+
+        <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="main navigation">
+          
+            
+            
+                <p class="caption"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="index.html">Introduction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">1. <strong>Installation</strong></a></li>
+<li class="toctree-l1"><a class="reference internal" href="start.html">2. Quick start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="routing.html">3. <strong>Routing</strong></a></li>
+<li class="toctree-l1"><a class="reference internal" href="implementation.html">4. Server implementation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="content-serialization.html">5. Content Serialization / Deserialization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="error-handling.html">6. Error Handling</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="">7. Building haskell client for third-party API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mock.html">8. Mocking Data</a></li>
+</ul>
+
+            
+          
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+
+      
+      <nav class="wy-nav-top" role="navigation" aria-label="top navigation">
+        <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+        <a href="index.html">WebApi</a>
+      </nav>
+
+
+      
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          
+
+
+
+
+
+<div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="index.html">Docs</a> &raquo;</li>
+      
+    <li>7. Building haskell client for third-party API</li>
+      <li class="wy-breadcrumbs-aside">
+        
+          
+            <a href="_sources/haskell-client.txt" rel="nofollow"> View page source</a>
+          
+        
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+            
+  <div class="section" id="building-haskell-client-for-third-party-api">
+<h1>7. Building haskell client for third-party API<a class="headerlink" href="#building-haskell-client-for-third-party-api" title="Permalink to this headline">¶</a></h1>
+<p><a class="reference external" href="https://hackage.haskell.org/package/webapi">WebApi</a> framework could be used to build haskell clients for existing API services. All you have to do is</p>
+<blockquote>
+<div><ul class="simple">
+<li>Define the routes (as types)</li>
+<li>Write the <strong>contract</strong> for the API service.</li>
+</ul>
+</div></blockquote>
+<p>To demonstrate, we&#8217;ve chosen <a class="reference external" href="https://developer.uber.com/docs/api-overview">Uber API</a> as the third party API service and picked the two most commonly used endpoints in Uber API</p>
+<blockquote>
+<div><ul class="simple">
+<li><a class="reference external" href="https://developer.uber.com/docs/v1-estimates-time">get time estimate</a>  - Gets the time estimate for nearby rides</li>
+<li><a class="reference external" href="https://developer.uber.com/docs/v1-requests">request a ride</a> - Lets us request a ride.</li>
+</ul>
+</div></blockquote>
+<p>Since we have already discussed what a <strong>contract</strong> is under the <a class="reference internal" href="start.html"><em>Quick start</em></a> section in detail we can jump straight to our example.</p>
+<p>Lets first define the type for the API service, call it <code class="code docutils literal"><span class="pre">UberApi</span></code> and types for our routes.  (<a class="reference external" href="https://developer.uber.com/docs/v1-estimates-time">get time estimate</a> and <a class="reference external" href="https://developer.uber.com/docs/v1-requests">request a ride</a> ).</p>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="kr">data</span> <span class="kt">UberApi</span>
+
+<span class="c1">-- pieces of a route are seperated using &#39;:/&#39;</span>
+<span class="kr">type</span> <span class="kt">TimeEstimateR</span> <span class="ow">=</span> <span class="s">&quot;estimates&quot;</span> <span class="kt">:/</span> <span class="s">&quot;time&quot;</span>
+<span class="c1">-- If the route has only one piece, we use &#39;Static&#39; constructor to build it.</span>
+<span class="kr">type</span> <span class="kt">RequestRideR</span>  <span class="ow">=</span> <span class="kt">Static</span> <span class="s">&quot;requests&quot;</span>
+</pre></div>
+</div>
+<p>Now lets define what methods (GET, POST etc.) can be used on these routes. For this we need to define <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs//WebApi-Contract.html#t:WebApi">WebApi</a> instance for our service <code class="code docutils literal"><span class="pre">UberApi</span></code> .</p>
+<div class="highlight-haskell"><div class="highlight"><pre>instance WebApi UberApi where
+    type Apis UberApi =
+        &#39;[ Route &#39;[GET] TimeEstimateR
+         , Route &#39;[POST] RequestRideR
+         ]
+</pre></div>
+</div>
+<p>So far, we have defined the routes and the methods associated with them. We are yet to define how the requests and responses will look for these two end-points (<strong>contract</strong>).</p>
+<p>We&#8217;ll start with the <code class="code docutils literal"><span class="pre">TimeEstimateR</span></code> route. As defined in the Uber API <a class="reference external" href="https://developer.uber.com/docs/v1-estimates-time">doc</a> , <code class="code docutils literal"><span class="pre">GET</span></code> request for <code class="code docutils literal"><span class="pre">TimeEstimateR</span></code> takes the user&#8217;s current latitude, longitude, product_id (if any) as query parameters and return back a result containig a list of <code class="code docutils literal"><span class="pre">TimeEstimate</span></code> (rides nearby along with time estimates). And this is how we represent the query and the response as data types.</p>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="c1">-- query data type</span>
+<span class="kr">data</span> <span class="kt">TimeParams</span> <span class="ow">=</span> <span class="kt">TimeParams</span>
+    <span class="p">{</span> <span class="n">start_latitude</span>   <span class="ow">::</span> <span class="kt">Double</span>
+    <span class="p">,</span> <span class="n">start_longitude</span>  <span class="ow">::</span> <span class="kt">Double</span>
+    <span class="p">,</span> <span class="n">product_id</span>       <span class="ow">::</span> <span class="kt">Maybe</span> <span class="kt">Text</span>
+    <span class="p">}</span> <span class="kr">deriving</span> <span class="p">(</span><span class="kt">Generic</span><span class="p">)</span>
+
+<span class="c1">-- response data type</span>
+<span class="kr">newtype</span> <span class="kt">Times</span> <span class="ow">=</span> <span class="kt">Times</span> <span class="p">{</span> <span class="n">times</span> <span class="ow">::</span> <span class="p">[</span><span class="kt">TimeEstimate</span><span class="p">]</span> <span class="p">}</span>
+   <span class="kr">deriving</span> <span class="p">(</span><span class="kt">Show</span><span class="p">,</span> <span class="kt">Generic</span><span class="p">)</span>
+
+<span class="c1">-- We prefix each field with &#39;t_&#39; to prevent name clashes.</span>
+<span class="c1">-- It will be removed during deserialization</span>
+<span class="kr">data</span> <span class="kt">TimeEstimate</span> <span class="ow">=</span> <span class="kt">TimeEstimate</span>
+   <span class="p">{</span> <span class="n">t_product_id</span>   <span class="ow">::</span> <span class="kt">Text</span>
+   <span class="p">,</span> <span class="n">t_display_name</span> <span class="ow">::</span> <span class="kt">Text</span>
+   <span class="p">,</span> <span class="n">t_estimate</span>     <span class="ow">::</span> <span class="kt">Int</span>
+   <span class="p">}</span> <span class="kr">deriving</span> <span class="p">(</span><span class="kt">Show</span><span class="p">,</span> <span class="kt">Generic</span><span class="p">)</span>
+
+
+<span class="kr">instance</span> <span class="kt">ApiContract</span> <span class="kt">UberApi</span> <span class="kt">GET</span> <span class="kt">TimeEstimateR</span> <span class="kr">where</span>
+    <span class="kr">type</span> <span class="kt">HeaderIn</span>   <span class="kt">GET</span> <span class="kt">TimeEstimateR</span> <span class="ow">=</span> <span class="kt">Token</span>
+    <span class="kr">type</span> <span class="kt">QueryParam</span> <span class="kt">GET</span> <span class="kt">TimeEstimateR</span> <span class="ow">=</span> <span class="kt">TimeParams</span>
+    <span class="kr">type</span> <span class="kt">ApiOut</span>     <span class="kt">GET</span> <span class="kt">TimeEstimateR</span> <span class="ow">=</span> <span class="kt">Times</span>
+</pre></div>
+</div>
+<p>As request to Uber API requires an Authorization header, we include that in our contract for each route. The data type <a class="reference external" href="https://hackage.haskell.org/package/uber-0.1.0.0/docs/Uber-Auth.html#t:Token">Token</a> used in the header is defined <a class="reference external" href="https://hackage.haskell.org/package/uber-0.1.0.0/docs/Uber-Auth.html">here</a></p>
+<p>There is still one piece missing though. Serialization/ de-serialization of request/response data types. To do that, we need to give <a class="reference external" href="http://hackage.haskell.org/package/aeson-0.3.2.0/docs/Data-Aeson.html#t:FromJSON">FromJSON</a> instance for our response and <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs//WebApi-Param.html#t:ToParam">ToParam</a> instance for the query param datatype.</p>
+<div class="highlight-haskell"><div class="highlight"><pre>instance ToParam &#39;QueryParam TimeParams
+instance FromJSON Times
+instance FromJSON TimeEstimate where
+    parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = drop 2 }
+</pre></div>
+</div>
+<p>Similarly we can write contract for the other routes too. You can find the full contract <a class="reference external" href="https://hackage.haskell.org/package/uber-0.1.0.0/docs/src/Uber-Contract.html#UberAPI">here</a> .</p>
+<p>And that&#8217;s it! By simply defining a contract we have built a Haskell client for Uber API. The code below shows how to make the API calls.</p>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="c1">-- To get the time estimates, we can write our main function as:</span>
+<span class="nf">main</span> <span class="ow">::</span> <span class="kt">IO</span> <span class="nb">()</span>
+<span class="nf">main</span> <span class="ow">=</span> <span class="kr">do</span>
+    <span class="n">manager</span> <span class="ow">&lt;-</span> <span class="n">newManager</span> <span class="n">tlsManagerSettings</span>
+    <span class="kr">let</span> <span class="n">timeQuery</span> <span class="ow">=</span> <span class="kt">TimeParams</span> <span class="mf">12.9760</span> <span class="mf">80.2212</span> <span class="kt">Nothing</span>
+        <span class="n">cSettings</span> <span class="ow">=</span> <span class="kt">ClientSettings</span> <span class="s">&quot;https://sandbox-api.uber.com/v1&quot;</span> <span class="n">manager</span>
+        <span class="n">auth&#39;</span>     <span class="ow">=</span> <span class="kt">OAuthToken</span> <span class="s">&quot;&lt;Your-Access-Token-here&gt;&quot;</span>
+        <span class="n">auth</span>      <span class="ow">=</span> <span class="kt">OAuth</span> <span class="n">auth&#39;</span>
+
+    <span class="n">times&#39;</span> <span class="ow">&lt;-</span> <span class="n">client</span> <span class="n">cSettings</span> <span class="p">(</span><span class="kt">Request</span> <span class="nb">()</span> <span class="n">timeQuery</span> <span class="nb">()</span> <span class="nb">()</span> <span class="n">auth</span> <span class="nb">()</span> <span class="nb">()</span> <span class="ow">::</span> <span class="kt">WebApi</span><span class="o">.</span><span class="kt">Request</span> <span class="kt">GET</span> <span class="kt">TimeEstimateR</span><span class="p">)</span>
+    <span class="c1">-- remaining main code</span>
+</pre></div>
+</div>
+<p>We use <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs//WebApi-Client.html">client</a> function to send the request. It takes <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs//WebApi-Client.html#t:ClientSettings">ClientSettings</a> and <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs//WebApi-Contract.html#t:Request">Request</a> as input and gives us the <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs//WebApi-Contract.html#t:Response">Response</a> . If you see the <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs//WebApi-Contract.html#v:Request">Request</a> pattern synonym, we need to give it all the params, headers etc. to construct a <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs//WebApi-Contract.html#t:Request">Request</a> . So for a particular route, the params which we declare in the contract are filled with the declared datatypes and the rest defaults to <code class="code docutils literal"><span class="pre">()</span></code> <strong>unit</strong></p>
+<p>When the endpoint gives a response back, <a class="reference external" href="https://hackage.haskell.org/package/webapi">WebApi</a> deserializes it into <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs//WebApi-Contract.html#t:Response">Response</a> . Lets write a function to handle the response.</p>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="kr">let</span> <span class="n">responseHandler</span> <span class="n">res</span> <span class="n">fn</span> <span class="ow">=</span> <span class="kr">case</span> <span class="n">res</span> <span class="kr">of</span>
+       <span class="kt">Success</span> <span class="kr">_</span> <span class="n">res&#39;</span> <span class="kr">_</span> <span class="kr">_</span>   <span class="ow">-&gt;</span> <span class="n">fn</span> <span class="n">res&#39;</span>
+       <span class="kt">Failure</span> <span class="n">err</span>          <span class="ow">-&gt;</span> <span class="n">print</span> <span class="s">&quot;Request failed :(&quot;</span>
+</pre></div>
+</div>
+<p>We have successfully made a request and now can handle the response with <code class="code docutils literal"><span class="pre">responseHandler</span></code>. If the previous request (to get time estimate) was succesful, lets book the nearest ride with our second route.</p>
+<div class="highlight-haskell"><div class="highlight"><pre>  <span class="n">responseHandler</span> <span class="n">times&#39;</span> <span class="o">$</span> <span class="nf">\</span><span class="n">times</span> <span class="ow">-&gt;</span> <span class="kr">do</span>
+      <span class="kr">let</span> <span class="n">rideId</span> <span class="ow">=</span> <span class="n">getNearestRideId</span> <span class="n">times</span>
+          <span class="n">reqQuery</span> <span class="ow">=</span> <span class="n">defRideReqParams</span> <span class="p">{</span> <span class="n">product_id</span> <span class="ow">=</span> <span class="kt">Just</span> <span class="n">rideId</span><span class="p">,</span> <span class="n">start_place_id</span> <span class="ow">=</span> <span class="kt">Just</span> <span class="s">&quot;work&quot;</span><span class="p">,</span> <span class="n">end_place_d</span> <span class="ow">=</span> <span class="kt">Just</span> <span class="s">&quot;home&quot;</span> <span class="p">}</span>
+          <span class="n">ridereq</span>   <span class="ow">=</span> <span class="n">client</span> <span class="n">cSettings</span> <span class="p">(</span><span class="kt">Request</span> <span class="nb">()</span> <span class="nb">()</span> <span class="nb">()</span> <span class="nb">()</span> <span class="n">auth&#39;</span> <span class="nb">()</span> <span class="n">reqQuery</span> <span class="ow">::</span> <span class="kt">WebApi</span><span class="o">.</span><span class="kt">Request</span> <span class="kt">POST</span> <span class="kt">RequestRideR</span><span class="p">)</span>
+      <span class="n">rideInfo&#39;</span> <span class="ow">&lt;-</span> <span class="n">ridereq</span>
+      <span class="n">responseHandler</span> <span class="n">rideInfo&#39;</span> <span class="o">$</span> <span class="nf">\</span><span class="n">rideInfo</span> <span class="ow">-&gt;</span> <span class="kr">do</span>
+          <span class="n">putStrLn</span> <span class="s">&quot;You have successfully booked a ride. Yay!&quot;</span>
+          <span class="n">putStrLn</span> <span class="o">$</span> <span class="s">&quot;Ride Status: &quot;</span> <span class="o">++</span> <span class="n">unpack</span> <span class="p">(</span><span class="n">status</span> <span class="n">rideInfo</span><span class="p">)</span>
+  <span class="n">return</span> <span class="nb">()</span>
+<span class="kr">where</span>
+  <span class="n">getNearestRideId</span> <span class="p">(</span><span class="kt">Times</span> <span class="n">xs</span><span class="p">)</span> <span class="ow">=</span> <span class="n">t_product_id</span> <span class="o">.</span> <span class="n">head</span> <span class="o">.</span> <span class="n">sortBy</span> <span class="p">(</span><span class="n">comparing</span> <span class="n">t_estimate</span><span class="p">)</span> <span class="o">$</span> <span class="n">xs</span>
+</pre></div>
+</div>
+<p>And that&#8217;s it! We now have our haskell client. Using the same contract you can also generate a mock server</p>
+<p>You can find the full uber client library for haskell <a class="reference external" href="https://hackage.haskell.org/package/uber-0.1.0.0">here</a> .</p>
+</div>
+
+
+           </div>
+          </div>
+          <footer>
+  
+    <div class="rst-footer-buttons" role="navigation" aria-label="footer navigation">
+      
+        <a href="mock.html" class="btn btn-neutral float-right" title="8. Mocking Data" accesskey="n">Next <span class="fa fa-arrow-circle-right"></span></a>
+      
+      
+        <a href="error-handling.html" class="btn btn-neutral" title="6. Error Handling" accesskey="p"><span class="fa fa-arrow-circle-left"></span> Previous</a>
+      
+    </div>
+  
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>
+        &copy; Copyright 2016, ByteAlly Software Pvt Ltd.
+
+    </p>
+  </div>
+  Built with <a href="http://sphinx-doc.org/">Sphinx</a> using a <a href="https://github.com/snide/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>. 
+
+</footer>
+
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+  
+
+
+  
+
+    <script type="text/javascript">
+        var DOCUMENTATION_OPTIONS = {
+            URL_ROOT:'./',
+            VERSION:'0.3',
+            COLLAPSE_INDEX:false,
+            FILE_SUFFIX:'.html',
+            HAS_SOURCE:  true
+        };
+    </script>
+      <script type="text/javascript" src="_static/jquery.js"></script>
+      <script type="text/javascript" src="_static/underscore.js"></script>
+      <script type="text/javascript" src="_static/doctools.js"></script>
+
+  
+
+  
+  
+    <script type="text/javascript" src="_static/js/theme.js"></script>
+  
+
+  
+  
+  <script type="text/javascript">
+      jQuery(function () {
+          SphinxRtdTheme.StickyNav.enable();
+      });
+  </script>
+   
+
+</body>
+</html>

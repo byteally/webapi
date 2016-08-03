@@ -1,0 +1,325 @@
+
+
+<!DOCTYPE html>
+<!--[if IE 8]><html class="no-js lt-ie9" lang="en" > <![endif]-->
+<!--[if gt IE 8]><!--> <html class="no-js" lang="en" > <!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <title>2. Quick start &mdash; WebApi 0.3 documentation</title>
+  
+
+  
+  
+
+  
+
+  
+  
+    
+
+  
+
+  
+  
+    <link rel="stylesheet" href="_static/css/theme.css" type="text/css" />
+  
+
+  
+
+  
+    <link rel="top" title="WebApi 0.3 documentation" href="index.html"/>
+        <link rel="next" title="3. Routing" href="routing.html"/>
+        <link rel="prev" title="1. Installation" href="installation.html"/> 
+
+  
+  <script src="_static/js/modernizr.min.js"></script>
+
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+
+    
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search">
+          
+
+          
+            <a href="index.html" class="icon icon-home"> WebApi
+          
+
+          
+          </a>
+
+          
+            
+            
+              <div class="version">
+                0.3
+              </div>
+            
+          
+
+          
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+
+          
+        </div>
+
+        <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="main navigation">
+          
+            
+            
+                <p class="caption"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="index.html">Introduction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">1. <strong>Installation</strong></a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="">2. Quick start</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#contract">2.1. Contract</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#server-implementation">2.2. Server implementation</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="routing.html">3. <strong>Routing</strong></a></li>
+<li class="toctree-l1"><a class="reference internal" href="implementation.html">4. Server implementation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="content-serialization.html">5. Content Serialization / Deserialization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="error-handling.html">6. Error Handling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="haskell-client.html">7. Building haskell client for third-party API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mock.html">8. Mocking Data</a></li>
+</ul>
+
+            
+          
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+
+      
+      <nav class="wy-nav-top" role="navigation" aria-label="top navigation">
+        <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+        <a href="index.html">WebApi</a>
+      </nav>
+
+
+      
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          
+
+
+
+
+
+<div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="index.html">Docs</a> &raquo;</li>
+      
+    <li>2. Quick start</li>
+      <li class="wy-breadcrumbs-aside">
+        
+          
+            <a href="_sources/start.txt" rel="nofollow"> View page source</a>
+          
+        
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+            
+  <div class="section" id="quick-start">
+<h1>2. Quick start<a class="headerlink" href="#quick-start" title="Permalink to this headline">¶</a></h1>
+<p>Writing your API service comprises of two steps</p>
+<blockquote>
+<div><ul class="simple">
+<li>Writing a contract (schematic representation of your API)</li>
+<li>Providing a server implementation</li>
+</ul>
+</div></blockquote>
+<div class="section" id="contract">
+<h2>2.1. Contract<a class="headerlink" href="#contract" title="Permalink to this headline">¶</a></h2>
+<p>A contract is the list of end-points in your API service and the definition of each API endpoint.
+We define what goes in as <strong>request</strong> (Query params, form params, headers etc) and what comes out as the <strong>response</strong> of each API endpoint.</p>
+<p>As an example, consider a API service that lets you create, update, delete and fetch users. First step is to create a datatype for our API service. Lets call it <code class="code docutils literal"><span class="pre">MyApiService</span></code></p>
+<p>To define your contract using the framework, you need to</p>
+<ul class="simple">
+<li>Declare a data type for your API service.</li>
+</ul>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="kr">data</span> <span class="kt">MyApiService</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li>Declare your routes as types.</li>
+</ul>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="kr">type</span> <span class="kt">User</span>   <span class="ow">=</span> <span class="kt">Static</span> <span class="s">&quot;user&quot;</span>
+<span class="kr">type</span> <span class="kt">UserId</span> <span class="ow">=</span> <span class="s">&quot;user&quot;</span> <span class="kt">:/</span> <span class="kt">Int</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li>Write a <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs/WebApi-Contract.html#t:WebApi">WebApi</a> instance which declares the endpoints.</li>
+</ul>
+<div class="highlight-haskell"><div class="highlight"><pre>instance WebApi MyApiService where
+  -- Route &lt;Method&gt;  &lt;Route Name&gt;
+   type Apis MyApiService = &#39;[ Route &#39;[GET, POST]        User
+                             , Route &#39;[GET, PUT, DELETE] UserId
+                             ]
+</pre></div>
+</div>
+<ul class="simple">
+<li>Write <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs/WebApi-Contract.html#t:ApiContract">ApiContract</a> instances describing what goes in an <strong>request</strong> and what comes out as <strong>response</strong> from each API endpoint. Let&#8217;s write our first <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs/WebApi-Contract.html#t:ApiContract">ApiContract</a> instance for <code class="code docutils literal"><span class="pre">POST</span> <span class="pre">/user</span></code>.</li>
+</ul>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="c1">-- Our user type</span>
+<span class="kr">data</span> <span class="kt">UserData</span> <span class="ow">=</span> <span class="kt">UserData</span> <span class="p">{</span> <span class="n">age</span>     <span class="ow">::</span> <span class="kt">Int</span>
+                         <span class="p">,</span> <span class="n">address</span> <span class="ow">::</span> <span class="kt">Text</span>
+                         <span class="p">,</span> <span class="n">name</span>    <span class="ow">::</span> <span class="kt">Text</span>
+                         <span class="p">}</span> <span class="kr">deriving</span> <span class="p">(</span><span class="kt">Show</span><span class="p">,</span> <span class="kt">Eq</span><span class="p">,</span> <span class="kt">Generic</span><span class="p">)</span>
+
+<span class="kr">data</span> <span class="kt">UserToken</span> <span class="ow">=</span> <span class="kt">UserToken</span> <span class="p">{</span> <span class="n">userId</span> <span class="ow">::</span> <span class="kt">Text</span>
+                          <span class="p">,</span> <span class="n">token</span> <span class="ow">::</span> <span class="kt">Text</span>
+                          <span class="p">}</span> <span class="kr">deriving</span> <span class="p">(</span><span class="kt">Show</span><span class="p">,</span> <span class="kt">Eq</span><span class="p">,</span> <span class="kt">Generic</span><span class="p">)</span>
+
+
+<span class="c1">-- Takes a User type in form params and returns UserToken.</span>
+<span class="kr">instance</span> <span class="kt">ApiContract</span> <span class="kt">MyApiService</span> <span class="kt">POST</span> <span class="kt">User</span> <span class="kr">where</span>
+  <span class="kr">type</span> <span class="kt">FormParam</span> <span class="kt">POST</span> <span class="kt">User</span> <span class="ow">=</span> <span class="kt">UserData</span>
+  <span class="kr">type</span> <span class="kt">ApiOut</span>    <span class="kt">POST</span> <span class="kt">User</span> <span class="ow">=</span> <span class="kt">UserToken</span>
+</pre></div>
+</div>
+<p>In our code snippet above, the end-point <code class="code docutils literal"><span class="pre">POST</span> <span class="pre">/user</span></code> takes user&#8217;s information (<strong>name, age</strong> and <strong>address</strong>) as <strong>post params</strong> and gives out the user&#8217;s <strong>token</strong> and <strong>userId</strong></p>
+<p>An equivalent curl syntax would be:</p>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="p">`</span><span class="n">curl</span> <span class="o">-</span><span class="kt">H</span> <span class="s">&quot;Content-Type: application/x-www-form-urlencoded&quot;</span> <span class="o">-</span><span class="n">d</span> <span class="n">&#39;age</span><span class="ow">=</span><span class="mi">30</span><span class="o">&amp;</span><span class="n">address</span><span class="ow">=</span><span class="n">nazareth</span><span class="o">&amp;</span><span class="n">name</span><span class="ow">=</span><span class="kt">Brian&#39;</span> <span class="n">http</span><span class="kt">://</span><span class="n">api</span><span class="o">.</span><span class="n">peoplefrontofjudia</span><span class="o">.</span><span class="n">com</span><span class="o">/</span><span class="n">users</span> <span class="p">`</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li>Finally to complete our contract, we have to write instances for json, param serialization &amp; deserialization for <code class="code docutils literal"><span class="pre">UserData</span></code> and <code class="code docutils literal"><span class="pre">UserToken</span></code> types.  A definition needn&#8217;t be provided since <a class="reference external" href="https://hackage.haskell.org/package/base/docs/GHC-Generics.html">GHC.Generics</a> provides a generic implementation.</li>
+</ul>
+<div class="highlight-haskell"><div class="highlight"><pre>instance FromJSON UserData
+instance ToJSON   UserData
+instance FromParam &#39;FormParam UserData
+
+{--We dont need a FromParam instance since UserToken according
+ to our example is not sent us form params or query params -}
+instance FromJSON UserToken
+instance ToJSON   UserToken
+</pre></div>
+</div>
+<p>This completes the contract part of the API.</p>
+</div>
+<div class="section" id="server-implementation">
+<h2>2.2. Server implementation<a class="headerlink" href="#server-implementation" title="Permalink to this headline">¶</a></h2>
+<ul class="simple">
+<li>First step is to create a type for the implementation and define <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs/WebApi-Server.html#t:WebApiServer">WebApiServer</a> instance for it.</li>
+</ul>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="kr">data</span> <span class="kt">MyApiServiceImpl</span> <span class="ow">=</span> <span class="kt">MyApiServiceImpl</span>
+
+<span class="kr">instance</span> <span class="kt">WebApiServer</span> <span class="kt">MyApiServiceImpl</span> <span class="kr">where</span>
+  <span class="kr">type</span> <span class="kt">HandlerM</span> <span class="kt">MyApiServiceImpl</span> <span class="ow">=</span> <span class="kt">IO</span>
+  <span class="kr">type</span> <span class="kt">ApiInterface</span> <span class="kt">MyApiServiceImpl</span> <span class="ow">=</span> <span class="kt">MyApiService</span>
+</pre></div>
+</div>
+<p><a class="reference external" href="https://hackage.haskell.org/package/webapi-0.2.2.0/docs/WebApi-Server.html#t:HandlerM">HandlerM</a> is the base monad in which the <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs/WebApi-Server.html#v:handler">handler</a> will run. We also state that <code class="code docutils literal"><span class="pre">MyApiServiceImpl</span></code> is the implementation for the contract <code class="code docutils literal"><span class="pre">MyApiServiceApi</span></code>.</p>
+<p>By keeping the implementation separate from the contract, it is possible for a contract to have multiple implementations.</p>
+<ul class="simple">
+<li>Now let&#8217;s create the <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs/WebApi-Server.html#t:ApiHandler">ApiHandler</a> for one of our end-point <code class="code docutils literal"><span class="pre">POST</span> <span class="pre">/user</span></code></li>
+</ul>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="kr">instance</span> <span class="kt">ApiHandler</span> <span class="kt">MyApiServiceImpl</span> <span class="kt">POST</span> <span class="kt">User</span> <span class="kr">where</span>
+  <span class="n">handler</span> <span class="kr">_</span> <span class="n">req</span> <span class="ow">=</span> <span class="kr">do</span>
+    <span class="kr">let</span> <span class="n">_userInfo</span> <span class="ow">=</span> <span class="n">formParam</span> <span class="n">req</span>
+    <span class="n">respond</span> <span class="p">(</span><span class="kt">UserToken</span> <span class="s">&quot;Foo&quot;</span> <span class="s">&quot;Bar&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The last thing that is left is to create a <a class="reference external" href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html">WAI</a> application from all the aforementioned information. For that we use <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs/WebApi-Server.html#v:serverApp">serverApp</a> .</p>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="nf">myApiApp</span> <span class="ow">::</span> <span class="kt">Wai</span><span class="o">.</span><span class="kt">Application</span>
+<span class="nf">myApiApp</span> <span class="ow">=</span> <span class="n">serverApp</span> <span class="n">serverSettings</span> <span class="kt">MyApiServiceImpl</span>
+
+<span class="nf">main</span> <span class="ow">::</span> <span class="kt">IO</span> <span class="nb">()</span>
+<span class="nf">main</span> <span class="ow">=</span> <span class="n">run</span> <span class="mi">8000</span> <span class="n">myApiApp</span>
+</pre></div>
+</div>
+<p>That&#8217;s it - now <code class="code docutils literal"><span class="pre">myApiApp</span></code> could be run like any other <a class="reference external" href="https://hackage.haskell.org/package/wai/docs/Network-Wai.html">WAI</a> application.</p>
+<p>There&#8217;s more you could do with <strong>WebApi</strong> apart from building API services. You can also <a class="reference internal" href="haskell-client.html"><em>build  haskell clients</em></a> for existing API services by defining just the contract, build full-stack webapps that serve html &amp; javascript and <a class="reference internal" href="mock.html"><em>generate mock servers.</em></a></p>
+</div>
+</div>
+
+
+           </div>
+          </div>
+          <footer>
+  
+    <div class="rst-footer-buttons" role="navigation" aria-label="footer navigation">
+      
+        <a href="routing.html" class="btn btn-neutral float-right" title="3. Routing" accesskey="n">Next <span class="fa fa-arrow-circle-right"></span></a>
+      
+      
+        <a href="installation.html" class="btn btn-neutral" title="1. Installation" accesskey="p"><span class="fa fa-arrow-circle-left"></span> Previous</a>
+      
+    </div>
+  
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>
+        &copy; Copyright 2016, ByteAlly Software Pvt Ltd.
+
+    </p>
+  </div>
+  Built with <a href="http://sphinx-doc.org/">Sphinx</a> using a <a href="https://github.com/snide/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>. 
+
+</footer>
+
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+  
+
+
+  
+
+    <script type="text/javascript">
+        var DOCUMENTATION_OPTIONS = {
+            URL_ROOT:'./',
+            VERSION:'0.3',
+            COLLAPSE_INDEX:false,
+            FILE_SUFFIX:'.html',
+            HAS_SOURCE:  true
+        };
+    </script>
+      <script type="text/javascript" src="_static/jquery.js"></script>
+      <script type="text/javascript" src="_static/underscore.js"></script>
+      <script type="text/javascript" src="_static/doctools.js"></script>
+
+  
+
+  
+  
+    <script type="text/javascript" src="_static/js/theme.js"></script>
+  
+
+  
+  
+  <script type="text/javascript">
+      jQuery(function () {
+          SphinxRtdTheme.StickyNav.enable();
+      });
+  </script>
+   
+
+</body>
+</html>

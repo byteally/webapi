@@ -1,0 +1,320 @@
+
+
+<!DOCTYPE html>
+<!--[if IE 8]><html class="no-js lt-ie9" lang="en" > <![endif]-->
+<!--[if gt IE 8]><!--> <html class="no-js" lang="en" > <!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <title>5. Content Serialization / Deserialization &mdash; WebApi 0.3 documentation</title>
+  
+
+  
+  
+
+  
+
+  
+  
+    
+
+  
+
+  
+  
+    <link rel="stylesheet" href="_static/css/theme.css" type="text/css" />
+  
+
+  
+
+  
+    <link rel="top" title="WebApi 0.3 documentation" href="index.html"/>
+        <link rel="next" title="6. Error Handling" href="error-handling.html"/>
+        <link rel="prev" title="4. Server implementation" href="implementation.html"/> 
+
+  
+  <script src="_static/js/modernizr.min.js"></script>
+
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+
+    
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search">
+          
+
+          
+            <a href="index.html" class="icon icon-home"> WebApi
+          
+
+          
+          </a>
+
+          
+            
+            
+              <div class="version">
+                0.3
+              </div>
+            
+          
+
+          
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+
+          
+        </div>
+
+        <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="main navigation">
+          
+            
+            
+                <p class="caption"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="index.html">Introduction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">1. <strong>Installation</strong></a></li>
+<li class="toctree-l1"><a class="reference internal" href="start.html">2. Quick start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="routing.html">3. <strong>Routing</strong></a></li>
+<li class="toctree-l1"><a class="reference internal" href="implementation.html">4. Server implementation</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="">5. Content Serialization / Deserialization</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#nested-types">5.1. Nested Types</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#writing-custom-instances">5.2. Writing Custom instances</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#content-types">5.3. Content Types</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="error-handling.html">6. Error Handling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="haskell-client.html">7. Building haskell client for third-party API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mock.html">8. Mocking Data</a></li>
+</ul>
+
+            
+          
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+
+      
+      <nav class="wy-nav-top" role="navigation" aria-label="top navigation">
+        <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+        <a href="index.html">WebApi</a>
+      </nav>
+
+
+      
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          
+
+
+
+
+
+<div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="index.html">Docs</a> &raquo;</li>
+      
+    <li>5. Content Serialization / Deserialization</li>
+      <li class="wy-breadcrumbs-aside">
+        
+          
+            <a href="_sources/content-serialization.txt" rel="nofollow"> View page source</a>
+          
+        
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+            
+  <div class="section" id="content-serialization-deserialization">
+<h1>5. Content Serialization / Deserialization<a class="headerlink" href="#content-serialization-deserialization" title="Permalink to this headline">¶</a></h1>
+<p>In <a class="reference external" href="https://hackage.haskell.org/package/webapi">WebApi</a>, <code class="code docutils literal"><span class="pre">ToParam</span></code> and <code class="code docutils literal"><span class="pre">FromParam</span></code> are the typeclasses responsible for serializing and deserializing data. Serialization and deserialization for your data types are automatically take care of if they have generic instances without you having to write anything. You still have to derive them though.</p>
+<p>Lets look at an example</p>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="kr">data</span> <span class="kt">LatLng</span> <span class="ow">=</span> <span class="kt">LatLng</span>
+   <span class="p">{</span> <span class="n">lat</span> <span class="ow">::</span> <span class="kt">Double</span>
+   <span class="p">,</span> <span class="n">lng</span> <span class="ow">::</span> <span class="kt">Double</span>
+   <span class="p">}</span> <span class="kr">deriving</span> <span class="kt">Generic</span>
+</pre></div>
+</div>
+<p>To let <a class="reference external" href="https://hackage.haskell.org/package/webapi">WebApi</a> automatically deserialize this type, we just need to give
+an empty instance declaration</p>
+<div class="highlight-haskell"><div class="highlight"><pre>instance FromParam &#39;QueryParam LatLng
+</pre></div>
+</div>
+<p>And to serialize a type (in case you are writing a client), you can give
+a similar <code class="code docutils literal"><span class="pre">ToParam</span></code> instance.</p>
+<div class="highlight-haskell"><div class="highlight"><pre>instance ToParam &#39;QueryParam LatLng
+</pre></div>
+</div>
+<div class="section" id="nested-types">
+<h2>5.1. Nested Types<a class="headerlink" href="#nested-types" title="Permalink to this headline">¶</a></h2>
+<p>If you use <code class="code docutils literal"><span class="pre">Generic</span></code> instance for nested types, they will be serialized with a dot notation.</p>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="kr">data</span> <span class="kt">UserData</span> <span class="ow">=</span> <span class="kt">UserData</span>
+    <span class="p">{</span> <span class="n">age</span>     <span class="ow">::</span> <span class="kt">Int</span>
+    <span class="p">,</span> <span class="n">address</span> <span class="ow">::</span> <span class="kt">Text</span>
+    <span class="p">,</span> <span class="n">name</span>    <span class="ow">::</span> <span class="kt">Text</span>
+    <span class="p">,</span> <span class="n">location</span> <span class="ow">::</span> <span class="kt">LatLng</span>
+    <span class="p">}</span> <span class="kr">deriving</span> <span class="p">(</span><span class="kt">Show</span><span class="p">,</span> <span class="kt">Eq</span><span class="p">,</span> <span class="kt">Generic</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Here the location field would be serialized as
+<code class="code docutils literal"><span class="pre">location.lat</span></code> and <code class="code docutils literal"><span class="pre">location.lng</span></code></p>
+</div>
+<div class="section" id="writing-custom-instances">
+<h2>5.2. Writing Custom instances<a class="headerlink" href="#writing-custom-instances" title="Permalink to this headline">¶</a></h2>
+<p>Sometimes you may want to serialize/deserialize the data to a custom format.
+You can easily do this by writing a custom instance of <code class="code docutils literal"><span class="pre">ToParam</span></code> and
+<code class="code docutils literal"><span class="pre">FromParam</span></code>. Lets declare a datatype and try to write <code class="code docutils literal"><span class="pre">ToParam</span></code> and
+<code class="code docutils literal"><span class="pre">FromParam</span></code> instances for those.</p>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="kr">data</span> <span class="kt">Location</span> <span class="ow">=</span> <span class="kt">Location</span> <span class="p">{</span> <span class="n">loc</span> <span class="ow">::</span> <span class="kt">LatLng</span> <span class="p">}</span> <span class="kr">deriving</span> <span class="kt">Generic</span>
+
+<span class="kr">data</span> <span class="kt">LatLng</span> <span class="ow">=</span> <span class="kt">LatLng</span>
+    <span class="p">{</span> <span class="n">lat</span> <span class="ow">::</span> <span class="kt">Double</span>
+    <span class="p">,</span> <span class="n">lng</span> <span class="ow">::</span> <span class="kt">Double</span>
+    <span class="p">}</span> <span class="kr">deriving</span> <span class="kt">Generic</span>
+</pre></div>
+</div>
+<p>Lets say we want to deserialize query parameter <code class="code docutils literal"><span class="pre">loc=10,20</span></code> to
+<code class="code docutils literal"><span class="pre">Location</span></code> where <code class="code docutils literal"><span class="pre">10</span></code> and <code class="code docutils literal"><span class="pre">20</span></code> are values of <code class="code docutils literal"><span class="pre">lat</span></code> and
+<code class="code docutils literal"><span class="pre">lng</span></code> respectively. We can write a <code class="code docutils literal"><span class="pre">FromParam</span></code> instance for this as
+follows:</p>
+<div class="highlight-haskell"><div class="highlight"><pre>instance FromParam &#39;QueryParam Location where
+   fromParam pt key trie = case lookupParam pt key trie of
+       Just (Just par) -&gt; case splitOnComma par of
+           Just (lt, lg) -&gt; case (LatLng &lt;$&gt; decodeParam lt &lt;*&gt; decodeParam lg) of
+               Just ll -&gt; Validation $ Right (Location ll)
+               _       -&gt; Validation $ Left [ParseErr key &quot;Unable to cast to LatLng&quot;]
+           Nothing       -&gt; Validation $ Left [ParseErr key &quot;Unable to cast to LatLng&quot;]
+       Just Nothing -&gt; Validation $ Left [ParseErr key &quot;Value not found&quot;]
+       _ -&gt; Validation $ Left [NotFound key]
+     where
+       splitOnComma :: ByteString -&gt; Maybe (ByteString, ByteString)
+       splitOnComma x =
+           let (a, b) = C.break (== &#39;,&#39;) x  -- Data.ByteString.Char8 imported as C
+           in if (BS.null a) || (BS.null b) -- Data.ByteString imported as BS
+               then Nothing
+               else Just (a, b)
+</pre></div>
+</div>
+<p><code class="code docutils literal"><span class="pre">fromParam</span></code> takes a <code class="code docutils literal"><span class="pre">Proxy</span></code> of our type (here, <code class="code docutils literal"><span class="pre">Location</span></code>),
+a key (<code class="code docutils literal"><span class="pre">ByteString</span></code>) and a <code class="code docutils literal"><span class="pre">Trie</span></code>.
+<code class="code docutils literal"><span class="pre">WebApi</span></code> uses <code class="code docutils literal"><span class="pre">Trie</span></code> to store the parsed data while deserialization.
+<code class="code docutils literal"><span class="pre">fromParam</span></code> returns a value of type <code class="code docutils literal"><span class="pre">Validation</span></code> which is a wrapper
+over <code class="code docutils literal"><span class="pre">Either</span></code> type carrying the parsed result.</p>
+<p>We use <code class="code docutils literal"><span class="pre">lookupParam</span></code> function for looking up the key (<code class="code docutils literal"><span class="pre">loc</span></code>).
+If the key matches, it&#8217;ll return <code class="code docutils literal"><span class="pre">Just</span></code> with the value of the key (in our case <code class="code docutils literal"><span class="pre">10,20</span></code>).
+Now we split this value into a tuple using <code class="code docutils literal"><span class="pre">splitOnComma</span></code> and make a value
+of type <code class="code docutils literal"><span class="pre">LatLng</span></code> using these.</p>
+<p>Similarly, a <code class="code docutils literal"><span class="pre">ToParam</span></code> instance for <code class="code docutils literal"><span class="pre">Location</span></code> can be written as:</p>
+<div class="highlight-haskell"><div class="highlight"><pre>instance ToParam &#39;QueryParam Location where
+  toParam pt pfx (Location (LatLng lt lg)) = [(&quot;loc&quot;, Just $ encodeParam lt &lt;&gt; &quot;,&quot; &lt;&gt; encodeParam lg)]
+</pre></div>
+</div>
+<p>Here we take a value of type <code class="code docutils literal"><span class="pre">Location</span></code> and convert it into a key-value pair.
+<code class="code docutils literal"><span class="pre">WebApi</span></code> uses this key-value pair to form the query string.</p>
+<p>This example only included <code class="code docutils literal"><span class="pre">QueryParam</span></code> but this can be easily extended to
+other param types.</p>
+</div>
+<div class="section" id="content-types">
+<h2>5.3. Content Types<a class="headerlink" href="#content-types" title="Permalink to this headline">¶</a></h2>
+<p>You can tell <a class="reference external" href="https://hackage.haskell.org/package/webapi">WebApi</a> about the content-type of <code class="code docutils literal"><span class="pre">ApiOut/ApiErr</span></code> using
+<code class="code docutils literal"><span class="pre">ContentTypes</span></code>.</p>
+<div class="highlight-haskell"><div class="highlight"><pre>instance ApiContract MyApiService POST User where
+    type FormParam    POST User = UserData
+    type ApiOut       POST User = UserToken
+    type ContentTypes POST User = &#39;[JSON]
+</pre></div>
+</div>
+<p>By default <code class="code docutils literal"><span class="pre">ContentTypes</span></code> is set to <code class="code docutils literal"><span class="pre">JSON</span></code>. That means you need to
+give <code class="code docutils literal"><span class="pre">ToJSON</span></code> instances for the types associated with <code class="code docutils literal"><span class="pre">ApiOut/ApiErr</span></code>
+while writing server side component and <code class="code docutils literal"><span class="pre">FromJSON</span></code> instances while writing
+client side version.</p>
+<p>Apart from <code class="code docutils literal"><span class="pre">JSON</span></code> you can give other types such as <code class="code docutils literal"><span class="pre">HTML</span></code>, <code class="code docutils literal"><span class="pre">PlainText</span></code>
+etc. You can see a complete list <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs//WebApi-ContentTypes.html">here</a></p>
+</div>
+</div>
+
+
+           </div>
+          </div>
+          <footer>
+  
+    <div class="rst-footer-buttons" role="navigation" aria-label="footer navigation">
+      
+        <a href="error-handling.html" class="btn btn-neutral float-right" title="6. Error Handling" accesskey="n">Next <span class="fa fa-arrow-circle-right"></span></a>
+      
+      
+        <a href="implementation.html" class="btn btn-neutral" title="4. Server implementation" accesskey="p"><span class="fa fa-arrow-circle-left"></span> Previous</a>
+      
+    </div>
+  
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>
+        &copy; Copyright 2016, ByteAlly Software Pvt Ltd.
+
+    </p>
+  </div>
+  Built with <a href="http://sphinx-doc.org/">Sphinx</a> using a <a href="https://github.com/snide/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>. 
+
+</footer>
+
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+  
+
+
+  
+
+    <script type="text/javascript">
+        var DOCUMENTATION_OPTIONS = {
+            URL_ROOT:'./',
+            VERSION:'0.3',
+            COLLAPSE_INDEX:false,
+            FILE_SUFFIX:'.html',
+            HAS_SOURCE:  true
+        };
+    </script>
+      <script type="text/javascript" src="_static/jquery.js"></script>
+      <script type="text/javascript" src="_static/underscore.js"></script>
+      <script type="text/javascript" src="_static/doctools.js"></script>
+
+  
+
+  
+  
+    <script type="text/javascript" src="_static/js/theme.js"></script>
+  
+
+  
+  
+  <script type="text/javascript">
+      jQuery(function () {
+          SphinxRtdTheme.StickyNav.enable();
+      });
+  </script>
+   
+
+</body>
+</html>

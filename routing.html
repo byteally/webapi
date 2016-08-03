@@ -1,0 +1,269 @@
+
+
+<!DOCTYPE html>
+<!--[if IE 8]><html class="no-js lt-ie9" lang="en" > <![endif]-->
+<!--[if gt IE 8]><!--> <html class="no-js" lang="en" > <!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <title>3. Routing &mdash; WebApi 0.3 documentation</title>
+  
+
+  
+  
+
+  
+
+  
+  
+    
+
+  
+
+  
+  
+    <link rel="stylesheet" href="_static/css/theme.css" type="text/css" />
+  
+
+  
+
+  
+    <link rel="top" title="WebApi 0.3 documentation" href="index.html"/>
+        <link rel="next" title="4. Server implementation" href="implementation.html"/>
+        <link rel="prev" title="2. Quick start" href="start.html"/> 
+
+  
+  <script src="_static/js/modernizr.min.js"></script>
+
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+
+    
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search">
+          
+
+          
+            <a href="index.html" class="icon icon-home"> WebApi
+          
+
+          
+          </a>
+
+          
+            
+            
+              <div class="version">
+                0.3
+              </div>
+            
+          
+
+          
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+
+          
+        </div>
+
+        <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="main navigation">
+          
+            
+            
+                <p class="caption"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="index.html">Introduction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">1. <strong>Installation</strong></a></li>
+<li class="toctree-l1"><a class="reference internal" href="start.html">2. Quick start</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="">3. <strong>Routing</strong></a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#routes-as-types">3.1. Routes as types</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#more-examples">3.2. More examples</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="implementation.html">4. Server implementation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="content-serialization.html">5. Content Serialization / Deserialization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="error-handling.html">6. Error Handling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="haskell-client.html">7. Building haskell client for third-party API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mock.html">8. Mocking Data</a></li>
+</ul>
+
+            
+          
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+
+      
+      <nav class="wy-nav-top" role="navigation" aria-label="top navigation">
+        <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+        <a href="index.html">WebApi</a>
+      </nav>
+
+
+      
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          
+
+
+
+
+
+<div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="index.html">Docs</a> &raquo;</li>
+      
+    <li>3. <strong>Routing</strong></li>
+      <li class="wy-breadcrumbs-aside">
+        
+          
+            <a href="_sources/routing.txt" rel="nofollow"> View page source</a>
+          
+        
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+            
+  <div class="section" id="routing">
+<h1>3. <strong>Routing</strong><a class="headerlink" href="#routing" title="Permalink to this headline">¶</a></h1>
+<p><a class="reference external" href="https://hackage.haskell.org/package/webapi">WebApi</a> supports the following HTTP verbs
+<strong>GET</strong>, <strong>POST</strong>, <strong>PUT</strong>, <strong>DELETE</strong>, <strong>PATCH</strong>, <strong>HEAD</strong></p>
+<p>You can also use any <a class="reference external" href="https://hackage.haskell.org/package/webapi/docs/WebApi-Method.html#t:CUSTOM">Custom</a> method as per your needs.</p>
+<p>In <a class="reference external" href="https://hackage.haskell.org/package/webapi">WebApi</a> we need to first write all the routes as types and then declare the valid HTTP verbs for each route type.</p>
+<div class="section" id="routes-as-types">
+<h2>3.1. Routes as types<a class="headerlink" href="#routes-as-types" title="Permalink to this headline">¶</a></h2>
+<p>Each route is declared as a type. For demo purposes let&#8217;s consider a API service that would allow you to create and get users. We need two URIs. One to create a user and another one to get the user by her ID.</p>
+<p><code class="code docutils literal"><span class="pre">/user</span></code> <strong>URI to create a user</strong></p>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="kr">type</span> <span class="kt">User</span> <span class="ow">=</span> <span class="kt">Static</span> <span class="s">&quot;user&quot;</span>
+</pre></div>
+</div>
+<p><code class="code docutils literal"><span class="pre">/user/9</span></code> <strong>URI to get a user</strong></p>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="kr">type</span> <span class="kt">UserId</span> <span class="ow">=</span> <span class="s">&quot;user&quot;</span> <span class="kt">:/</span> <span class="kt">Int</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li>Note that <code class="code docutils literal"><span class="pre">/user</span></code> is declared as <code class="code docutils literal"><span class="pre">Static</span> <span class="pre">&quot;user&quot;</span></code> to wrap <strong>user</strong> in <code class="code docutils literal"><span class="pre">Static</span></code> to make all the types of the same <strong>kind</strong> <strong>(*)</strong></li>
+</ul>
+<p>As you could see in the above examples, routes are defined as types. The next step is to write a <code class="xref doc docutils literal"><span class="pre">WebApi</span></code>  instance for the route types along with the HTTP verbs they support.</p>
+<div class="highlight-haskell"><div class="highlight"><pre>instance WebApi MyApiService where
+  -- Route &lt;Method&gt;  &lt;Route Name&gt;
+   type Apis MyApiService = &#39;[ Route &#39;[POST]             User
+                             , Route &#39;[GET, PUT, DELETE] UserId
+                             ]
+</pre></div>
+</div>
+<p>In the above code snippet, we are declaring that our route type</p>
+<ul class="simple">
+<li><code class="code docutils literal"><span class="pre">User</span></code> ie (<code class="code docutils literal"><span class="pre">/user</span></code>) accepts <code class="code docutils literal"><span class="pre">POST</span></code></li>
+<li><code class="code docutils literal"><span class="pre">UserId</span></code> accepts <code class="code docutils literal"><span class="pre">GET</span></code>, <code class="code docutils literal"><span class="pre">PUT</span></code>, <code class="code docutils literal"><span class="pre">DELETE</span></code>.<ul>
+<li>Let&#8217;s say the user Id is 9, then <code class="code docutils literal"><span class="pre">GET</span> <span class="pre">/user/9</span></code> could be used to get the user, <code class="code docutils literal"><span class="pre">PUT</span> <span class="pre">/user/9</span></code> to edit the user and <code class="code docutils literal"><span class="pre">DELETE</span> <span class="pre">user/9</span></code> to delete the user.</li>
+</ul>
+</li>
+</ul>
+</div>
+<div class="section" id="more-examples">
+<h2>3.2. More examples<a class="headerlink" href="#more-examples" title="Permalink to this headline">¶</a></h2>
+<p><code class="code docutils literal"><span class="pre">/post/tech/why-i-like-web-api</span></code></p>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="kr">type</span> <span class="kt">Post</span> <span class="ow">=</span> <span class="s">&quot;post&quot;</span> <span class="kt">:/</span> <span class="kt">Text</span> <span class="kt">:/</span> <span class="kt">Text</span>
+</pre></div>
+</div>
+<p><code class="code docutils literal"><span class="pre">/post/tech/why-i-like-web-api/edit</span></code></p>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="kr">type</span> <span class="kt">EditPost</span> <span class="ow">=</span> <span class="s">&quot;post&quot;</span> <span class="kt">:/</span> <span class="kt">Text</span> <span class="kt">:/</span> <span class="kt">Text</span> <span class="kt">:/</span> <span class="s">&quot;edit&quot;</span>
+</pre></div>
+</div>
+<p><code class="code docutils literal"><span class="pre">/why-i-like-web-api/comments</span></code></p>
+<div class="highlight-haskell"><div class="highlight"><pre><span class="kr">type</span> <span class="kt">Comments</span> <span class="ow">=</span> <span class="kt">Text</span> <span class="kt">:/</span> <span class="s">&quot;comments&quot;</span>
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Please note that when two route format overlaps, for example <code class="code docutils literal"><span class="pre">user/posts</span></code> and <code class="code docutils literal"><span class="pre">user/brian</span></code> WebApi&#8217;s routing system would take the first route that is declared first in the <code class="code docutils literal"><span class="pre">WebApi</span></code> instance.</p>
+</div>
+</div>
+</div>
+
+
+           </div>
+          </div>
+          <footer>
+  
+    <div class="rst-footer-buttons" role="navigation" aria-label="footer navigation">
+      
+        <a href="implementation.html" class="btn btn-neutral float-right" title="4. Server implementation" accesskey="n">Next <span class="fa fa-arrow-circle-right"></span></a>
+      
+      
+        <a href="start.html" class="btn btn-neutral" title="2. Quick start" accesskey="p"><span class="fa fa-arrow-circle-left"></span> Previous</a>
+      
+    </div>
+  
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>
+        &copy; Copyright 2016, ByteAlly Software Pvt Ltd.
+
+    </p>
+  </div>
+  Built with <a href="http://sphinx-doc.org/">Sphinx</a> using a <a href="https://github.com/snide/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>. 
+
+</footer>
+
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+  
+
+
+  
+
+    <script type="text/javascript">
+        var DOCUMENTATION_OPTIONS = {
+            URL_ROOT:'./',
+            VERSION:'0.3',
+            COLLAPSE_INDEX:false,
+            FILE_SUFFIX:'.html',
+            HAS_SOURCE:  true
+        };
+    </script>
+      <script type="text/javascript" src="_static/jquery.js"></script>
+      <script type="text/javascript" src="_static/underscore.js"></script>
+      <script type="text/javascript" src="_static/doctools.js"></script>
+
+  
+
+  
+  
+    <script type="text/javascript" src="_static/js/theme.js"></script>
+  
+
+  
+  
+  <script type="text/javascript">
+      jQuery(function () {
+          SphinxRtdTheme.StickyNav.enable();
+      });
+  </script>
+   
+
+</body>
+</html>
