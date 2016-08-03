@@ -4,7 +4,7 @@
 WebApi_ supports the following HTTP verbs
 **GET**, **POST**, **PUT**, **DELETE**, **PATCH**, **HEAD**
 
-You can also use any :wahackage`Custom <WebApi-Method.html#t:CUSTOM>` method as per your needs.
+You can also use any :wahackage:`Custom <WebApi-Method.html#t:CUSTOM>` method as per your needs.
 
 In WebApi_ we need to first write all the routes as types and then declare the valid HTTP verbs for each route type.
 
