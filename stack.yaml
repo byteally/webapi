@@ -1,4 +1,5 @@
 packages:
 - 'webapi'
+- 'webapi-docs'
 resolver: lts-5.13
 
