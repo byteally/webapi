@@ -12,6 +12,7 @@
 {-# LANGUAGE TypeFamilies              #-}
 {-# LANGUAGE OverloadedStrings         #-}
 {-# LANGUAGE TemplateHaskell           #-}
+{-# LANGUAGE CPP                       #-}
 
 
 
@@ -21,6 +22,9 @@ module WebApi.Docs
        , Docs
        , FName
        , Rec(..), nil
+       , ResourceDoc (..)
+       , DocField
+       , (:-)
        , bodyDocs
        , docs
        , field
@@ -45,7 +49,14 @@ import Language.Haskell.TH
 class (WebApi p)  => WebApiDocs (p :: *) where
   type DocumentedApis p :: [*]
 
+data ResourceDoc m r = ResourceDoc
+  
 class ApiContract p m r => ApiDocs (p :: *) (m :: *) (r :: *) where
+  apiDocs :: Proxy p -> Proxy (Request m r) -> Docs (ResourceDoc m r)
+
+  default apiDocs :: Generic (ResourceDoc m r) => Proxy p -> Proxy (Request m r) -> Docs (ResourceDoc m r)
+  apiDocs _ _ = docs "" nil
+  
   queryParamDocs :: Generic (QueryParam m r) => Proxy p -> Proxy (Request m r) -> Docs (QueryParam m r)
 
   default queryParamDocs :: Generic (QueryParam m r) => Proxy p -> Proxy (Request m r) -> Docs (QueryParam m r)
@@ -118,7 +129,7 @@ instance EmptyReqBodyDoc '[] where
   emptyBodyDoc _ = ReqBodyDoc nil
   
 
-data ((fn :: Symbol) ::: (a :: *)) = Field
+data ((fn :: Symbol) :- (a :: *)) = Field
 
 data Docs t = forall xs.Docs Text (Rec (DocField t) xs)
 
@@ -126,7 +137,7 @@ docSummary :: Docs t -> Text
 docSummary (Docs summ _) = summ
 
 data DocField s (fld :: *) where
-  DocField :: FName fn -> Doc t -> DocField s (fn ::: t)
+  DocField :: FName fn -> Doc t -> DocField s (fn :- t)
 
 data Doc t = Doc Text
            | Nested (NestedDoc t)
@@ -158,7 +169,7 @@ data FName (fn :: Symbol) = FN
 field :: forall fn.FName fn
 field = FN
 
-(-:) :: FName fn -> Doc t -> DocField s (fn ::: t)
+(-:) :: FName fn -> Doc t -> DocField s (fn :- t)
 (-:) fn doc = DocField fn doc
 
 docs :: Text -> Rec (DocField t) xs -> Docs t
@@ -182,3 +193,10 @@ quoteFieldExp :: String -> Q Exp
 quoteFieldExp fld = do
   let ty = litT $ strTyLit fld
   [|field :: FName $(ty) |]
+
+
+#if __GLASGOW_HASKELL__ >= 800
+instance fn ~ fn' => IsLabel (fn :: Symbol) (FName fn') where
+  fromLabel _ = FN
+  {-# INLINE fromLabel #-}
+#endif
