@@ -10,6 +10,7 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE PolyKinds                 #-}
 {-# LANGUAGE TypeFamilies              #-}
+{-# LANGUAGE DeriveGeneric             #-}
 {-# LANGUAGE OverloadedStrings         #-}
 {-# LANGUAGE TemplateHaskell           #-}
 {-# LANGUAGE CPP                       #-}
@@ -50,6 +51,7 @@ class (WebApi p)  => WebApiDocs (p :: *) where
   type DocumentedApis p :: [*]
 
 data ResourceDoc m r = ResourceDoc
+                     deriving (Generic)
   
 class ApiContract p m r => ApiDocs (p :: *) (m :: *) (r :: *) where
   apiDocs :: Proxy p -> Proxy (Request m r) -> Docs (ResourceDoc m r)
