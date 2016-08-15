@@ -11,5 +11,6 @@ Introduction to **WebApi**
   * Generate API console interface for your web API ([coming soon](https://github.com/byteally/webapi-console))
   * Generate a mock server that can mock your responses and requests too.
 
+Contributions and feedback are most welcome! 
 
-Please take a look at <http://byteally.github.io/webapi/> for more details.
+You can find the full documentation and examples ([here] (http://byteally.github.io/webapi/ )) 
