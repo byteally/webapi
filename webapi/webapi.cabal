@@ -50,8 +50,8 @@ library
                      , wai                >= 3.0  && < 3.3
                      , wai-extra          >= 3.0  && < 3.3
                      , case-insensitive   == 1.2.*
-                     , http-client        == 0.4.*
-                     , http-client-tls    == 0.2.*
+                     , http-client        >= 0.4  && < 0.6
+                     , http-client-tls    >= 0.2  && < 0.4
                      , network-uri        >= 2.6  && < 2.7
                      , time               >= 1.5  && < 1.7
                      , http-media         >= 0.6  && < 0.7

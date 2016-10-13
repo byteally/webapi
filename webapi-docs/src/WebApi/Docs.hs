@@ -14,6 +14,10 @@
 {-# LANGUAGE OverloadedStrings         #-}
 {-# LANGUAGE TemplateHaskell           #-}
 {-# LANGUAGE CPP                       #-}
+#if __GLASGOW_HASKELL__ >= 800
+{-# LANGUAGE UndecidableSuperClasses   #-}
+{-# LANGUAGE FlexibleInstances         #-}
+#endif
 
 
 
@@ -42,6 +46,9 @@ import Data.Proxy
 import GHC.Generics
 import GHC.TypeLits
 import GHC.Exts
+#if __GLASGOW_HASKELL__ >= 800
+import GHC.OverloadedLabels
+#endif
 import Data.Text
 import Data.String
 import Language.Haskell.TH.Quote
@@ -52,13 +59,13 @@ class (WebApi p)  => WebApiDocs (p :: *) where
 
 data ResourceDoc m r = ResourceDoc
                      deriving (Generic)
-  
+
 class ApiContract p m r => ApiDocs (p :: *) (m :: *) (r :: *) where
   apiDocs :: Proxy p -> Proxy (Request m r) -> Docs (ResourceDoc m r)
 
   default apiDocs :: Generic (ResourceDoc m r) => Proxy p -> Proxy (Request m r) -> Docs (ResourceDoc m r)
   apiDocs _ _ = docs "" nil
-  
+
   queryParamDocs :: Generic (QueryParam m r) => Proxy p -> Proxy (Request m r) -> Docs (QueryParam m r)
 
   default queryParamDocs :: Generic (QueryParam m r) => Proxy p -> Proxy (Request m r) -> Docs (QueryParam m r)
@@ -93,12 +100,12 @@ class ApiContract p m r => ApiDocs (p :: *) (m :: *) (r :: *) where
 
   default apiErrDocs :: Generic (ApiErr m r) => Proxy p -> Proxy (Request m r) -> Docs (ApiErr m r)
   apiErrDocs _ _ = docs "" nil
-  
+
   headerOutDocs :: Generic (HeaderOut m r) => Proxy p -> Proxy (Request m r) -> Docs (HeaderOut m r)
 
   default headerOutDocs :: Generic (HeaderOut m r) => Proxy p -> Proxy (Request m r) -> Docs (HeaderOut m r)
   headerOutDocs _ _ = docs "" nil
-  
+
   cookieOutDocs :: Generic (CookieOut m r) => Proxy p -> Proxy (Request m r) -> Docs (CookieOut m r)
 
   default cookieOutDocs :: Generic (CookieOut m r) => Proxy p -> Proxy (Request m r) -> Docs (CookieOut m r)
@@ -114,7 +121,7 @@ class ApiContract p m r => ApiDocs (p :: *) (m :: *) (r :: *) where
 type family All1 (c :: * -> Constraint) (xs :: [*]) :: Constraint where
   All1 c (x ': xs) = (c x, All1 c xs)
   All1 c '[]       = ()
-  
+
 data ReqBodyDoc (bodies :: [*]) = ReqBodyDoc (Rec Docs bodies)
 
 bodyDocs :: Rec (DocField body) xs -> ReqBodyDoc '[body]
@@ -129,7 +136,7 @@ instance EmptyReqBodyDoc bodies => EmptyReqBodyDoc (bdy ': bodies) where
 
 instance EmptyReqBodyDoc '[] where
   emptyBodyDoc _ = ReqBodyDoc nil
-  
+
 
 data ((fn :: Symbol) :- (a :: *)) = Field
 
@@ -178,13 +185,13 @@ docs :: Text -> Rec (DocField t) xs -> Docs t
 docs = Docs
 
 nested :: Text -> Docs t -> Doc t
-nested summary = Nested . NestedDoc summary 
+nested summary = Nested . NestedDoc summary
 
 nil :: Rec f '[]
 nil = Nil
 
 f :: QuasiQuoter
-f = QuasiQuoter 
+f = QuasiQuoter
   { quoteExp  = quoteFieldExp
   , quotePat  = error "Field QuasiQuote cannot be used in pattern"
   , quoteDec  = error "Field QuasiQuote cannot be used in declaration"

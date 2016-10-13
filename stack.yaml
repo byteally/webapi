@@ -1,5 +1,5 @@
 packages:
 - 'webapi'
 - 'webapi-docs'
-resolver: lts-5.13
+resolver: lts-7.3
 
