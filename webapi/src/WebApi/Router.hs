@@ -434,8 +434,11 @@ snocParsedRoute (ConsDynamicPiece sym routes) pt = (ConsDynamicPiece sym $ snocP
 instance (MkFormatStr (ToPieces (a :/ b))) => MkPathFormatString (a :/ b) where
   mkPathFormatString _ = mkFormatStr (Proxy :: Proxy (ToPieces (a :/ b)))
 
-instance (MkPathFormatString b) => MkPathFormatString (a :// b) where
+instance (MkPathFormatString b) => MkPathFormatString (a :// (b :: *)) where
   mkPathFormatString _ = mkPathFormatString (Proxy :: Proxy b)
+
+instance (MkPathFormatString (Static b)) => MkPathFormatString (a :// (b :: Symbol)) where
+  mkPathFormatString _ = mkPathFormatString (Proxy :: Proxy (Static b))
 
 instance (KnownSymbol s) => MkPathFormatString (Static s) where
   mkPathFormatString _ = mkFormatStr (Proxy :: Proxy (ToPieces (Static s)))
