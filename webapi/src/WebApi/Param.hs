@@ -77,6 +77,7 @@ module WebApi.Param
        , filePath
        , nest
        , defaultParamSettings
+         
        -- * Generic (De)Serialization fn
        , genericToQueryParam
        , genericFromQueryParam
