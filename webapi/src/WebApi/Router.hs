@@ -34,6 +34,7 @@ module WebApi.Router
        , router
        , ToPieces
        , FromPieces
+       , NamespaceOf
 
        -- * Custom routing
        , PathSegment (..)
@@ -75,13 +76,17 @@ data DynamicPiece (t :: *)
 
 data Namespace (ns :: *)
 
--- | Datatype associating a provider with a route.
+-- | Datatype associating a namespace with a route.
 data (://) (ns :: *) (ps :: k)
 infixr 5 ://
 
 -- | Datatype representing a route.
 data (:/) (p1 :: k) (p2 :: k1)
 infixr 5 :/
+
+-- | Get the namespace of a route
+type family NamespaceOf (r :: *) where
+  NamespaceOf (ns :// r) = ns
 
 type instance PathParam' m (Static s) = ()
 type instance PathParam' m (p1 :/ p2) = HListToTuple (FilterDynP (ToPieces (p1 :/ p2)))
@@ -458,3 +463,4 @@ apiHandler serv req =  (handler serv req) `catches` excepHandlers
   where excepHandlers :: [Handler (HandlerM p) (Query (Response m r) query)]
         excepHandlers = [ Handler (\ (ex :: ApiException m r) -> handleApiException (unTagged serv) ex)
                         , Handler (\ (ex :: SomeException) -> handleSomeException (unTagged serv) ex) ]
+
