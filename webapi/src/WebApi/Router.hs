@@ -26,6 +26,7 @@ module WebApi.Router
          Static
        , Root
        , (:/)
+       , (://)
          
        -- * Default routing implementation
        , Route
@@ -72,12 +73,20 @@ data StaticPiece (s :: Symbol)
 
 data DynamicPiece (t :: *)
 
+data Namespace (ns :: *)
+
+-- | Datatype associating a provider with a route.
+data (://) (ns :: *) (ps :: k)
+infixr 5 ://
+
 -- | Datatype representing a route.
 data (:/) (p1 :: k) (p2 :: k1)
 infixr 5 :/
 
 type instance PathParam' m (Static s) = ()
 type instance PathParam' m (p1 :/ p2) = HListToTuple (FilterDynP (ToPieces (p1 :/ p2)))
+type instance PathParam' m (p :// (ps :: *)) = HListToTuple (FilterDynP (ToPieces ps))
+type instance PathParam' m (p :// (ps :: Symbol)) = ()
 
 -- | Datatype representing a static path piece.
 data Static (s :: Symbol)
@@ -86,12 +95,14 @@ type Root = Static ""
 
 
 data PieceType :: * -> * where
-  SPiece :: Proxy (p :: Symbol) -> PieceType (StaticPiece p)
-  DPiece :: !val -> PieceType (DynamicPiece val)
+  SPiece  :: Proxy (p :: Symbol) -> PieceType (StaticPiece p)
+  NSPiece :: Proxy (ns :: *) -> PieceType (Namespace ns)
+  DPiece  :: !val -> PieceType (DynamicPiece val)
 
 data ParsedRoute :: (*, [*]) -> * where
   Nil              :: Proxy method -> ParsedRoute '(method, '[])
   ConsStaticPiece  :: Proxy (p :: Symbol) -> ParsedRoute '(method, ps) -> ParsedRoute '(method, ((StaticPiece p) ': ps))
+  ConsNSPiece      :: Proxy (ns :: *) -> ParsedRoute '(method, ps) -> ParsedRoute '(method, ((Namespace ns) ': ps))
   ConsDynamicPiece :: !t -> ParsedRoute '(method, ps) -> ParsedRoute '(method, ((DynamicPiece t) ': ps))
 
 data HList :: [*] -> * where
@@ -117,20 +128,39 @@ fromParsedRoute proutes = case dropStaticPiece proutes of
 dropStaticPiece :: ParsedRoute '(m, pths) -> HList (FilterDynP pths)
 dropStaticPiece (Nil _)                 = HNil
 dropStaticPiece (ConsStaticPiece _ ps)  = dropStaticPiece ps
+dropStaticPiece (ConsNSPiece _ ps)      = dropStaticPiece ps
 dropStaticPiece (ConsDynamicPiece p ps) = p :* dropStaticPiece ps
 
 -- | Convert the path into a flat hierarchy.
 type family ToPieces (r :: k) :: [*] where
-  ToPieces (Static s)                       = '[StaticPiece s]
-  ToPieces ((p1 :: Symbol) :/ (p2 :: Symbol)) = '[StaticPiece p1, StaticPiece p2]
-  ToPieces ((p1 :: *) :/ (p2 :: Symbol))      = '[DynamicPiece p1, StaticPiece p2]
-  ToPieces ((p1 :: Symbol) :/ (p2 :/ p3))    = StaticPiece p1 ': ToPieces (p2 :/ p3)
-  ToPieces ((p1 :: *) :/ (p2 :/ p3))         = DynamicPiece p1 ': ToPieces (p2 :/ p3)
-  ToPieces ((p1 :: *) :/ (p2 :: *))           = '[DynamicPiece p1, DynamicPiece p2]
-  ToPieces ((p1 :: Symbol) :/ (p2 :: *))      = '[StaticPiece p1, DynamicPiece p2]
+  ToPieces (ns :// (ps :: *))      = Namespace ns ': ToPieces' ps
+  ToPieces (ns :// (ps :: Symbol)) = Namespace ns ': ToPieces' (Static ps)
+  ToPieces p                       = ToPieces' p
+
+type family ToPieces' (r :: k) :: [*] where
+  ToPieces' (Static s)                         = '[StaticPiece s]
+  ToPieces' ((p1 :: Symbol) :/ (p2 :: Symbol)) = '[StaticPiece p1, StaticPiece p2]
+  ToPieces' ((p1 :: *) :/ (p2 :: Symbol))      = '[DynamicPiece p1, StaticPiece p2]
+  ToPieces' ((p1 :: Symbol) :/ (p2 :/ p3))     = StaticPiece p1 ': ToPieces' (p2 :/ p3)
+  ToPieces' ((p1 :: *) :/ (p2 :/ p3))          = DynamicPiece p1 ': ToPieces' (p2 :/ p3)
+  ToPieces' ((p1 :: *) :/ (p2 :: *))           = '[DynamicPiece p1, DynamicPiece p2]
+  ToPieces' ((p1 :: Symbol) :/ (p2 :: *))      = '[StaticPiece p1, DynamicPiece p2]
 
 type family FromPieces (pps :: [*]) :: * where
-  FromPieces '[StaticPiece s]                    = Static s
+  FromPieces (Namespace ns ': ps) = ns :// FromPieces' ps
+  FromPieces ps                   = FromPieces' ps
+
+type family FromPieces' (pps :: [*]) :: * where
+  FromPieces' '[StaticPiece s]                    = Static s
+  FromPieces' '[StaticPiece p1, StaticPiece p2]   = p1 :/ p2
+  FromPieces' '[DynamicPiece p1, DynamicPiece p2] = p1 :/ p2
+  FromPieces' '[StaticPiece p1, DynamicPiece p2]  = p1 :/ p2
+  FromPieces' '[DynamicPiece p1, StaticPiece p2]  = p1 :/ p2
+
+  FromPieces' (DynamicPiece p ': ps)              = p :/ FromPieces' ps
+  FromPieces' (StaticPiece p ': ps)               = p :/ FromPieces' ps
+
+{-
   FromPieces '[StaticPiece p1, StaticPiece p2]   = p1 :/ p2
   FromPieces '[DynamicPiece p1, DynamicPiece p2] = p1 :/ p2
   FromPieces '[StaticPiece p1, DynamicPiece p2]  = p1 :/ p2
@@ -139,6 +169,7 @@ type family FromPieces (pps :: [*]) :: * where
   FromPieces ((DynamicPiece p1) ': ((DynamicPiece p2) ': pps)) = p1 :/ (FromPieces ((DynamicPiece p2) ': pps))
   FromPieces ((StaticPiece p1) ': ((DynamicPiece p2) ': pps)) = p1 :/ (FromPieces ((DynamicPiece p2) ': pps))
   FromPieces ((DynamicPiece p1) ': ((StaticPiece p2) ': pps)) = p1 :/ (FromPieces ((StaticPiece p2) ': pps))
+-}
 
 type family FilterDynP (ps :: [*]) :: [*] where
   FilterDynP (DynamicPiece p1 ': p2) = p1 ': FilterDynP p2
@@ -147,18 +178,17 @@ type family FilterDynP (ps :: [*]) :: [*] where
 
 -- | Class to do the default routing.
 class Router (server :: *) (r :: k) (pr :: (*, [*])) where
-  route :: ( iface ~ (ApiInterface server)
-            -- , HandlerM server
-          ) => Proxy r -> server -> ParsedRoute pr -> RoutingApplication
+  route :: Proxy r -> server -> ParsedRoute pr -> RoutingApplication
 
 type family MarkDyn (pp :: *) :: * where
-  MarkDyn (p1 :/ t) = (p1 :/ t)
+  MarkDyn (p1 :/ t)  = (p1 :/ t)
+  MarkDyn (p :// t)  = (p :// t)
   MarkDyn (t :: *)   = DynamicPiece t
 
 instance ( SingMethod m
          , Router s r '(m, '[])
-         , Router s (Route ms r) pr) =>
-         Router s (Route (m ': ms) r) pr where
+         , Router s (Route ms r) pr
+         ) => Router s (Route (m ': ms) r) pr where
   route _ _s parsedRoute request respond =
     case requestMethod request == meth of
       True  -> route (Proxy :: Proxy r) _s (Nil (Proxy :: Proxy m)) request respond
@@ -176,6 +206,10 @@ instance (Router s route pr, Router s routes pr) => Router s ((route :: *) ': ro
 
 instance Router s '[] pr where
   route _ _s _ _ respond = respond NotMatched
+
+instance (Router s rest '(m, pp :++ '[Namespace ns])) => Router s ((ns :: *) :// (rest :: *)) '(m, pp) where
+  route _ _s parsedRoute request respond =
+    route (Proxy :: Proxy rest) _s (snocParsedRoute parsedRoute $ NSPiece (Proxy :: Proxy ns)) request respond
 
 instance (Router s (MarkDyn rest) '(m, (pp :++ '[DynamicPiece piece])), DecodeParam piece)
                       => Router s ((piece :: *) :/ (rest :: *)) '(m, pp) where
@@ -304,7 +338,6 @@ instance ( KnownSymbol rpiece
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toWaiResponse request response
 
-
 instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
          , ApiHandler s m route
          , PathParam m route ~ HListToTuple (FilterDynP (pp :++ '[DynamicPiece t]))
@@ -340,8 +373,40 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toWaiResponse request response
 
-router :: ( iface ~ (ApiInterface server)
-          , Router server apis '(CUSTOM "", '[])
+instance ( PathParam m (ns :// piece) ~ ()
+         , ParamErrToApiErr (ApiErr m (ns :// piece))
+         , KnownSymbol piece
+         , FromHeader (HeaderIn m (ns :// piece))
+         , FromParam 'QueryParam (QueryParam m (ns :// piece))
+         , FromParam 'FormParam (FormParam m (ns :// piece))
+         , FromParam 'FileParam (FileParam m (ns :// piece))
+         , FromParam 'Cookie (CookieIn m (ns :// piece))
+         , ToHListRecTuple (StripContents (RequestBody m (ns :// piece)))
+         , SingMethod m
+         , PartDecodings (RequestBody m (ns :// piece))
+         , WebApiServer s
+         , Typeable ns
+         , Typeable m
+         , Typeable piece
+         , ApiHandler s m (ns :// piece)
+         , ToHeader (HeaderOut m (ns :// piece))
+         , ToParam 'Cookie (CookieOut m (ns :// piece))
+         , Encodings (ContentTypes m (ns :// piece)) (ApiErr m (ns :// piece))
+         , Encodings (ContentTypes m (ns :// piece)) (ApiOut m (ns :// piece))
+         ) => Router s ((ns :: *) :// (piece :: Symbol)) '(m, pp) where
+  route _ serv _ request respond =
+    case pathInfo request of
+      (pth : []) | symTxt (Proxy :: Proxy piece) == pth -> respond . Matched =<< getResponse
+      [] | T.null $ symTxt (Proxy :: Proxy piece) -> respond . Matched =<< getResponse
+      _ -> respond $ NotMatched
+    where getResponse = do
+            apiResp' <- fromWaiRequest request () (\(req :: Request m (ns :// piece)) -> toIO serv $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) req)
+            response <- case apiResp' of
+              Validation (Right apiResp) -> return apiResp 
+              Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
+            return $ toWaiResponse request response
+
+router :: ( Router server apis '(CUSTOM "", '[])
           ) => Proxy apis -> server -> RoutingApplication
 router apis s = route apis s emptyParsedRoutes
 
@@ -354,13 +419,18 @@ emptyParsedRoutes :: ParsedRoute '(CUSTOM "", '[])
 emptyParsedRoutes = Nil Proxy
 
 snocParsedRoute :: ParsedRoute '(method, ps) -> PieceType pt -> ParsedRoute '(method, ps :++ '[pt])
-snocParsedRoute nil@Nil{} (SPiece sym) = sym `ConsStaticPiece` nil
-snocParsedRoute nil@Nil{} (DPiece val) = val `ConsDynamicPiece` nil
-snocParsedRoute (ConsStaticPiece sym routes) symOrVal = (ConsStaticPiece sym $ snocParsedRoute routes symOrVal)
-snocParsedRoute (ConsDynamicPiece sym routes) symOrVal = (ConsDynamicPiece sym $ snocParsedRoute routes symOrVal)
+snocParsedRoute nil@Nil{} (SPiece sym)   = sym `ConsStaticPiece` nil
+snocParsedRoute nil@Nil{} (NSPiece prov) = prov `ConsNSPiece` nil
+snocParsedRoute nil@Nil{} (DPiece val)   = val `ConsDynamicPiece` nil
+snocParsedRoute (ConsStaticPiece sym routes) pt  = (ConsStaticPiece sym $ snocParsedRoute routes pt)
+snocParsedRoute (ConsNSPiece prov routes) pt     = (ConsNSPiece prov $ snocParsedRoute routes pt)
+snocParsedRoute (ConsDynamicPiece sym routes) pt = (ConsDynamicPiece sym $ snocParsedRoute routes pt)
 
 instance (MkFormatStr (ToPieces (a :/ b))) => MkPathFormatString (a :/ b) where
   mkPathFormatString _ = mkFormatStr (Proxy :: Proxy (ToPieces (a :/ b)))
+
+instance (MkPathFormatString b) => MkPathFormatString (a :// b) where
+  mkPathFormatString _ = mkPathFormatString (Proxy :: Proxy b)
 
 instance (KnownSymbol s) => MkPathFormatString (Static s) where
   mkPathFormatString _ = mkFormatStr (Proxy :: Proxy (ToPieces (Static s)))

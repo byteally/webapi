@@ -178,7 +178,7 @@ client :: forall m r .
           , ToHListRecTuple (StripContents (RequestBody m r))
           ) => ClientSettings -> Request m r -> IO (Response m r)
 client sett req = do
-  cReqInit <- HC.parseUrl (baseUrl sett)
+  cReqInit <- HC.parseRequest (baseUrl sett)
   cReq <- toClientRequest cReqInit req
   catches (HC.withResponse cReq (connectionManager sett) fromClientResponse)
     [ Handler (\(ex :: HC.HttpException) -> do
