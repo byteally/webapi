@@ -45,8 +45,8 @@ module WebApi.Contract
        , method
        , requestBody
        , pathParam
-       , pattern Req
        , pattern Request
+       , pattern Req
        , Response (..)
        , ApiError (..)
        , OtherError (..)
@@ -157,16 +157,30 @@ type family PathParam' m r :: *
 
 -- | Datatype representing a request to route `r` with method `m`.
 data Request m r = Req'
-    
-  { pathParam   :: PathParam m r                                  -- ^ Path params of the request.
+  {
+#if __GLASGOW_HASKELL__ >= 800    
+    pathParam_   :: PathParam m r                                  -- ^ Path params of the request.
+  , queryParam_  :: QueryParam m r                                 -- ^ Query params of the request.
+  , formParam_   :: FormParam m r                                  -- ^  Form params of the request.
+  , fileParam_   :: FileParam m r                                  -- ^ File params of the request.
+  , headerIn_    :: HeaderIn m r                                   -- ^ Header params of the request.
+  , cookieIn_    :: CookieIn m r                                   -- ^ Cookie params of the request.
+  , requestBody_ :: HListToTuple (StripContents (RequestBody m r)) -- ^ Body of the request
+  , method_      :: Text
+#else
+    pathParam   :: PathParam m r                                  -- ^ Path params of the request.
   , queryParam  :: QueryParam m r                                 -- ^ Query params of the request.
   , formParam   :: FormParam m r                                  -- ^  Form params of the request.
   , fileParam   :: FileParam m r                                  -- ^ File params of the request.
   , headerIn    :: HeaderIn m r                                   -- ^ Header params of the request.
   , cookieIn    :: CookieIn m r                                   -- ^ Cookie params of the request.
   , requestBody :: HListToTuple (StripContents (RequestBody m r)) -- ^ Body of the request
-  , method      :: Text
+  , method_     :: Text
+#endif
   }
+
+method :: Request m r -> Text
+method = method_
 
 -- | Datatype representing a response from route `r` with method `m`.
 data Response m r = Success Status (ApiOut m r) (HeaderOut m r) (CookieOut m r)
@@ -202,7 +216,18 @@ pattern Request :: () => (SingMethod m)
                 -> CookieIn m r
                 -> HListToTuple (StripContents (RequestBody m r))
                 -> Request m r
+#if __GLASGOW_HASKELL__ >= 800
+pattern Request { pathParam
+                 , queryParam
+                 , formParam
+                 , fileParam
+                 , headerIn
+                 , cookieIn
+                 , requestBody
+                 } <- Req' pathParam queryParam formParam fileParam headerIn cookieIn requestBody _ where
+#else
 pattern Request pp qp fp fip hi ci rb <- Req' pp qp fp fip hi ci rb _ where
+#endif
     Request pp qp fp fip hi ci rb =
       let rt = _reqToRoute rq 
           rq = Req' pp qp fp fip hi ci rb (_getMethodName rt)
