@@ -42,7 +42,7 @@ library
                      , binary             >= 0.7  && < 0.9
                      , bytestring         >= 0.10 && < 0.11
                      , vector             >= 0.10 && < 0.12
-                     , aeson              >= 0.8  && < 0.12
+                     , aeson              >= 0.9  && < 1.1
                      , http-types         >= 0.8  && < 0.10
                      , blaze-builder      >= 0.4  && < 0.5
                      , bytestring-trie    == 0.2.*
@@ -50,7 +50,7 @@ library
                      , wai                >= 3.0  && < 3.3
                      , wai-extra          >= 3.0  && < 3.3
                      , case-insensitive   == 1.2.*
-                     , http-client        >= 0.4  && < 0.6
+                     , http-client        >= 0.5  && < 0.6
                      , http-client-tls    >= 0.2  && < 0.4
                      , network-uri        >= 2.6  && < 2.7
                      , time               >= 1.5  && < 1.7
@@ -59,7 +59,7 @@ library
                      , exceptions         >= 0.8  && < 1
                      , transformers       >= 0.4  && < 0.6
                      , cookie             >= 0.4  && < 0.5
-                     , QuickCheck         == 2.8.*
+                     , QuickCheck         >= 2.8  && < 2.10
                      , directory
 
   hs-source-dirs:      src
@@ -93,5 +93,5 @@ test-suite unit-tests
                      , bytestring        >= 0.10 && < 0.11
                      , vector            >= 0.10 && < 0.12
                      , time              >= 1.5  && < 1.7
-                     , QuickCheck        == 2.8.*
+                     , QuickCheck        >= 2.8  && < 2.10
                      , webapi
