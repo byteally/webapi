@@ -47,10 +47,10 @@ module WebApi.ContentTypes
 import           Blaze.ByteString.Builder           (Builder)
 import qualified Blaze.ByteString.Builder.Char.Utf8 as Utf8 (fromText)
 import           Data.Aeson                         (ToJSON (..), FromJSON (..), eitherDecodeStrict)
-#if MIN_VERSION_aeson(0,9,0)
-import           Data.Aeson.Encode                  (encodeToBuilder)
+#if MIN_VERSION_aeson(1,0,0)
+import           Data.Aeson.Encoding                (fromEncoding)
 #else
-import           Data.Aeson.Encode                  (encodeToByteStringBuilder)
+import           Data.Aeson.Encode                  (encodeToBuilder)
 #endif
 import           Data.ByteString                    (ByteString)
 import           Data.Maybe                         (fromMaybe)
@@ -139,10 +139,10 @@ class (Accept a) => Encode a c where
   encode :: Proxy a -> c -> Builder
 
 instance (ToJSON c) => Encode JSON c where
-#if MIN_VERSION_aeson(0,9,0)  
-  encode _ = encodeToBuilder . toJSON
+#if MIN_VERSION_aeson(1,0,0)  
+  encode _ = fromEncoding . toEncoding
 #else
-  encode _ = encodeToByteStringBuilder . toJSON
+  encode _ = encodeToBuilder . toJSON
 #endif
 
 instance (ToText a) => Encode PlainText a where
