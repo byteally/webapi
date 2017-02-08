@@ -60,10 +60,8 @@ import           Data.Text.Encoding                 (decodeUtf8)
 import           Network.HTTP.Media.MediaType
 import           Network.HTTP.Media                 (mapContentMedia)
 import           WebApi.Util
+import           WebApi.Contract                    (JSON)
 
-
--- | Type representing content type of @application/json@.
-data JSON
 
 -- | Type representing content type of @text/plain@.
 data PlainText
@@ -170,9 +168,6 @@ class FromText a where
 instance FromText TextS.Text where
   fromText = Just
 
---newtype Content (ctypes :: [*]) (a :: *) = Content { getContent :: a }
-data Content (ctypes :: [*]) (a :: *)
-
 class PartEncodings (xs :: [*]) where
   partEncodings :: Proxy xs
                   -> HListToRecTuple (StripContents xs)
@@ -201,12 +196,3 @@ instance PartDecodings '[] where
 type family MkContent a where
   MkContent (Content ctypes a) = Content ctypes a
   MkContent a                  = Content '[JSON] a
-
-type family StripContents (a :: [*]) :: [*] where
-  StripContents (t ': ts) = StripContent t ': StripContents ts
-  StripContents '[]       = '[]
-
-type family StripContent a where
-  StripContent (Content ctypes t) = t 
-  StripContent t                  = t
-

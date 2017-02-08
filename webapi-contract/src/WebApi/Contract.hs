@@ -54,6 +54,9 @@ module WebApi.Contract
        
        -- * Methods   
        , module WebApi.Method
+
+       -- * Content type
+       , JSON
        ) where
 
 import           Control.Exception (SomeException)
@@ -62,19 +65,17 @@ import           Data.Text
 import           Data.Text.Encoding
 import           GHC.Exts
 import           Network.HTTP.Types
-import           WebApi.ContentTypes
-import           WebApi.Method
-import           WebApi.Versioning
 import           WebApi.Util
+import           WebApi.Method
 
 -- | Describes a collection of web apis.
-class (OrdVersion (Version p)) => WebApi (p :: *) where
+class WebApi (p :: *) where
   -- | Version of the web api.
   type Version p :: *
   -- | List of all end points that this web api provides.
   type Apis p :: [*]
 
-  type Version p = Major 0
+  type Version p = ()
 
 
 {- NOTE:
@@ -159,14 +160,14 @@ type family PathParam' m r :: *
 data Request m r = Req'
   {
 #if __GLASGOW_HASKELL__ >= 800    
-    pathParam_   :: PathParam m r                                  -- ^ Path params of the request.
-  , queryParam_  :: QueryParam m r                                 -- ^ Query params of the request.
-  , formParam_   :: FormParam m r                                  -- ^  Form params of the request.
-  , fileParam_   :: FileParam m r                                  -- ^ File params of the request.
-  , headerIn_    :: HeaderIn m r                                   -- ^ Header params of the request.
-  , cookieIn_    :: CookieIn m r                                   -- ^ Cookie params of the request.
-  , requestBody_ :: HListToTuple (StripContents (RequestBody m r)) -- ^ Body of the request
-  , method_      :: Text
+    _pathParam   :: PathParam m r                                  -- ^ Path params of the request.
+  , _queryParam  :: QueryParam m r                                 -- ^ Query params of the request.
+  , _formParam   :: FormParam m r                                  -- ^  Form params of the request.
+  , _fileParam   :: FileParam m r                                  -- ^ File params of the request.
+  , _headerIn    :: HeaderIn m r                                   -- ^ Header params of the request.
+  , _cookieIn    :: CookieIn m r                                   -- ^ Cookie params of the request.
+  , _requestBody :: HListToTuple (StripContents (RequestBody m r)) -- ^ Body of the request
+  , _method      :: Text
 #else
     pathParam   :: PathParam m r                                  -- ^ Path params of the request.
   , queryParam  :: QueryParam m r                                 -- ^ Query params of the request.
@@ -175,21 +176,16 @@ data Request m r = Req'
   , headerIn    :: HeaderIn m r                                   -- ^ Header params of the request.
   , cookieIn    :: CookieIn m r                                   -- ^ Cookie params of the request.
   , requestBody :: HListToTuple (StripContents (RequestBody m r)) -- ^ Body of the request
-  , method_     :: Text
+  , _method      :: Text
 #endif
   }
 
 method :: Request m r -> Text
-method = method_
+method = _method
 
 -- | Datatype representing a response from route `r` with method `m`.
 data Response m r = Success Status (ApiOut m r) (HeaderOut m r) (CookieOut m r)
                   | Failure (Either (ApiError m r) OtherError)
-
-{-
-data Api m r = forall handM.(Monad handM) => Api
-               { runApi :: Request m r -> handM (Response m r) }
--}
 
 -- | Datatype representing a known failure from route `r` with method `m`.
 data ApiError m r = ApiError
@@ -265,3 +261,6 @@ type family ReqInvariant (form :: *) (file :: *) (body :: [*]) :: Constraint whe
   ReqInvariant () () '[a] = ()
   ReqInvariant a b '[]    = ()
   ReqInvariant a b c      = "Error" ~ "This combination is not supported"
+
+-- | Type representing content type of @application/json@.
+data JSON

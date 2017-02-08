@@ -1,6 +1,6 @@
 packages:
-- 'webapi'
-- 'webapi-docs'
+ - 'webapi'
+ - 'webapi-docs'
+ - 'webapi-contract'
 resolver: lts-7.18
-
 

@@ -73,3 +73,13 @@ infixr 5 :++
 type family (:++) (as :: [k]) (bs :: [k]) :: [k] where
   '[] :++ bs       = bs
   (a ': as) :++ bs = a ': (as :++ bs)
+
+type family StripContents (a :: [*]) :: [*] where
+  StripContents (t ': ts) = StripContent t ': StripContents ts
+  StripContents '[]       = '[]
+
+type family StripContent a where
+  StripContent (Content ctypes t) = t 
+  StripContent t                  = t
+
+data Content (ctypes :: [*]) (a :: *)
