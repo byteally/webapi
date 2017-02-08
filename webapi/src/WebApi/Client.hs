@@ -183,12 +183,14 @@ client sett req = do
   catches (HC.withResponse cReq (connectionManager sett) fromClientResponse)
     [ Handler (\(ex :: HC.HttpException) -> do
                 case ex of
-                  HC.StatusCodeException status resHeaders _ -> do
+                  HC.HttpExceptionRequest _ (HC.StatusCodeException resp _) -> do
                     let mBody = find ((== "X-Response-Body-Start") . fst) resHeaders
                         bdy   = case mBody of
                                   Nothing -> "[]"
                                   Just (_, body) -> body
                         removeExtraHeaders = filter (\(x, _) -> (x /= "X-Request-URL") || (x /= "X-Response-Body-Start"))
+                        status     = HC.responseStatus resp
+                        resHeaders = HC.responseHeaders resp
                     return $ case ApiError
                           <$> pure status
                           <*> (Validation $ toParamErr $ decode' resHeaders (Route' :: Route' m r) bdy)
