@@ -31,7 +31,7 @@ type NamespaceStatic  = RoutingSpec :// "bar"
 -- type NamespaceJustDyn = RoutingSpec :// Int
 
 instance WebApi RoutingSpec where
-  type Version RoutingSpec = MajorMinor '(0, 1)
+  type Version RoutingSpec = ()
   type Apis    RoutingSpec = '[ Route '[GET] StaticRoute1
                               , Route '[GET] StaticRoute2  
                               , Route '[GET] RouteWithParam

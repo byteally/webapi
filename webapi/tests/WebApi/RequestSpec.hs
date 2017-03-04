@@ -73,7 +73,7 @@ type ApiR = Static "api"
 -- type QuickCheckR = Static "autogen"
 
 instance WebApi ReqSpec where
-  type Version ReqSpec = MajorMinor '(0, 1)
+  type Version ReqSpec = ()
   type Apis    ReqSpec = '[ Route '[ GET
                                    , POST
                                    , PUT
