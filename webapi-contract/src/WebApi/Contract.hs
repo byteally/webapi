@@ -51,6 +51,7 @@ module WebApi.Contract
        , ApiError (..)
        , OtherError (..)
        , Resource (..)
+       , ReqInvariant
        
        -- * Methods   
        , module WebApi.Method

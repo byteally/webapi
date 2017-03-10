@@ -42,6 +42,7 @@ module WebApi.Router
        , apiHandler
 
        -- * Internal
+       , FromPieces'
        , FilterDynP
        , StaticPiece
        , DynamicPiece
