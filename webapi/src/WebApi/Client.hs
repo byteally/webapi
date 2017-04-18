@@ -20,6 +20,7 @@ Provides a client for a web api for a given contract.
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
 {-# LANGUAGE UndecidableInstances  #-}
+{-# LANGUAGE CPP                   #-}
 module WebApi.Client
        (
          -- * Client related functions
@@ -183,7 +184,13 @@ client sett req = do
   catches (HC.withResponse cReq (connectionManager sett) fromClientResponse)
     [ Handler (\(ex :: HC.HttpException) -> do
                 case ex of
+#if MIN_VERSION_http_client(0,5,0)
+                  HC.HttpExceptionRequest req (HC.StatusCodeException resp _) -> do
+                    let resHeaders = HC.responseHeaders resp
+                        status = HC.responseStatus resp
+#else
                   (HC.StatusCodeException status resHeaders _) -> do
+#endif
                     let mBody = find ((== "X-Response-Body-Start") . fst) resHeaders
                         bdy   = case mBody of
                                   Nothing -> "[]"
