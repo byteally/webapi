@@ -13,4 +13,4 @@ Introduction to **WebApi**
 
 Contributions and feedback are most welcome! 
 
-You can find the full documentation and examples [here] (http://byteally.github.io/webapi/) 
+You can find the full documentation and examples [here](http://byteally.github.io/webapi/) 
