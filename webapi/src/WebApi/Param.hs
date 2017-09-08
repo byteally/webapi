@@ -811,6 +811,20 @@ instance ToParam par a => ToParam par [a] where
 instance ToParam par a => ToParam par (Vector a) where
   toParam pt pfx vals = toParam pt pfx (V.toList vals)
 
+instance (FromJSON a) => FromParam 'QueryParam (JsonOf a) where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+    Just (Just par) -> case decodeParam par of
+      Just v -> Validation $ Right v
+      _      -> Validation $ Left [ParseErr key "Unable to decode from json"]
+    _ -> Validation $ Left [NotFound key]
+
+instance (FromJSON a) => FromParam 'FormParam (JsonOf a) where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+    Just par -> case decodeParam par of
+      Just v -> Validation $ Right v
+      _      -> Validation $ Left [ParseErr key "Unable to decode from json"]
+    _ -> Validation $ Left [NotFound key]
+
 instance FromParam parK () where
   fromParam _ _ _ = pure ()
 
