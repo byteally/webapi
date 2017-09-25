@@ -66,6 +66,7 @@ test-suite unit-tests
                      , WebApi.ResponseSpec
                      , WebApi.RouteSpec
                      , WebApi.ClientSpec
+                     , WebApi.ParamSpec
                      , WebApi.MockSpec
 
     hs-source-dirs:    tests
@@ -87,4 +88,5 @@ test-suite unit-tests
                      , vector            >= 0.10 && < 0.12
                      , time              >= 1.5  && < 1.7
                      , QuickCheck        >= 2.8  && < 2.10
+                     , binary            == 0.8.*
                      , webapi

@@ -11,6 +11,7 @@ import Test.Hspec.Wai (with, get, request, shouldRespondWith, matchStatus, (<:>)
 import Network.HTTP.Media.MediaType
 import Network.HTTP.Types
 import Data.Text
+import qualified Data.Text.Lazy as L
 import Data.Aeson (ToJSON (..))
 
 withApp :: SpecWith Wai.Application -> Spec
@@ -71,8 +72,8 @@ instance ApiContract RespSpec GET ApiWithError where
   type ApiErr    GET ApiWithError = Err
 
 instance ApiContract RespSpec GET TextCType where
-  type ApiOut       GET TextCType = Text
-  type ApiErr       GET TextCType = Text
+  type ApiOut       GET TextCType = L.Text
+  type ApiErr       GET TextCType = L.Text
   type ContentTypes GET TextCType = '[PlainText]
 
 instance ApiContract RespSpec GET LazyEncoding where
