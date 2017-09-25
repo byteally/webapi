@@ -113,6 +113,7 @@ import qualified Data.List                          as L (find)
 import           Data.Monoid                        ((<>))
 import           Data.Proxy
 import qualified Data.Text                          as T (Text, pack, uncons)
+import qualified Data.Text.Lazy                     as LT
 import           Data.Text.Encoding                 (decodeUtf8', encodeUtf8)
 import           Data.Time.Calendar                 (Day)
 import           Data.Time.Clock                    (UTCTime, DiffTime)
@@ -1584,6 +1585,9 @@ instance ParamErrToApiErr () where
 
 instance ParamErrToApiErr T.Text where
   toApiErr errs = T.pack (show errs)
+
+instance ParamErrToApiErr LT.Text where
+  toApiErr errs = LT.pack (show errs)
 
 instance ParamErrToApiErr A.Value where
   toApiErr errs = toJSON errs

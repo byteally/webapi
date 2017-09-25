@@ -84,7 +84,7 @@ fromWaiRequest waiReq pathPar handlerFn = do
                               <*> (fromBody [])
         handler' request
     Nothing -> do
-      bdy <- Wai.requestBody waiReq
+      bdy <- Wai.lazyRequestBody waiReq
       let rBody = [(fromMaybe (renderHeader $ contentType (Proxy :: Proxy OctetStream)) mContentTy, bdy)]
       let request = Request <$> pure pathPar
                             <*> (fromQueryParam $ Wai.queryString waiReq)

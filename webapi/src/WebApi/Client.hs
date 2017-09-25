@@ -48,7 +48,8 @@ module WebApi.Client
 
 import           Blaze.ByteString.Builder              (toByteString)
 import           Control.Exception
-import           Data.ByteString                       (ByteString)
+import           Data.ByteString.Lazy                  (ByteString, fromChunks, fromStrict)
+import qualified Data.ByteString                       as B
 import           Data.Either                           (isRight)
 import           Data.List                             (find)
 import           Data.Proxy
@@ -86,7 +87,9 @@ fromClientResponse hcResp = do
       respBody = HC.responseBody hcResp
       respHdr  = fromHeader hdrsOut :: Validation [ParamErr] (HeaderOut m r)
       -- respCk   = fromCookie
-  respBodyBS <- respBody
+  -- NOTE: Consuming body strictly
+  bss <- HC.brConsume respBody
+  let respBodyBS = fromChunks bss
   return $ case Success <$> pure status
                <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
                <*> respHdr
@@ -198,7 +201,7 @@ client sett req = do
                         removeExtraHeaders = filter (\(x, _) -> (x /= "X-Request-URL") || (x /= "X-Response-Body-Start"))
                     return $ case ApiError
                           <$> pure status
-                          <*> (Validation $ toParamErr $ decode' resHeaders (Route' :: Route' m r) bdy)
+                          <*> (Validation $ toParamErr $ decode' resHeaders (Route' :: Route' m r) (fromStrict bdy))
                           <*> (Just <$> (fromHeader . removeExtraHeaders $ resHeaders))
                           -- TODO: Handle cookies
                           <*> pure Nothing of

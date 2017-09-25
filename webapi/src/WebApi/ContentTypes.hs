@@ -45,18 +45,19 @@ module WebApi.ContentTypes
        ) where
 
 import           Blaze.ByteString.Builder           (Builder)
-import qualified Blaze.ByteString.Builder.Char.Utf8 as Utf8 (fromText)
-import           Data.Aeson                         (ToJSON (..), FromJSON (..), eitherDecodeStrict)
+import qualified Blaze.ByteString.Builder.Char.Utf8 as Utf8 (fromLazyText)
+import           Data.Aeson                         (ToJSON (..), FromJSON (..), eitherDecode)
 #if MIN_VERSION_aeson(1,0,0)
 import           Data.Aeson.Encoding                (fromEncoding)
 #else
 import           Data.Aeson.Encode                  (encodeToBuilder)
 #endif
-import           Data.ByteString                    (ByteString)
+import qualified Data.ByteString                    as SB
+import           Data.ByteString.Lazy               (ByteString)
 import           Data.Maybe                         (fromMaybe)
 import           Data.Proxy
-import qualified Data.Text                          as TextS
-import           Data.Text.Encoding                 (decodeUtf8)
+import qualified Data.Text.Lazy                     as LT
+import           Data.Text.Lazy.Encoding            (decodeUtf8)
 import           Network.HTTP.Media.MediaType
 import           Network.HTTP.Media                 (mapContentMedia)
 import           WebApi.Util
@@ -144,28 +145,28 @@ instance (ToJSON c) => Encode JSON c where
 #endif
 
 instance (ToText a) => Encode PlainText a where
-  encode _ = Utf8.fromText . toText
+  encode _ = Utf8.fromLazyText . toText
 
 -- | (Try to) Decode a type from a specific content type.
 class (Accept c) => Decode c a where
   decode :: Proxy c -> ByteString -> Either String a
 
 instance (FromJSON a) => Decode JSON a where
-  decode _ = eitherDecodeStrict
+  decode _ = eitherDecode
 
 instance (FromText a) => Decode PlainText a where
   decode _ = maybe (Left "Couldn't parse: ") Right . fromText . decodeUtf8
 
 class ToText a where
-  toText :: a -> TextS.Text
+  toText :: a -> LT.Text
 
-instance ToText TextS.Text where
+instance ToText LT.Text where
   toText = id
 
 class FromText a where
-  fromText :: TextS.Text -> Maybe a
+  fromText :: LT.Text -> Maybe a
 
-instance FromText TextS.Text where
+instance FromText LT.Text where
   fromText = Just
 
 class PartEncodings (xs :: [*]) where
@@ -180,7 +181,7 @@ instance PartEncodings '[] where
   partEncodings _ () = []
 
 class PartDecodings (xs :: [*]) where
-  partDecodings :: Proxy xs -> [(ByteString, ByteString)] -> Either String (HListToRecTuple (StripContents xs))
+  partDecodings :: Proxy xs -> [(SB.ByteString, ByteString)] -> Either String (HListToRecTuple (StripContents xs))
 
 instance (PartDecodings ts, Decodings ctypes (StripContent t), MkContent t ~ Content ctypes a) => PartDecodings (t ': ts) where
   partDecodings _ ((ctype, partBody) : xs) = do
