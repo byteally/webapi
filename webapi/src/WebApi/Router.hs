@@ -67,6 +67,7 @@ import WebApi.Contract
 import WebApi.Internal
 import WebApi.Param
 import WebApi.Util
+import GHC.Exts
 
 -- | Datatype representing a endpoint.
 data Route (ms :: [*]) (r :: *)
@@ -236,23 +237,25 @@ instance (Router s (MarkDyn rest) '(m, (pp :++ '[StaticPiece piece])), KnownSymb
 
 
 -- Base Cases
-instance ( KnownSymbol piece, ApiHandler s m (Static piece)
-         , ToHeader (HeaderOut m (Static piece))
-         , ToParam 'Cookie (CookieOut m (Static piece))
-         , FromParam 'QueryParam (QueryParam m (Static piece))
-         , FromParam 'FormParam (FormParam m (Static piece))
-         , FromParam 'FileParam (FileParam m (Static piece))
-         , FromHeader (HeaderIn m (Static piece))
-         , FromParam 'Cookie (CookieIn m (Static piece))
-         , Encodings (ContentTypes m (Static piece)) (ApiOut m (Static piece))
-         , Encodings (ContentTypes m (Static piece)) (ApiErr m (Static piece))
-         , PathParam m (Static piece) ~ ()
-         , ParamErrToApiErr (ApiErr m (Static piece))
-         , ToHListRecTuple (StripContents (RequestBody m (Static piece)))
-         , PartDecodings (RequestBody m (Static piece))
+instance ( KnownSymbol piece, ApiHandler s m route
+         , ToHeader (HeaderOut m route)
+         , ToParam 'Cookie (CookieOut m route)
+         , FromParam 'QueryParam (QueryParam m route)
+         , FromParam 'FormParam (FormParam m route)
+         , FromParam 'FileParam (FileParam m route)
+         , FromHeader (HeaderIn m route)
+         , FromParam 'Cookie (CookieIn m route)
+         , Encodings (ContentTypes m route) (ApiOut m route)
+         , Encodings (ContentTypes m route) (ApiErr m route)
+         , PathParam m route ~ ()
+         , ParamErrToApiErr (ApiErr m route)
+         , ToHListRecTuple (StripContents (RequestBody m route))
+         , PartDecodings (RequestBody m route)
          , Typeable m
-         , Typeable (Static piece)
+         , Typeable route
          , WebApiServer s
+         , paths ~ (pp :++ '[StaticPiece piece])
+         , route ~ (FromPieces paths)
          ) => Router s (Static piece) '(m, pp) where
   route _ serv _ request respond =
     case pathInfo request of
@@ -260,7 +263,7 @@ instance ( KnownSymbol piece, ApiHandler s m (Static piece)
       [] | T.null $ symTxt (Proxy :: Proxy piece) -> respond . Matched =<< getResponse
       _ -> respond $ NotMatched
     where getResponse = do
-            apiResp' <- fromWaiRequest request () (\(req :: Request m (Static piece)) -> toIO serv $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) req)
+            apiResp' <- fromWaiRequest request () (\(req :: Request m route) -> toIO serv $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) req)
             response <- case apiResp' of
               Validation (Right apiResp) -> return apiResp 
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
@@ -395,6 +398,7 @@ instance ( PathParam m (ns :// piece) ~ ()
          , Typeable m
          , Typeable piece
          , ApiHandler s m (ns :// piece)
+         , ApiContract (ApiInterface s) m (ns :// piece)
          , ToHeader (HeaderOut m (ns :// piece))
          , ToParam 'Cookie (CookieOut m (ns :// piece))
          , Encodings (ContentTypes m (ns :// piece)) (ApiErr m (ns :// piece))
