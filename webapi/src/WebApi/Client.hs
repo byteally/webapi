@@ -79,29 +79,29 @@ data Route' m r = Route'
 fromClientResponse :: forall m r.( FromHeader (HeaderOut m r)
                               , Decodings (ContentTypes m r) (ApiOut m r)
                               , Decodings (ContentTypes m r) (ApiErr m r)
-                              , CookieOut m r ~ ()
+                              , FromParam 'Cookie (CookieOut m r)
+
                              ) => HC.Response HC.BodyReader -> IO (Response m r)
 fromClientResponse hcResp = do
   let status   = HC.responseStatus hcResp
       hdrsOut  = HC.responseHeaders hcResp
       respBody = HC.responseBody hcResp
       respHdr  = fromHeader hdrsOut :: Validation [ParamErr] (HeaderOut m r)
-      -- respCk   = fromCookie
+      respCk   = fromCookie (cookieBS (HC.destroyCookieJar (HC.responseCookieJar hcResp)))
   -- NOTE: Consuming body strictly
   bss <- HC.brConsume respBody
   let respBodyBS = fromChunks bss
   return $ case Success <$> pure status
                <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
                <*> respHdr
-               <*> pure () of
+               <*> respCk of
       Validation (Right success) -> success
       Validation (Left _errs) -> 
         case ApiError
               <$> pure status
               <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
               <*> (Just <$> respHdr)
-              -- TODO: Handle cookies
-              <*> pure Nothing of
+              <*> (Just <$> respCk) of
            Validation (Right failure) -> (Failure . Left) failure
            Validation (Left _errs) -> Failure $ Right (OtherError (toException UnknownClientException))
     where toParamErr :: Either String a -> Either [ParamErr] a
@@ -120,6 +120,9 @@ fromClientResponse hcResp = do
 
           firstRight :: [Either String b] -> Either String b
           firstRight = maybe (Left "Couldn't find matching Content-Type") id . find isRight
+
+          cookieBS :: [HC.Cookie] -> [(B.ByteString, B.ByteString)]
+          cookieBS = map (\ck -> (HC.cookie_name ck, HC.cookie_value ck))
 
 -- | Creates a request from the 'Request' type.
 toClientRequest :: forall m r.( ToParam 'PathParam (PathParam m r)
@@ -167,13 +170,13 @@ toClientRequest clientReq req = do
 
 -- | Given a `Request` type, create the request and obtain a response. Gives back a 'Response'.
 client :: forall m r .
-          ( CookieOut m r ~ ()
-          , ToParam 'PathParam (PathParam m r)
+          ( ToParam 'PathParam (PathParam m r)
           , ToParam 'QueryParam (QueryParam m r)
           , ToParam 'FormParam (FormParam m r)
           , ToHeader (HeaderIn m r)
           , ToParam 'FileParam (FileParam m r)
           , FromHeader (HeaderOut m r)
+          , FromParam 'Cookie (CookieOut m r)
           , Decodings (ContentTypes m r) (ApiOut m r)
           , Decodings (ContentTypes m r) (ApiErr m r)
           , SingMethod m
