@@ -33,7 +33,7 @@ library
 
   -- other-extensions:
   build-depends:       base               >= 4.7  && < 5
-                     , aeson              >= 0.9  && < 1.2
+                     , aeson              >= 0.9  && < 1.4
                      , blaze-builder      >= 0.4  && < 0.5
                      , bytestring         >= 0.10 && < 0.11
                      , bytestring-lexing  == 0.5.*
@@ -41,7 +41,7 @@ library
                      , text               >= 1.2  && < 1.3
                      , time               >= 1.5  && < 1.7
                      , bytestring-trie    == 0.2.*
-                     , vector             >= 0.10 && < 0.12
+                     , vector             >= 0.10 && < 0.13
                      , wai-extra          >= 3.0  && < 3.3
                      , http-types         >= 0.8  && < 0.10
                      , http-media         >= 0.6  && < 0.7
@@ -74,7 +74,7 @@ test-suite unit-tests
     cpp-options:       -DTEST
     ghc-options:       -Wall
     build-depends:     base              >= 4.7  && < 5
-                     , aeson             >= 0.9  && < 1.2
+                     , aeson             >= 0.9  && < 1.4
                      , case-insensitive  == 1.2.*
                      , wai               >= 3.0  && < 3.3
                      , wai-extra         >= 3.0  && < 3.3
@@ -85,7 +85,7 @@ test-suite unit-tests
                      , hspec-wai         >= 0.6  && < 0.9
                      , text              >= 1.2  && < 1.3
                      , bytestring        >= 0.10 && < 0.11
-                     , vector            >= 0.10 && < 0.12
+                     , vector            >= 0.10 && < 0.13
                      , time              >= 1.5  && < 1.7
                      , QuickCheck        >= 2.8  && < 2.10
                      , binary            == 0.8.*
