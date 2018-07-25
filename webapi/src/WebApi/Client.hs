@@ -50,6 +50,7 @@ import           Blaze.ByteString.Builder              (toByteString)
 import           Control.Exception
 import           Data.ByteString.Lazy                  (ByteString, fromChunks, fromStrict)
 import qualified Data.ByteString                       as B
+import qualified Data.ByteString                       as B (concat)
 import           Data.Either                           (isRight)
 import           Data.List                             (find)
 import           Data.Proxy
@@ -67,6 +68,8 @@ import           WebApi.Contract
 import           WebApi.Internal
 import           WebApi.Param
 import           WebApi.Util
+import           Data.Maybe                            (fromJust)
+import           Data.Time.Clock                       (getCurrentTime)
 
 -- | Datatype representing the settings related to client.
 data ClientSettings = ClientSettings { baseUrl           :: String     -- ^ base url of the API being called.
@@ -87,16 +90,18 @@ fromClientResponse hcResp = do
       hdrsOut  = HC.responseHeaders hcResp
       respBody = HC.responseBody hcResp
       respHdr  = fromHeader hdrsOut :: Validation [ParamErr] (HeaderOut m r)
-      respCk   = fromCookie (cookieBS (HC.destroyCookieJar (HC.responseCookieJar hcResp)))
+      respCj   = (HC.destroyCookieJar (HC.responseCookieJar hcResp))
+      respCk   = fromCookie (cookieBS respCj)
   -- NOTE: Consuming body strictly
-  bss <- HC.brConsume respBody
-  let respBodyBS = fromChunks bss
+      -- respCk   = fromCookie
+  respBodyBSS <- HC.brConsume respBody
+  let respBodyBS = fromStrict $ B.concat respBodyBSS
   return $ case Success <$> pure status
                <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
                <*> respHdr
                <*> respCk of
       Validation (Right success) -> success
-      Validation (Left _errs) -> 
+      Validation (Left _errs) ->
         case ApiError
               <$> pure status
               <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
@@ -130,19 +135,22 @@ toClientRequest :: forall m r.( ToParam 'PathParam (PathParam m r)
                           , ToParam 'FormParam (FormParam m r)
                           , ToHeader (HeaderIn m r)
                           , ToParam 'FileParam (FileParam m r)
+                          , ToParam 'Cookie (CookieIn m r)
                           , SingMethod m
                           , MkPathFormatString r
                           , PartEncodings (RequestBody m r)
                           , ToHListRecTuple (StripContents (RequestBody m r))
                           ) => HC.Request -> Request m r -> IO HC.Request
 toClientRequest clientReq req = do
+  now <- getCurrentTime
   let cReq' = clientReq
               { HC.method = singMethod (Proxy :: Proxy m)
               , HC.path = uriPath
               , HC.requestHeaders = toHeader $ headerIn req
-              -- , HC.cookieJar = error "TODO: cookieJar"
+              , HC.cookieJar = Just ckJar
               }
       cReqQP = HC.setQueryString queryPar cReq'
+      ckJar  = HC.createCookieJar (cks now)
       cReqUE = if Prelude.null formPar
                then cReqQP
                else HC.urlEncodedBody formPar cReqQP
@@ -167,12 +175,27 @@ toClientRequest clientReq req = do
         partEncs = partEncodings cts (toRecTuple cts' (requestBody req))
         cts     = Proxy :: Proxy (RequestBody m r)
         cts'     = Proxy :: Proxy (StripContents (RequestBody m r))
+        cks now = map (uncurry (mkCookieVal now)) (toCookie $ cookieIn req)
+        mkCookieVal now k ci =
+          HC.Cookie { HC.cookie_name = k
+                    , HC.cookie_value = cookieValue ci
+                    , HC.cookie_expiry_time = fromJust (cookieExpires ci)
+                    , HC.cookie_domain = fromJust (cookieDomain ci)
+                    , HC.cookie_path = fromJust (cookiePath ci)
+                    , HC.cookie_creation_time = now
+                    , HC.cookie_last_access_time = now
+                    , HC.cookie_persistent = False
+                    , HC.cookie_host_only = False
+                    , HC.cookie_secure_only = fromJust (cookieSecure ci)
+                    , HC.cookie_http_only = fromJust (cookieHttpOnly ci)
+                    }
 
 -- | Given a `Request` type, create the request and obtain a response. Gives back a 'Response'.
 client :: forall m r .
           ( ToParam 'PathParam (PathParam m r)
           , ToParam 'QueryParam (QueryParam m r)
           , ToParam 'FormParam (FormParam m r)
+          , ToParam 'Cookie (CookieIn m r)
           , ToHeader (HeaderIn m r)
           , ToParam 'FileParam (FileParam m r)
           , FromHeader (HeaderOut m r)
