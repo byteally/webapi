@@ -50,6 +50,7 @@ import           Blaze.ByteString.Builder              (toByteString)
 import           Control.Exception
 import           Data.ByteString.Lazy                  (ByteString, fromChunks, fromStrict)
 import qualified Data.ByteString                       as B
+import qualified Data.ByteString                       as B (concat)
 import           Data.Either                           (isRight)
 import           Data.List                             (find)
 import           Data.Proxy
@@ -89,16 +90,18 @@ fromClientResponse hcResp = do
       hdrsOut  = HC.responseHeaders hcResp
       respBody = HC.responseBody hcResp
       respHdr  = fromHeader hdrsOut :: Validation [ParamErr] (HeaderOut m r)
-      respCk   = fromCookie (cookieBS (HC.destroyCookieJar (HC.responseCookieJar hcResp)))
+      respCj   = (HC.destroyCookieJar (HC.responseCookieJar hcResp))
+      respCk   = fromCookie (cookieBS respCj)
   -- NOTE: Consuming body strictly
-  bss <- HC.brConsume respBody
-  let respBodyBS = fromChunks bss
+      -- respCk   = fromCookie
+  respBodyBSS <- HC.brConsume respBody
+  let respBodyBS = fromStrict $ B.concat respBodyBSS
   return $ case Success <$> pure status
                <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
                <*> respHdr
                <*> respCk of
       Validation (Right success) -> success
-      Validation (Left _errs) -> 
+      Validation (Left _errs) ->
         case ApiError
               <$> pure status
               <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
