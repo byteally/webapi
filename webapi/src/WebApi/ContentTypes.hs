@@ -25,8 +25,8 @@ module WebApi.ContentTypes
        , OctetStream
        , MultipartFormData
        , UrlEncoded
-         
-       -- * Creating custom Content Types. 
+
+       -- * Creating custom Content Types.
        , Content
        , Accept (..)
        , Encode (..)
@@ -34,7 +34,10 @@ module WebApi.ContentTypes
 
        -- * Converting from and to 'Text'
        , FromText (..)
-       , ToText (..)  
+       , ToText (..)
+
+       -- * Html
+       , Html
 
        -- * Internal classes.
        , Encodings (..)
@@ -62,6 +65,7 @@ import           Network.HTTP.Media.MediaType
 import           Network.HTTP.Media                 (mapContentMedia)
 import           WebApi.Util
 import           WebApi.Contract                    (JSON)
+import Data.ByteString.Builder (lazyByteString)
 
 
 -- | Type representing content type of @text/plain@.
@@ -82,7 +86,7 @@ data UrlEncoded
 -- | Type representing content type of @application/xml@.
 data XML
 
--- | Encodings of type for all content types `ctypes`.  
+-- | Encodings of type for all content types `ctypes`.
 class Encodings (ctypes :: [*]) a where
   encodings :: Proxy ctypes -> a -> [(MediaType, Builder)]
 
@@ -95,7 +99,7 @@ instance ( Accept ctype
 instance Encodings '[] a where
   encodings _ _ = []
 
--- | Decodings of type for all content types `ctypes`.  
+-- | Decodings of type for all content types `ctypes`.
 class Decodings (ctypes :: [*]) a where
   decodings :: Proxy ctypes -> ByteString -> [(MediaType, Either String a)]
 
@@ -108,7 +112,7 @@ instance ( Accept ctype
 instance Decodings '[] a where
   decodings _ _ = []
 
--- | Singleton class for content type. 
+-- | Singleton class for content type.
 class Accept ctype where
   contentType :: Proxy ctype -> MediaType
 
@@ -138,7 +142,7 @@ class (Accept a) => Encode a c where
   encode :: Proxy a -> c -> Builder
 
 instance (ToJSON c) => Encode JSON c where
-#if MIN_VERSION_aeson(1,0,0)  
+#if MIN_VERSION_aeson(1,0,0)
   encode _ = fromEncoding . toEncoding
 #else
   encode _ = encodeToBuilder . toJSON
@@ -168,6 +172,14 @@ class FromText a where
 
 instance FromText LT.Text where
   fromText = Just
+
+newtype Html = Html ByteString
+
+instance Encode HTML Html where
+  encode _ (Html b) = lazyByteString b
+
+instance Decode HTML Html where
+  decode _ = return . Html
 
 class PartEncodings (xs :: [*]) where
   partEncodings :: Proxy xs
