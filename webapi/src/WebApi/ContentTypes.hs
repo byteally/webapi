@@ -38,6 +38,7 @@ module WebApi.ContentTypes
 
        -- * Html
        , Html
+       , html
 
        -- * Internal classes.
        , Encodings (..)
@@ -180,6 +181,9 @@ instance Encode HTML Html where
 
 instance Decode HTML Html where
   decode _ = return . Html
+
+html :: ByteString -> Html
+html = Html
 
 class PartEncodings (xs :: [*]) where
   partEncodings :: Proxy xs
