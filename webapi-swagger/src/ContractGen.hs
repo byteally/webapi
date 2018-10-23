@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE CPP #-}
 
 
@@ -15,6 +16,9 @@ import GHC.Generics
 import qualified Data.ByteString.Lazy as BSL
 import Data.HashMap.Strict.InsOrd as HMSIns
 import Language.Haskell.Exts
+import Data.Vector.Sized as SV hiding ((++))
+import Safe
+import Data.Finite.Internal
 
 import Data.Swagger
 import Data.Swagger.Declare
@@ -45,92 +49,37 @@ parseHaskellSrcContract = do
     ParseFailed srcLoc errMsg -> putStrLn $ (show srcLoc) ++ " : " ++ errMsg
 
 
+instanceTopVec :: Vector 4 String
+instanceTopVec = fromJustNote "Expected a list with 4 elements for WebApi instance!" $ SV.fromList ["ApiContract", "EDITranslatorApi", "POST", "EdiToJsonR" ]
+
+instanceTypeVec :: [Vector 4 String]
+instanceTypeVec = [
+                    ( fromMaybeSV $ SV.fromList ["ApiOut", "POST", "EdiToJsonR", "Value" ])
+                  , ( fromMaybeSV $ SV.fromList ["ApiErr", "POST", "EdiToJsonR", "Text" ])
+                  , ( fromMaybeSV $ SV.fromList ["FormParam", "POST", "EdiToJsonR", "EdiStr" ])
+                  , ( fromMaybeSV $ SV.fromList ["QueryParam", "POST", "EdiToJsonR", "Maybe CharacterSet"]) 
+                  ]
+ where 
+  fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
+
+fromParamVec :: Vector 3 String
+fromParamVec = fromJustNote "Expected a list with 3 elements for WebApi instance!" $ SV.fromList ["FromParam", "FormParam", "EdiStr"]
+
 printHaskellModule :: IO()
 printHaskellModule = 
   let hModule = Module noSrcSpan (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
-        [LanguagePragma noSrcSpan [Ident noSrcSpan "TypeFamilies"],
-        LanguagePragma noSrcSpan [Ident noSrcSpan "MultiParamTypeClasses"],
-        LanguagePragma noSrcSpan [Ident noSrcSpan "DeriveGeneric"],
-        LanguagePragma noSrcSpan [Ident noSrcSpan "TypeOperators"],
-        LanguagePragma noSrcSpan [Ident noSrcSpan "DataKinds"]        
-        ]
-        [ImportDecl {importAnn = noSrcSpan, 
-          importModule = ModuleName noSrcSpan "WebApi", importQualified = False, importSrc = False, importSafe = False, importPkg = Nothing, importAs = Nothing, importSpecs = Nothing}
-        , ImportDecl {importAnn = noSrcSpan, 
-        importModule = ModuleName noSrcSpan "Data.Aeson", importQualified = False, importSrc = False, importSafe = False, importPkg = Nothing, importAs = Nothing, importSpecs = Nothing}
-        , ImportDecl {importAnn = noSrcSpan, 
-          importModule = ModuleName noSrcSpan "Data.ByteString", importQualified = False, importSrc = False, importSafe = False, importPkg = Nothing, importAs = Nothing, importSpecs = Nothing}
-        , ImportDecl {importAnn = noSrcSpan, 
-        importModule = ModuleName noSrcSpan "Data.Text as T", importQualified = False, importSrc = False, importSafe = False, importPkg = Nothing, importAs = Nothing, importSpecs = Nothing}
-        , ImportDecl {importAnn = noSrcSpan, 
-        importModule = ModuleName noSrcSpan "GHC.Generics", importQualified = False, importSrc = False, importSafe = False, importPkg = Nothing, importAs = Nothing, importSpecs = Nothing}
-        ]
+        (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds"])
+        (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics"])
         [
         emptyDataDeclaration "EDITranslatorApi",
         dataDeclaration (NewType noSrcSpan) "EdiStr" [("ediStr", "ByteString")] ["Show", "Generic"],
         dataDeclaration (NewType noSrcSpan) "CharacterSet" [("characterSet", "ByteString")] ["Show", "Generic"],
         dataDeclaration (DataType noSrcSpan) "EdiJsonWithDelims" [("ediJson", "ByteString"), ("segmentDelimiter", "Char"), ("elementDelimiter", "Char")] ["Show", "Generic"],
-        
-        InstDecl noSrcSpan Nothing 
-            (IRule noSrcSpan Nothing Nothing 
-              (IHApp noSrcSpan
-                  (IHApp noSrcSpan
-                      (IHApp noSrcSpan
-                          (IHCon noSrcSpan
-                              (UnQual noSrcSpan
-                                  (Ident noSrcSpan "ApiContract")
-                              )
-                          ) 
-                          (TyCon noSrcSpan  
-                              (UnQual noSrcSpan
-                                  (Ident noSrcSpan "EDITranslatorApi")
-                              )
-                          )
-                      ) 
-                      (TyCon noSrcSpan  
-                          (UnQual noSrcSpan
-                              (Ident noSrcSpan "POST")
-                          )
-                      )
-                  ) 
-                  (TyCon noSrcSpan 
-                      (UnQual noSrcSpan
-                          (Ident noSrcSpan "EdiToJsonR")
-                      )
-                  )
-              ) )
-            (Just 
-                [InsType noSrcSpan
-                    (TyApp noSrcSpan
-                        (TyApp noSrcSpan
-                            (TyCon noSrcSpan
-                                (UnQual noSrcSpan
-                                    (Ident noSrcSpan "ApiOut")
-                                )
-                            ) 
-                            (TyCon noSrcSpan 
-                                (UnQual noSrcSpan 
-                                    (Ident noSrcSpan "POST")
-                                )
-                            )
-                        ) 
-                        (TyCon noSrcSpan 
-                            (UnQual noSrcSpan 
-                                (Ident noSrcSpan "EdiToJsonR")
-                            )
-                        )
-                    ) 
-                    
-                    (TyCon noSrcSpan 
-                        (UnQual noSrcSpan 
-                            (Ident noSrcSpan "Value")
-                        )
-                    ),
-                InsType noSrcSpan (TyApp noSrcSpan (TyApp noSrcSpan (TyCon noSrcSpan (UnQual noSrcSpan (Ident noSrcSpan"ApiErr"))) (TyCon noSrcSpan (UnQual noSrcSpan  (Ident noSrcSpan "POST")))) (TyCon noSrcSpan (UnQual noSrcSpan  (Ident noSrcSpan "EdiToJsonR")))) (TyCon noSrcSpan (UnQual noSrcSpan  (Ident noSrcSpan "Text"))),
-                InsType noSrcSpan (TyApp noSrcSpan (TyApp noSrcSpan (TyCon noSrcSpan (UnQual noSrcSpan (Ident noSrcSpan"FormParam"))) (TyCon noSrcSpan (UnQual noSrcSpan  (Ident noSrcSpan "POST")))) (TyCon noSrcSpan (UnQual noSrcSpan  (Ident noSrcSpan "EdiToJsonR")))) (TyCon noSrcSpan (UnQual noSrcSpan  (Ident noSrcSpan "EdiStr"))),
-                InsType noSrcSpan (TyApp noSrcSpan (TyApp noSrcSpan (TyCon noSrcSpan (UnQual noSrcSpan (Ident noSrcSpan"QueryParam"))) (TyCon noSrcSpan (UnQual noSrcSpan  (Ident noSrcSpan "POST")))) (TyCon noSrcSpan (UnQual noSrcSpan  (Ident noSrcSpan "EdiToJsonR")))) (TyApp noSrcSpan (TyCon noSrcSpan  (UnQual noSrcSpan (Ident noSrcSpan "Maybe"))) (TyCon noSrcSpan (UnQual noSrcSpan (Ident noSrcSpan "CharacterSet"))))])
+        apiInstanceDeclaration instanceTopVec instanceTypeVec, 
+        fromParamInstanceDecl fromParamVec
+            
         ]
-  in writeFile "sampleFiles/codeGen.hs" $ prettyPrint hModule
+  in writeFile "webapi-swagger/sampleFiles/codeGen.hs" $ prettyPrint hModule
 
 -- Support multiple versions of GHC (Use ifndef )
 -- for LTS 9.0 -> 1.18.2
@@ -158,7 +107,7 @@ constructorDeclaration constructorName innerRecords =
   [QualConDecl noSrcSpan Nothing Nothing (RecDecl noSrcSpan (nameDecl constructorName) (fmap fieldDecl innerRecords) )] 
 
 nameDecl :: String -> Name SrcSpanInfo
-nameDecl name = Ident noSrcSpan name
+nameDecl = Ident noSrcSpan 
 
 fieldDecl :: (String, String) -> FieldDecl SrcSpanInfo
 fieldDecl (fieldName, fieldType) = 
@@ -170,15 +119,76 @@ derivingDecl derivingList = Deriving noSrcSpan $ fmap iRule derivingList
   iRule tClass = IRule noSrcSpan Nothing Nothing (IHCon noSrcSpan (UnQual noSrcSpan (nameDecl tClass)))
 
 emptyDataDeclaration :: String -> Decl SrcSpanInfo
-emptyDataDeclaration name = 
+emptyDataDeclaration declName = 
   DataDecl noSrcSpan 
     (DataType noSrcSpan) 
     Nothing
-    (declarationHead name) 
+    (declarationHead declName) 
     []
     Nothing
 
+languageExtension :: String -> ModulePragma SrcSpanInfo
+languageExtension langExtName = LanguagePragma noSrcSpan [nameDecl langExtName]
 
+
+-- Modules imported as *NOT qualified* by default for now
+moduleImport :: (Bool, String) -> String -> ImportDecl SrcSpanInfo
+moduleImport (isQualified, qualifiedName) moduleName  = ImportDecl {importAnn = noSrcSpan, importModule = ModuleName noSrcSpan moduleName, importQualified = False, importSrc = False, importSafe = False, importPkg = Nothing, importAs = Nothing, importSpecs = Nothing}
+
+
+apiInstanceDeclaration :: Vector 4 String -> [Vector 4 String] -> Decl SrcSpanInfo
+apiInstanceDeclaration topLevelDecl innerTypesInstList = 
+  InstDecl noSrcSpan Nothing 
+    (IRule noSrcSpan Nothing Nothing
+      (IHApp noSrcSpan 
+        (IHApp noSrcSpan 
+          (IHApp noSrcSpan 
+            (instanceHead (SV.index topLevelDecl (Finite 0) ) )
+            (typeConstructor $ SV.index topLevelDecl (Finite 1)  )
+          )
+          (typeConstructor $ SV.index topLevelDecl (Finite 2)  )
+        ) 
+        (typeConstructor $ SV.index topLevelDecl (Finite 3) )
+      ) 
+    ) (Just $ fmap apiInstanceTypeDecl innerTypesInstList)
+
+
+apiInstanceTypeDecl :: Vector 4 String -> InstDecl SrcSpanInfo 
+apiInstanceTypeDecl innerTypes =
+  InsType noSrcSpan
+    (TyApp noSrcSpan
+        (TyApp noSrcSpan
+          (typeConstructor (SV.index innerTypes (Finite 0) ) )
+          (typeConstructor (SV.index innerTypes (Finite 1) ) )
+        )
+      (typeConstructor (SV.index innerTypes (Finite 2) ) )
+    )
+    (typeConstructor (SV.index innerTypes (Finite 3) ) )
+
+instanceHead :: String -> InstHead SrcSpanInfo
+instanceHead instName = (IHCon noSrcSpan
+                          (UnQual noSrcSpan $ nameDecl instName)
+                        ) 
+
+
+typeConstructor :: String -> Type SrcSpanInfo
+typeConstructor typeConName = (TyCon noSrcSpan  
+                                (UnQual noSrcSpan $ nameDecl typeConName)
+                              )
+
+fromParamInstanceDecl :: Vector 3 String -> Decl SrcSpanInfo 
+fromParamInstanceDecl instTypes = 
+  InstDecl noSrcSpan Nothing 
+      (IRule noSrcSpan Nothing Nothing 
+        (IHApp noSrcSpan 
+          (IHApp noSrcSpan 
+            (instanceHead $ SV.index instTypes (Finite 0) )
+            (TyPromoted noSrcSpan (PromotedCon noSrcSpan True (UnQual noSrcSpan (nameDecl $ SV.index instTypes (Finite 1) ))))
+          )
+          (typeConstructor $ SV.index instTypes (Finite 2) )
+          )
+        ) 
+      Nothing
 
 
 ---------------------------------------------------------------------------------------

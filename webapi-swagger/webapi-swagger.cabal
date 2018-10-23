@@ -39,6 +39,9 @@ library
     , directory
     , filepath
     , webapi
+    , vector-sized
+    , safe
+    , finite-typelits
   default-language: Haskell2010
   ghc-options: -Wall -Werror
 
