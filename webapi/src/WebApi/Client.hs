@@ -48,7 +48,7 @@ module WebApi.Client
 
 import           Blaze.ByteString.Builder              (toByteString)
 import           Control.Exception
-import           Data.ByteString.Lazy                  (ByteString, fromChunks, fromStrict)
+import           Data.ByteString.Lazy                  (ByteString, fromStrict)
 import qualified Data.ByteString                       as B
 import qualified Data.ByteString                       as B (concat)
 import           Data.Either                           (isRight)

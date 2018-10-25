@@ -67,7 +67,6 @@ import WebApi.Contract
 import WebApi.Internal
 import WebApi.Param
 import WebApi.Util
-import GHC.Exts
 
 -- | Datatype representing a endpoint.
 data Route (ms :: [*]) (r :: *)
