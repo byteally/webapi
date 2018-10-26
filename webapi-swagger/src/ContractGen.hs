@@ -3,6 +3,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE TypeFamilies #-}
 
 
 
@@ -60,27 +61,13 @@ readSwaggerJSON = do
   processPathItem :: PathItem -> Map.Map StdMethod ApiTypeDetails ->  StdMethod -> Map.Map StdMethod ApiTypeDetails
   processPathItem pathItem methodDataAcc currentMethod = 
     case currentMethod of
-      GET -> 
-        let mGetData = _pathItemGet pathItem
-        in (processOperation methodDataAcc) GET mGetData
-      PUT -> 
-        let mPutData = _pathItemPut pathItem
-        in (processOperation methodDataAcc) PUT mPutData
-      POST -> 
-        let mPostData = _pathItemPost pathItem
-        in (processOperation methodDataAcc) POST mPostData
-      DELETE -> 
-        let mDeleteData = _pathItemDelete pathItem
-        in (processOperation methodDataAcc) DELETE mDeleteData
-      OPTIONS -> 
-        let mOptionsData = _pathItemOptions pathItem
-        in (processOperation methodDataAcc) OPTIONS mOptionsData
-      HEAD -> 
-        let mHeadData = _pathItemHead pathItem
-        in (processOperation methodDataAcc) HEAD mHeadData
-      PATCH -> 
-        let mPatchData = _pathItemPatch pathItem
-        in (processOperation methodDataAcc) PATCH mPatchData
+      GET -> (processOperation methodDataAcc) GET $ _pathItemGet pathItem
+      PUT -> (processOperation methodDataAcc) PUT $ _pathItemPut pathItem
+      POST -> (processOperation methodDataAcc) POST $ _pathItemPost pathItem
+      DELETE -> (processOperation methodDataAcc) DELETE $ _pathItemDelete pathItem
+      OPTIONS -> (processOperation methodDataAcc) OPTIONS $ _pathItemOptions pathItem
+      HEAD -> (processOperation methodDataAcc) HEAD $ _pathItemHead pathItem
+      PATCH -> (processOperation methodDataAcc) PATCH $ _pathItemPatch pathItem
   processOperation :: Map.Map StdMethod ApiTypeDetails -> StdMethod -> Maybe Operation -> Map.Map StdMethod ApiTypeDetails
   processOperation methodAcc stdMethod mOperationData = 
     case mOperationData of
