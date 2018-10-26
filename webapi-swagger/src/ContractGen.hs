@@ -33,6 +33,88 @@ import Data.Swagger.Declare
 import Data.Swagger.Lens
 import Data.Swagger.Operation
 
+data NewData = NewData
+  {
+    mName :: String
+  , mRecordTypes :: InnerRecords
+  } deriving (Eq, Show)
+
+
+  -- ("Tag",Schema 
+  --             {_schemaTitle = Nothing, 
+  --             _schemaDescription = Nothing, 
+  --             _schemaRequired = [], 
+  --             _schemaAllOf = Nothing, 
+  --             _schemaProperties = fromList [
+  --                 ("name",Inline (
+  --                   Schema {
+  --                     _schemaTitle = Nothing, 
+  --                     _schemaDescription = Nothing, 
+  --                     _schemaRequired = [], 
+  --                     _schemaAllOf = Nothing, 
+  --                     _schemaProperties = fromList [], 
+  --                     _schemaAdditionalProperties = Nothing, 
+  --                     _schemaDiscriminator = Nothing, 
+  --                     _schemaReadOnly = Nothing, 
+  --                     _schemaXml = Nothing, 
+  --                     _schemaExternalDocs = Nothing, 
+  --                     _schemaExample = Nothing, 
+  --                     _schemaMaxProperties = Nothing, 
+  --                     _schemaMinProperties = Nothing, 
+  --                     _schemaParamSchema = ParamSchema {
+  --                                           _paramschemadefault = Nothing, 
+  --                                           _paramSchemaType = SwaggerString, 
+  --                                           _paramSchemaFormat = Nothing, 
+  --                                           _paramSchemaItems = Nothing, 
+  --                                           _paramSchemaMaximum = Nothing, 
+  --                                           _paramSchemaExclusiveMaximum = Nothing, 
+  --                                           _paramSchemaMinimum = Nothing, 
+  --                                           _paramSchemaExclusiveMinimum = Nothing, 
+  --                                           _paramSchemaMaxLength = Nothing, 
+  --                                           _paramSchemaMinLength = Nothing, 
+  --                                           _paramSchemaPattern = Nothing, 
+  --                                           _paramSchemaMaxItems = Nothing, 
+  --                                           _paramSchemaMinItems = Nothing, 
+  --                                           _paramSchemaUniqueItems = Nothing, 
+  --                                           _paramSchemaEnum = Nothing, 
+  --                                           _paramSchemaMultipleOf = Nothing}}))
+  -- ,("id",Inline (Schema {_schemaTitle = Nothing, _schemaDescription = Nothing, _schemaRequired = [], _schemaAllOf = Nothing, _schemaProperties = fromList [], _schemaAdditionalProperties = Nothing, _schemaDiscriminator = Nothing, _schemaReadOnly = Nothing, _schemaXml = Nothing, _schemaExternalDocs = Nothing, _schemaExample = Nothing, _schemaMaxProperties = Nothing, _schemaMinProperties = Nothing, _schemaParamSchema = ParamSchema {_paramSchemaDefault = Nothing, _paramSchemaType = SwaggerInteger, _paramSchemaFormat = Just "int64", _paramSchemaItems = Nothing, _paramSchemaMaximum = Nothing, _paramSchemaExclusiveMaximum = Nothing, _paramSchemaMinimum = Nothing, _paramSchemaExclusiveMinimum = Nothing, _paramSchemaMaxLength = Nothing, _paramSchemaMinLength = Nothing, _paramSchemaPattern = Nothing, _paramSchemaMaxItems = Nothing, _paramSchemaMinItems = Nothing, _paramSchemaUniqueItems = Nothing, _paramSchemaEnum = Nothing, _paramSchemaMultipleOf = Nothing}}))], _schemaAdditionalProperties = Nothing, _schemaDiscriminator = Nothing, _schemaReadOnly = Nothing, _schemaXml = Just (Xml {_xmlName = Just "Tag", _xmlNamespace = Nothing, _xmlPrefix = Nothing, _xmlAttribute = Nothing, _xmlWrapped = Nothing}), _schemaExternalDocs = Nothing, _schemaExample = Nothing, _schemaMaxProperties = Nothing, _schemaMinProperties = Nothing, _schemaParamSchema = ParamSchema {_paramSchemaDefault = Nothing, _paramSchemaType = SwaggerObject, _paramSchemaFormat = Nothing, _paramSchemaItems = Nothing, _paramSchemaMaximum = Nothing, _paramSchemaExclusiveMaximum = Nothing, _paramSchemaMinimum = Nothing, _paramSchemaExclusiveMinimum = Nothing, _paramSchemaMaxLength = Nothing, _paramSchemaMinLength = Nothing, _paramSchemaPattern = Nothing, _paramSchemaMaxItems = Nothing, _paramSchemaMinItems = Nothing, _paramSchemaUniqueItems = Nothing, _paramSchemaEnum = Nothing, _paramSchemaMultipleOf = Nothing}})
+
+generateSwaggerDefinitionData :: InsOrdHashMap Text Schema -> [NewData]
+generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition [] defDataHM
+ where 
+  parseSwaggerDefinition :: [NewData] -> Text -> Schema -> [NewData]
+  parseSwaggerDefinition accValue modelName modelSchema = 
+    let (schemaProperties::InsOrdHashMap Text (Referenced Schema) ) = _schemaProperties modelSchema
+        recordNamesAndTypes = foldlWithKey' (\accList innerRecord iRefSchema -> 
+            let innerRecordName = toS $ T.append (T.toLower modelName) $ T.toTitle innerRecord
+                innerRecordType = 
+                  case iRefSchema of
+                    Ref referenceName -> toS $ getReference referenceName
+                    Inline irSchema -> getPrimitiveTypeFromInlineSchema irSchema
+            in (innerRecordName, innerRecordType):accList ) [] schemaProperties
+    in (NewData (toS modelName) recordNamesAndTypes):accValue
+
+
+
+readSwaggerGenerateDefnModels :: IO () 
+readSwaggerGenerateDefnModels = do 
+  petstoreJSONContents <- BSL.readFile "webapi-swagger/sampleFiles/swagger-petstore-ex.json"
+  let decodedVal = eitherDecode petstoreJSONContents -- :: Either String Data.Swagger.Internal.Swagger
+  case decodedVal of
+    Left errMsg -> putStrLn errMsg
+    Right (swaggerData :: Swagger) -> 
+      let hModule = 
+            Module noSrcSpan 
+              (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
+              (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
+              (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics"])
+              (createDataDeclarations (generateSwaggerDefinitionData (_swaggerDefinitions swaggerData) ) )
+      in writeFile "webapi-swagger/sampleFiles/modelGenTest.hs" $ prettyPrint hModule
+ where 
+  createDataDeclarations :: [NewData] -> [Decl SrcSpanInfo]
+  createDataDeclarations newDataList = fmap (\newDataInfo -> dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show"] ) newDataList
+ 
 
 readSwaggerJSON :: IO()
 readSwaggerJSON = do
@@ -87,19 +169,13 @@ readSwaggerJSON = do
   parseResponseContentGetType refResponse = 
     case refResponse of
       Ref refText -> toS $ getReference refText
-      Inline responseSchema -> -- getPrimitiveTypeFromInlineSchema responseSchema
+      Inline responseSchema -> 
         case (_responseSchema responseSchema) of
           Just (Ref refText) -> toS $ getReference refText
           Just (Inline respSchema) -> getPrimitiveTypeFromInlineSchema respSchema
           Nothing -> "String"
 
-  getPrimitiveTypeFromInlineSchema rSchema = 
-    case ( (_paramSchemaType .  _schemaParamSchema) rSchema) of
-      SwaggerString -> "String"
-      SwaggerNumber -> "Int"
-      SwaggerInteger -> "Integer"
-      SwaggerBoolean -> "Bool"
-      -- SwaggerArray ->
+          
 
   -- checkIfNewType :: (StateT [CreateNewType] IO n) => String -> String -> StateT IO String 
   -- checkIfNewType existingType currentType = if (existingType == currentType)
@@ -108,7 +184,32 @@ readSwaggerJSON = do
   --                                             -- modify' call to add to StateT here
   --                                             pure currentType
 
-
+getPrimitiveTypeFromInlineSchema :: Schema -> String 
+getPrimitiveTypeFromInlineSchema rSchema = 
+    case ( (_paramSchemaType .  _schemaParamSchema) rSchema) of
+      SwaggerString -> "String" -- add check here for the enum field in param and accordingly create new sumtype/add to StateT and return its name.
+      SwaggerNumber -> "Int"
+      SwaggerInteger -> "Integer"
+      SwaggerBoolean -> "Bool"
+      -- As per the pattern in `PetStore`, for SwaggerArray, we check the Param Schema Items field and look for a reference Name there.
+      SwaggerArray -> case ( _paramSchemaItems . _schemaParamSchema) rSchema of
+                        Just (SwaggerItemsObject obj) -> 
+                          case obj of
+                            Ref reference -> "[" ++ (toS $ getReference reference) ++ "]"
+                            Inline recursiveSchema -> "[" ++ (getPrimitiveTypeFromInlineSchema recursiveSchema) ++ "]"
+                        Just (SwaggerItemsArray innerArray) -> checkIfArray $ flip fmap innerArray (\singleElem -> 
+                          case singleElem of
+                            Ref ref -> toS $ getReference ref
+                            Inline innerSchema -> getPrimitiveTypeFromInlineSchema innerSchema) 
+                        -- Just (SwaggerItemsPrimitive ) -- TODO : Discuss possibility of primitive (query param or similar) here and how it should be handled.
+                        Nothing -> error "Expected a SwaggerItems type due to SwaggerArray ParamSchema Type. But it did not find any! Please check the swagger spec!"
+      -- SwaggerObject -> TODO: Is this possible? Having custom models should mean that this does not get used? 
+      x -> ("Got Unexpected Primitive Value : " ++ show x)
+ where 
+  checkIfArray stringList =  
+    case DL.nub stringList of
+      sameElem:[] -> "[" ++ sameElem ++ "]"
+      x -> error $ "Got different types in the same list. Not sure how to proceed! Please check the swagger doc! " ++ show x
     
 data ContractDetails = ContractDetails
   {
@@ -132,10 +233,53 @@ data ApiTypeDetails = ApiTypeDetails
 
 data CreateNewType = SumType String [String] | NType String [(String, String)] 
   deriving (Eq, Show)
-  -- {
-  --   newTypeName :: String
-  -- , newTypeRecordTypes :: [(String, String)]
-  -- }
+
+
+    -- _operationParameters = 
+    --   [Inline (Param {
+    --             _paramName = "status", 
+    --             _paramDescription = Just "Status values that need to be considered for filter", 
+    --             _paramRequired = Just True, 
+    --             _paramSchema = ParamOther (ParamOtherSchema {
+    --                                         _paramOtherSchemaIn = ParamQuery, 
+    --                                         _paramOtherSchemaAllowEmptyValue = Nothing, 
+    --                                         _paramOtherSchemaParamSchema = ParamSchema {
+    --                                                                         _paramSchemaDefault = Nothing, 
+    --                                                                         _paramSchemaType = SwaggerArray, 
+    --                                                                         _paramSchemaFormat = Nothing, 
+    --                                                                         _paramSchemaItems = Just (SwaggerItemsPrimitive (Just CollectionMulti) (ParamSchema {
+    --                                                                                                                                                 _paramSchemaDefault = Just (String "available"), 
+    --                                                                                                                                                 _paramSchemaType = SwaggerString, 
+    --                                                                                                                                                 _paramSchemaFormat = Nothing, 
+    --                                                                                                                                                 _paramSchemaItems = Nothing, 
+    --                                                                                                                                                 _paramSchemaMaximum = Nothing, 
+    --                                                                                                                                                 _paramSchemaExclusiveMaximum = Nothing, 
+    --                                                                                                                                                 _paramSchemaMinimum = Nothing, 
+    --                                                                                                                                                 _paramSchemaExclusiveMinimum = Nothing, 
+    --                                                                                                                                                 _paramSchemaMaxLength = Nothing, 
+    --                                                                                                                                                 _paramSchemaMinLength = Nothing, 
+    --                                                                                                                                                 _paramSchemaPattern = Nothing, 
+    --                                                                                                                                                 _paramSchemaMaxItems = Nothing, 
+    --                                                                                                                                                 _paramSchemaMinItems = Nothing, 
+    --                                                                                                                                                 _paramSchemaUniqueItems = Nothing, 
+    --                                                                                                                                                 _paramSchemaEnum = Just [String "available",String "pending",String "sold"], 
+    --                                                                                                                                                 _paramSchemaMultipleOf = Nothing})), 
+    --                                         _paramSchemaMaximum = Nothing, 
+    --                                         _paramSchemaExclusiveMaximum = Nothing, 
+    --                                         _paramSchemaMinimum = Nothing, 
+    --                                         _paramSchemaExclusiveMinimum = Nothing, 
+    --                                         _paramSchemaMaxLength = Nothing, 
+    --                                         _paramSchemaMinLength = Nothing, 
+    --                                         _paramSchemaPattern = Nothing, 
+    --                                         _paramSchemaMaxItems = Nothing, 
+    --                                         _paramSchemaMinItems = Nothing, 
+    --                                         _paramSchemaUniqueItems = Nothing, 
+    --                                         _paramSchemaEnum = Nothing, 
+    --                                         _paramSchemaMultipleOf = Nothing}})})], 
+    -- _operationResponses = Responses {_responsesDefault = Nothing, _responsesResponses = fromList [(400,Inline (Response {_responseDescription = "Invalid status value", _responseSchema = Nothing, _responseHeaders = fromList [], _responseExamples = Nothing})),(200,Inline (Response {_responseDescription = "successful operation", _responseSchema = Just (Inline (Schema {_schemaTitle = Nothing, _schemaDescription = Nothing, _schemaRequired = [], _schemaAllOf = Nothing, _schemaProperties = fromList [], _schemaAdditionalProperties = Nothing, _schemaDiscriminator = Nothing, _schemaReadOnly = Nothing, _schemaXml = Nothing, _schemaExternalDocs = Nothing, _schemaExample = Nothing, _schemaMaxProperties = Nothing, _schemaMinProperties = Nothing, _schemaParamSchema = ParamSchema {_paramSchemaDefault = Nothing, _paramSchemaType = SwaggerArray, _paramSchemaFormat = Nothing, _paramSchemaItems = Just (SwaggerItemsObject (Ref (Reference {getReference = "Pet"}))), _paramSchemaMaximum = Nothing, _paramSchemaExclusiveMaximum = Nothing, _paramSchemaMinimum = Nothing, _paramSchemaExclusiveMinimum = Nothing, _paramSchemaMaxLength = Nothing, _paramSchemaMinLength = Nothing, _paramSchemaPattern = Nothing, _paramSchemaMaxItems = Nothing, _paramSchemaMinItems = Nothing, _paramSchemaUniqueItems = Nothing, _paramSchemaEnum = Nothing, _paramSchemaMultipleOf = Nothing}})), _responseHeaders = fromList [], _responseExamples = Nothing}))]}, 
+    -- _operationSchemes = Nothing, 
+    -- _operationDeprecated = Nothing, 
+    -- _operationSecurity = [SecurityRequirement {getSecurityRequirement = fromList [("petstore_auth",["write:pets","read:pets"])]}
 
   -- _swaggerPaths = fromList [("/user/logout",PathItem {_pathItemGet = Just (Operation {_operationTags = fromList ["user"], _operationSummary = Just "Logs out current logged in user session", _operationDescription = Just "", _operationExternalDocs = Nothing, _operationOperationId = Just "logoutUser", _operationConsumes = Nothing, _operationProduces = Just (MimeList {getMimeList = [application/xml,application/json]}), _operationParameters = [], _operationResponses = Responses {_responsesDefault = Just (Inline (Response {_responseDescription = "successful operation", _responseSchema = Nothing, _responseHeaders = fromList [], _responseExamples = Nothing})), _responsesResponses = fromList []}, _operationSchemes = Nothing, _operationDeprecated = Nothing, _operationSecurity = []}), _pathItemPut = Nothing, _pathItemPost = Nothing, _pathItemDelete = Nothing, _pathItemOptions = Nothing, _pathItemHead = Nothing, _pathItemPatch = Nothing, _pathItemParameters = []})
   --   ,("/pet/findByStatus",PathItem {_pathItemGet = Just 
