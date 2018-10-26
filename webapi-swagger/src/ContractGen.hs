@@ -4,6 +4,8 @@
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE FlexibleContexts #-}
+
 
 
 
@@ -26,7 +28,7 @@ import Data.Maybe
 import Data.List.Split as DLS (splitOn)
 import qualified Data.List as DL
 import Data.String.Conv
-import qualified Data.Map as Map
+import qualified Data.Map.Lazy as Map
 
 import Data.Swagger
 import Data.Swagger.Declare
@@ -100,6 +102,7 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition [
 readSwaggerGenerateDefnModels :: IO () 
 readSwaggerGenerateDefnModels = do 
   petstoreJSONContents <- BSL.readFile "webapi-swagger/sampleFiles/swagger-petstore-ex.json"
+  contractDetailsFromPetstore <- readSwaggerJSON
   let decodedVal = eitherDecode petstoreJSONContents -- :: Either String Data.Swagger.Internal.Swagger
   case decodedVal of
     Left errMsg -> putStrLn errMsg
@@ -109,37 +112,42 @@ readSwaggerGenerateDefnModels = do
               (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
               (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
               (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics"])
-              (createDataDeclarations (generateSwaggerDefinitionData (_swaggerDefinitions swaggerData) ) )
+              ((createDataDeclarations (generateSwaggerDefinitionData (_swaggerDefinitions swaggerData) ) ) ++ generateContractBody "Petstore" contractDetailsFromPetstore)
       in writeFile "webapi-swagger/sampleFiles/modelGenTest.hs" $ prettyPrint hModule
  where 
   createDataDeclarations :: [NewData] -> [Decl SrcSpanInfo]
   createDataDeclarations newDataList = fmap (\newDataInfo -> dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show"] ) newDataList
  
 
-readSwaggerJSON :: IO()
+-- generateCodeFromContractDetails :: [ContractDetails] -> [Decl SrcSpanInfo]
+-- generateCodeFromContractDetails contractDetails = fmap ()
+
+
+readSwaggerJSON :: IO [ContractDetails]
 readSwaggerJSON = do
   petstoreJSONContents <- BSL.readFile "webapi-swagger/sampleFiles/swagger-petstore-ex.json"
   let decodedVal = eitherDecode petstoreJSONContents -- :: Either String Data.Swagger.Internal.Swagger
   case decodedVal of
-    Left errMsg -> putStrLn errMsg
+    Left errMsg -> error errMsg
     Right (swaggerData :: Swagger) -> do
       case HMSIns.toList $ _swaggerPaths swaggerData of 
         -- (filePath, pathInfo):xs -> putStrLn $ show pathInfo
-        swData -> putStrLn $ show swaggerData
+        -- swData -> putStrLn $ show swaggerData
         _ -> putStrLn "Paths are empty? Empty list encountered!" 
+      pure $ HMSIns.foldlWithKey' (parseSwaggerPaths (_swaggerDefinitions swaggerData) ) [] (_swaggerPaths swaggerData)
  where
-  parseSwaggerPaths :: Maybe FilePath -> Definitions Schema -> [ContractDetails] -> FilePath -> PathItem -> [ContractDetails]
-  parseSwaggerPaths mBaseFilePath (swaggerSchema:: InsOrdHashMap Text Schema) contractDetailsList swFilePath swPathDetails = 
+  parseSwaggerPaths :: Definitions Schema -> [ContractDetails] -> FilePath -> PathItem -> [ContractDetails]
+  parseSwaggerPaths (swaggerSchema:: InsOrdHashMap Text Schema) contractDetailsList swFilePath swPathDetails = 
     let currentRouteId = case contractDetailsList of 
           [] -> 1
           xs -> (routeId $ Prelude.head contractDetailsList) + 1
-        mainRouteName = "Route" ++ show currentRouteId  -- (fromMaybe "" mBaseFilePath) 
+        mainRouteName = "Route" ++ show currentRouteId 
         currentRoutePath = DLS.splitOn "/" swFilePath
-        -- methodData = processPathItem swPathDetails
         methodList = [GET, PUT, POST, PATCH, DELETE, OPTIONS, HEAD]
         currentMethodData = DL.foldl' (processPathItem swPathDetails) Map.empty methodList
         currentContractDetails = ContractDetails currentRouteId mainRouteName currentRoutePath currentMethodData
     in currentContractDetails:contractDetailsList
+
   processPathItem :: PathItem -> Map.Map StdMethod ApiTypeDetails ->  StdMethod -> Map.Map StdMethod ApiTypeDetails
   processPathItem pathItem methodDataAcc currentMethod = 
     case currentMethod of
@@ -159,7 +167,7 @@ readSwaggerJSON = do
             (apiOutType, apiErrType) = getApiType apiResponses
         in Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType Nothing Nothing) methodAcc
       Nothing -> methodAcc
-  getApiType :: InsOrdHashMap HttpStatusCode (Referenced Response)  -> (String, String) -- (Either [CreateNewType String [(String,String)]] String, Either [CreateNewType String [(String,String)]] String)
+  getApiType :: InsOrdHashMap HttpStatusCode (Referenced Response)  -> (String, String)
   getApiType responsesHM = foldlWithKey' (\(apiOutType, apiErrType) currentCode currentResponse -> 
         case () of _
                     | currentCode >= 200 && currentCode <= 208 -> ({-checkIfNewType apiOutType $-} parseResponseContentGetType currentResponse, apiErrType)
@@ -338,6 +346,33 @@ instanceTypeVec = [
 fromParamVec :: Vector 3 String
 fromParamVec = fromJustNote "Expected a list with 3 elements for WebApi instance!" $ SV.fromList ["FromParam", "FormParam", "EdiStr"]
 
+generateContractBody :: String -> [ContractDetails] -> [Decl SrcSpanInfo]
+generateContractBody contractName contractDetails = 
+  [emptyDataDeclaration contractName] ++ flip fmap contractDetails (\cDetail -> routeDeclaration (routeName cDetail) (routePath cDetail) ) ++ 
+    [webApiInstance contractName (fmap (\ctDetail -> (routeName ctDetail , fmap show (Map.keys $ methodData ctDetail))) contractDetails ) ] ++
+    (fmap (\(topVec, innerVecList) -> apiInstanceDeclaration topVec innerVecList ) $ DL.concat $ fmap (constructVectorForRoute contractName) contractDetails)
+    
+    
+ where
+  constructVectorForRoute :: String -> ContractDetails -> [(Vector 4 String, [Vector 4 String])] 
+  constructVectorForRoute contractName ctrDetails = 
+    let currentRouteName = routeName ctrDetails
+    in Map.foldlWithKey' (routeDetailToVector contractName currentRouteName) [] (methodData ctrDetails)
+  routeDetailToVector :: String -> String -> [(Vector 4 String, [Vector 4 String])] -> StdMethod -> ApiTypeDetails -> [(Vector 4 String, [Vector 4 String])]
+  routeDetailToVector contractName routeName accValue currentMethod apiDetails = 
+    let topLevelVector = fromMaybeSV $ SV.fromList ["ApiContract", contractName, (show currentMethod), routeName]
+        errType = apiErr apiDetails
+        respType = apiOut apiDetails
+        -- TODO: add checks for query, form param here
+        formParamType = []
+        queryParamType = []
+        -- Add remaining types and checks for them
+        -- TODO : There's a flaw in the processing of the next line ... where the lists are being zipped. Need to handle absence of Form Param/Query param properly! **CRITICAL**
+        instanceVectorList = fmap (\(typeInfo, typeLabel) -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeName, typeInfo] ) $ DL.zip (respType:errType:formParamType:queryParamType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam"]
+    in (topLevelVector, instanceVectorList):accValue
+  fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
+
+
 printHaskellModule :: IO()
 printHaskellModule = 
   let hModule = Module noSrcSpan (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
@@ -353,8 +388,8 @@ printHaskellModule =
         routeDeclaration "PathAfterThat" ["convert", "fromJson", "nextPath", "pathAfterThat"],
         routeDeclaration "YaPath" ["convert", "fromJson", "somePath", "anotherPath", "yaPathHere"],
         apiInstanceDeclaration instanceTopVec instanceTypeVec, 
-        fromParamInstanceDecl fromParamVec
-            
+        fromParamInstanceDecl fromParamVec,
+        webApiInstance "EDITranslatorApi" [("EdiToJsonR", ["POST", "PUT", "GET"]), ("EdiFromJsonR", ["GET", "POST"])]
         ]
   in writeFile "webapi-swagger/sampleFiles/codeGen.hs" $ prettyPrint hModule
 
@@ -505,54 +540,41 @@ routeDeclaration routeName routePathComponents =
     (recursiveTypeForRoute routePathComponents)
 
 
--- webApiInstance :: String -> []
--- webApiInstance mainTypeName 
---   InstDecl noSrcSpan Nothing 
---     (IRule noSrcSpan Nothing Nothing 
---       (IHApp noSrcSpan 
---         (instanceHead "WebApi") -- TODO: confirm that this will always remain the same.
---         (typeConstructor mainTypeName) 
---       )
---     ) 
---     (Just 
---       [InsType noSrcSpan 
---         (TyApp noSrcSpan 
---           (typeConstructor "Apis")
---           (typeConstructor mainTypeName)
---         ) 
---         (TyPromoted noSrcSpan 
---           (PromotedList noSrcSpan True 
---             [TyApp noSrcSpan 
---               (TyApp noSrcSpan 
---                 (typeConstructor "Route") 
---                 (TyPromoted noSrcSpan 
---                   (PromotedList noSrcSpan True 
---                     [typeConstructor "POST"]               
---                   )
---                 )
---               ) 
---               (typeConstructor "EdiToJsonR")
---             ]
---           )
---         )
---       ]
---     )
---  where
-  -- maybe we can restrict it to a sum type for the method by using a WebApi type?
-  -- innerRouteInstance :: [(String, String)] -> _
-  -- innerRouteInstance routeList = 
-  --   flip $ fmap routeList (\(method, routeName) -> 
-  --     TyApp noSrcSpan 
-  --       (TyApp noSrcSpan 
-  --         (typeConstructor "Route") 
-  --         (TyPromoted noSrcSpan 
-  --           (PromotedList noSrcSpan True 
-  --             [typeConstructor method]               
-  --           )
-  --         )
-  --       ) 
-  --       (typeConstructor routeName)
-  --   )
+webApiInstance :: String -> [(String, [String])] -> Decl SrcSpanInfo
+webApiInstance mainTypeName routeAndMethods =
+  InstDecl noSrcSpan Nothing 
+    (IRule noSrcSpan Nothing Nothing 
+      (IHApp noSrcSpan 
+        (instanceHead "WebApi") -- TODO: confirm that this will always remain the same.
+        (typeConstructor mainTypeName) 
+      )
+    ) 
+    (Just 
+      [InsType noSrcSpan 
+        (TyApp noSrcSpan 
+          (typeConstructor "Apis")
+          (typeConstructor mainTypeName)
+        ) 
+        (TyPromoted noSrcSpan 
+          (PromotedList noSrcSpan True 
+            (fmap innerRouteInstance routeAndMethods)
+          )
+        )
+      ]
+    )
+ where
+  innerRouteInstance :: (String, [String]) -> Type SrcSpanInfo
+  innerRouteInstance (rName, listOfMethods) =
+      TyApp noSrcSpan 
+        (TyApp noSrcSpan 
+          (typeConstructor "Route") 
+          (TyPromoted noSrcSpan 
+            (PromotedList noSrcSpan True 
+              (fmap typeConstructor listOfMethods)               
+            )
+          )
+        ) 
+        (typeConstructor rName)
 
 ---------------------------------------------------------------------------------------
 #if MIN_VERSION_haskell_src_exts(1,20,0)
