@@ -29,6 +29,7 @@ import Data.List.Split as DLS (splitOn)
 import qualified Data.List as DL
 import Data.String.Conv
 import qualified Data.Map.Lazy as Map
+import qualified Data.Char as Char
 
 import Data.Swagger
 import Data.Swagger.Declare
@@ -141,12 +142,20 @@ readSwaggerJSON = do
     let currentRouteId = case contractDetailsList of 
           [] -> 1
           xs -> (routeId $ Prelude.head contractDetailsList) + 1
-        mainRouteName = "Route" ++ show currentRouteId 
-        currentRoutePath = DLS.splitOn "/" swFilePath
+        splitRoutePath = DLS.splitOn "/" $ removeLeadingSlash swFilePath
+        mainRouteName = (DL.concat $ prettifyRouteName splitRoutePath) ++ "R"
+        currentRoutePath = splitRoutePath
         methodList = [GET, PUT, POST, PATCH, DELETE, OPTIONS, HEAD]
         currentMethodData = DL.foldl' (processPathItem swPathDetails) Map.empty methodList
         currentContractDetails = ContractDetails currentRouteId mainRouteName currentRoutePath currentMethodData
     in currentContractDetails:contractDetailsList
+  removeLeadingSlash inputRoute = fromMaybe inputRoute (DL.stripPrefix "/" inputRoute)
+  prettifyRouteName routeList = case ( routeList) of
+    [] -> error "Expected atleast one element in the route! Got an empty list!"
+    rList -> fmap (\(firstChar:remainingChar) -> (Char.toUpper firstChar):remainingChar ) $ fmap (DL.filter (\x -> not (x == '{' || x == '}') ) ) rList
+
+
+
 
   processPathItem :: PathItem -> Map.Map StdMethod ApiTypeDetails ->  StdMethod -> Map.Map StdMethod ApiTypeDetails
   processPathItem pathItem methodDataAcc currentMethod = 
@@ -167,12 +176,12 @@ readSwaggerJSON = do
             (apiOutType, apiErrType) = getApiType apiResponses
         in Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType Nothing Nothing) methodAcc
       Nothing -> methodAcc
-  getApiType :: InsOrdHashMap HttpStatusCode (Referenced Response)  -> (String, String)
+  getApiType :: InsOrdHashMap HttpStatusCode (Referenced Response)  -> (String, Maybe String)
   getApiType responsesHM = foldlWithKey' (\(apiOutType, apiErrType) currentCode currentResponse -> 
         case () of _
                     | currentCode >= 200 && currentCode <= 208 -> ({-checkIfNewType apiOutType $-} parseResponseContentGetType currentResponse, apiErrType)
-                    | currentCode >= 400 && currentCode <= 431 || currentCode >= 500 && currentCode <= 511 -> (apiOutType, {- checkIfNewType apiErrType $-} parseResponseContentGetType currentResponse)
-    ) ("String", "String") responsesHM  
+                    | currentCode >= 400 && currentCode <= 431 || currentCode >= 500 && currentCode <= 511 -> (apiOutType, {- checkIfNewType apiErrType $-} Just $ parseResponseContentGetType currentResponse)
+    ) ("String", Nothing) responsesHM  
   parseResponseContentGetType :: Referenced Response -> String
   parseResponseContentGetType refResponse = 
     case refResponse of
@@ -232,8 +241,8 @@ data ContractDetails = ContractDetails
 data ApiTypeDetails = ApiTypeDetails
   {
     -- TODO : Revisit this creation of new types /sum types to take care of more/all cases.
-    apiErr :: String
-  , apiOut :: String
+     apiOut :: String
+  , apiErr :: Maybe String
   , formParam :: Maybe String
   , queryParam :: Maybe String
   } deriving (Eq, Show)
@@ -361,14 +370,13 @@ generateContractBody contractName contractDetails =
   routeDetailToVector :: String -> String -> [(Vector 4 String, [Vector 4 String])] -> StdMethod -> ApiTypeDetails -> [(Vector 4 String, [Vector 4 String])]
   routeDetailToVector contractName routeName accValue currentMethod apiDetails = 
     let topLevelVector = fromMaybeSV $ SV.fromList ["ApiContract", contractName, (show currentMethod), routeName]
+        respType = Just $ apiOut apiDetails
         errType = apiErr apiDetails
-        respType = apiOut apiDetails
-        -- TODO: add checks for query, form param here
-        formParamType = []
-        queryParamType = []
+        -- TODO: add checks for query, form param here. Default `Nothing` for now
+        formParamType = Nothing
+        queryParamType = Nothing
         -- Add remaining types and checks for them
-        -- TODO : There's a flaw in the processing of the next line ... where the lists are being zipped. Need to handle absence of Form Param/Query param properly! **CRITICAL**
-        instanceVectorList = fmap (\(typeInfo, typeLabel) -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeName, typeInfo] ) $ DL.zip (respType:errType:formParamType:queryParamType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam"]
+        instanceVectorList = catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeName, tInfo] ) typeInfo) $ DL.zip (respType:errType:formParamType:queryParamType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam"]
     in (topLevelVector, instanceVectorList):accValue
   fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
 
@@ -393,8 +401,7 @@ printHaskellModule =
         ]
   in writeFile "webapi-swagger/sampleFiles/codeGen.hs" $ prettyPrint hModule
 
--- Support multiple versions of GHC (Use ifndef )
--- for LTS 9.0 -> 1.18.2
+
 
 type InnerRecords = [(String, String)]
 type DerivingClass = String  
@@ -408,8 +415,6 @@ dataDeclaration dataOrNew dataName innerRecords derivingList =
     (constructorDeclaration dataName innerRecords)
     (Just $ derivingDecl  derivingList)
 
-
--- fullDataDeclaration :: String -> 
 
 declarationHead :: String -> DeclHead SrcSpanInfo
 declarationHead declHeadName = (DHead noSrcSpan (Ident noSrcSpan declHeadName) )
@@ -506,7 +511,7 @@ recursiveTypeForRoute :: [String] -> Type SrcSpanInfo
 recursiveTypeForRoute routeComponents = 
   case routeComponents of
     [] -> error "Did not expect an empty list here! "
-    x:[] -> error "Expected atleast 2 elements in list! "
+    x:[] -> promotedType x
     prevElem:lastElem:[] -> 
       (TyInfix noSrcSpan 
         (promotedType prevElem)
@@ -577,6 +582,9 @@ webApiInstance mainTypeName routeAndMethods =
         (typeConstructor rName)
 
 ---------------------------------------------------------------------------------------
+-- Support multiple versions of GHC (Use ifndef )
+-- for LTS 9.0 -> 1.18.2
+
 #if MIN_VERSION_haskell_src_exts(1,20,0)
 -- for haskell-src-exts 1.20.x
 dataDeclaration :: Decl SrcSpanInfo
