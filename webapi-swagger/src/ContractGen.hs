@@ -30,6 +30,9 @@ import qualified Data.List as DL
 import Data.String.Conv
 import qualified Data.Map.Lazy as Map
 import qualified Data.Char as Char
+import Control.Monad
+import Control.Monad.Trans.State.Strict
+import Control.Monad.IO.Class
 
 import Data.Swagger
 import Data.Swagger.Declare
@@ -98,15 +101,18 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition [
             in (innerRecordName, innerRecordType):accList ) [] schemaProperties
     in (NewData (toS modelName) recordNamesAndTypes):accValue
 
+runCodeGen :: IO [CreateNewType]
+runCodeGen = execStateT readSwaggerGenerateDefnModels [] 
 
+type StateConfig = StateT [CreateNewType] IO ()
 
-readSwaggerGenerateDefnModels :: IO () 
+readSwaggerGenerateDefnModels :: StateConfig
 readSwaggerGenerateDefnModels = do 
-  petstoreJSONContents <- BSL.readFile "webapi-swagger/sampleFiles/swagger-petstore-ex.json"
-  contractDetailsFromPetstore <- readSwaggerJSON
+  petstoreJSONContents <- liftIO $ BSL.readFile "webapi-swagger/sampleFiles/swagger-petstore-ex.json"
+  contractDetailsFromPetstore <- readSwaggerJSON petstoreJSONContents
   let decodedVal = eitherDecode petstoreJSONContents -- :: Either String Data.Swagger.Internal.Swagger
   case decodedVal of
-    Left errMsg -> putStrLn errMsg
+    Left errMsg -> liftIO $ putStrLn errMsg
     Right (swaggerData :: Swagger) -> 
       let hModule = 
             Module noSrcSpan 
@@ -114,41 +120,32 @@ readSwaggerGenerateDefnModels = do
               (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
               (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics"])
               ((createDataDeclarations (generateSwaggerDefinitionData (_swaggerDefinitions swaggerData) ) ) ++ generateContractBody "Petstore" contractDetailsFromPetstore)
-      in writeFile "webapi-swagger/sampleFiles/modelGenTest.hs" $ prettyPrint hModule
+      in liftIO $ writeFile "webapi-swagger/sampleFiles/modelGenTest.hs" $ prettyPrint hModule
  where 
   createDataDeclarations :: [NewData] -> [Decl SrcSpanInfo]
   createDataDeclarations newDataList = fmap (\newDataInfo -> dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show"] ) newDataList
  
 
--- generateCodeFromContractDetails :: [ContractDetails] -> [Decl SrcSpanInfo]
--- generateCodeFromContractDetails contractDetails = fmap ()
-
-
-readSwaggerJSON :: IO [ContractDetails]
-readSwaggerJSON = do
-  petstoreJSONContents <- BSL.readFile "webapi-swagger/sampleFiles/swagger-petstore-ex.json"
-  let decodedVal = eitherDecode petstoreJSONContents -- :: Either String Data.Swagger.Internal.Swagger
+readSwaggerJSON :: BSL.ByteString -> StateT [CreateNewType] IO [ContractDetails]
+readSwaggerJSON petstoreJSONContents= do
+  let decodedVal = eitherDecode petstoreJSONContents
   case decodedVal of
     Left errMsg -> error errMsg
-    Right (swaggerData :: Swagger) -> do
-      case HMSIns.toList $ _swaggerPaths swaggerData of 
-        -- (filePath, pathInfo):xs -> putStrLn $ show pathInfo
-        -- swData -> putStrLn $ show swaggerData
-        _ -> putStrLn "Paths are empty? Empty list encountered!" 
-      pure $ HMSIns.foldlWithKey' (parseSwaggerPaths (_swaggerDefinitions swaggerData) ) [] (_swaggerPaths swaggerData)
+    Right (swaggerData :: Swagger) -> HMSIns.foldlWithKey' (parseSwaggerPaths (_swaggerDefinitions swaggerData) ) (pure []) (_swaggerPaths swaggerData)
  where
-  parseSwaggerPaths :: Definitions Schema -> [ContractDetails] -> FilePath -> PathItem -> [ContractDetails]
-  parseSwaggerPaths (swaggerSchema:: InsOrdHashMap Text Schema) contractDetailsList swFilePath swPathDetails = 
-    let currentRouteId = case contractDetailsList of 
+  parseSwaggerPaths :: Definitions Schema -> StateT [CreateNewType] IO [ContractDetails] -> FilePath -> PathItem -> StateT [CreateNewType] IO [ContractDetails]
+  parseSwaggerPaths (swaggerSchema:: InsOrdHashMap Text Schema) contractDetailsList swFilePath swPathDetails = do
+    cDetailsList <- contractDetailsList
+    let currentRouteId = case cDetailsList of 
           [] -> 1
-          xs -> (routeId $ Prelude.head contractDetailsList) + 1
+          xs -> (routeId $ Prelude.head cDetailsList) + 1
         splitRoutePath = DLS.splitOn "/" $ removeLeadingSlash swFilePath
         mainRouteName = (DL.concat $ prettifyRouteName splitRoutePath) ++ "R"
         currentRoutePath = splitRoutePath
         methodList = [GET, PUT, POST, PATCH, DELETE, OPTIONS, HEAD]
-        currentMethodData = DL.foldl' (processPathItem swPathDetails) Map.empty methodList
-        currentContractDetails = ContractDetails currentRouteId mainRouteName currentRoutePath currentMethodData
-    in currentContractDetails:contractDetailsList
+    currentMethodData <- Control.Monad.foldM (processPathItem mainRouteName swPathDetails) (Map.empty) methodList
+    let currentContractDetails = ContractDetails currentRouteId mainRouteName currentRoutePath currentMethodData
+    pure (currentContractDetails:cDetailsList)
   removeLeadingSlash inputRoute = fromMaybe inputRoute (DL.stripPrefix "/" inputRoute)
   prettifyRouteName routeList = case ( routeList) of
     [] -> error "Expected atleast one element in the route! Got an empty list!"
@@ -157,31 +154,45 @@ readSwaggerJSON = do
 
 
 
-  processPathItem :: PathItem -> Map.Map StdMethod ApiTypeDetails ->  StdMethod -> Map.Map StdMethod ApiTypeDetails
-  processPathItem pathItem methodDataAcc currentMethod = 
+  processPathItem :: String -> PathItem -> (Map.Map StdMethod ApiTypeDetails) ->  StdMethod -> StateT [CreateNewType] IO (Map.Map StdMethod ApiTypeDetails)
+  processPathItem routeName pathItem methodDataAcc currentMethod = do
     case currentMethod of
-      GET -> (processOperation methodDataAcc) GET $ _pathItemGet pathItem
-      PUT -> (processOperation methodDataAcc) PUT $ _pathItemPut pathItem
-      POST -> (processOperation methodDataAcc) POST $ _pathItemPost pathItem
-      DELETE -> (processOperation methodDataAcc) DELETE $ _pathItemDelete pathItem
-      OPTIONS -> (processOperation methodDataAcc) OPTIONS $ _pathItemOptions pathItem
-      HEAD -> (processOperation methodDataAcc) HEAD $ _pathItemHead pathItem
-      PATCH -> (processOperation methodDataAcc) PATCH $ _pathItemPatch pathItem
-  processOperation :: Map.Map StdMethod ApiTypeDetails -> StdMethod -> Maybe Operation -> Map.Map StdMethod ApiTypeDetails
-  processOperation methodAcc stdMethod mOperationData = 
+      GET -> (processOperation routeName methodDataAcc) GET $ _pathItemGet pathItem
+      PUT -> (processOperation routeName methodDataAcc) PUT $ _pathItemPut pathItem
+      POST -> (processOperation routeName methodDataAcc) POST $ _pathItemPost pathItem
+      DELETE -> (processOperation routeName methodDataAcc) DELETE $ _pathItemDelete pathItem
+      OPTIONS -> (processOperation routeName methodDataAcc) OPTIONS $ _pathItemOptions pathItem
+      HEAD -> (processOperation routeName methodDataAcc) HEAD $ _pathItemHead pathItem
+      PATCH -> (processOperation routeName methodDataAcc) PATCH $ _pathItemPatch pathItem
+  processOperation :: String -> Map.Map StdMethod ApiTypeDetails -> StdMethod -> Maybe Operation -> StateT [CreateNewType] IO (Map.Map StdMethod ApiTypeDetails)
+  processOperation currentRouteName methodAcc stdMethod mOperationData = 
     case mOperationData of
-      Just operationData -> 
+      Just operationData -> do
     -- check or form ApiErr type by going through Response types. In most cases it will be a String/Text but in some cases we will need to have a sum type incase different err codes return different types.
         let apiResponses = _responsesResponses $ _operationResponses operationData
-            (apiOutType, apiErrType) = getApiType apiResponses
-        in Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType Nothing Nothing) methodAcc
-      Nothing -> methodAcc
-  getApiType :: InsOrdHashMap HttpStatusCode (Referenced Response)  -> (String, Maybe String)
-  getApiType responsesHM = foldlWithKey' (\(apiOutType, apiErrType) currentCode currentResponse -> 
-        case () of _
-                    | currentCode >= 200 && currentCode <= 208 -> ({-checkIfNewType apiOutType $-} parseResponseContentGetType currentResponse, apiErrType)
-                    | currentCode >= 400 && currentCode <= 431 || currentCode >= 500 && currentCode <= 511 -> (apiOutType, {- checkIfNewType apiErrType $-} Just $ parseResponseContentGetType currentResponse)
-    ) ("String", Nothing) responsesHM  
+        -- parse params here and get type for FormParams/QueryParams, add to ApiTypeDetails
+        (apiOutType, apiErrType) <- getApiType (currentRouteName ++ show stdMethod) apiResponses
+        pure $ Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType Nothing Nothing) methodAcc
+      Nothing -> pure methodAcc
+  getApiType :: String -> InsOrdHashMap HttpStatusCode (Referenced Response)  -> StateT [CreateNewType] IO (String, Maybe String)
+  getApiType newTypeName responsesHM = foldlWithKey' (\monadicTuple currentCode currentResponse -> do
+        (apiOutType, apiErrType) <- monadicTuple
+        let currentResponseType = parseResponseContentGetType currentResponse
+        case (currentCode >= 200 && currentCode <= 208) of
+          True -> do
+            finalOutType <- checkIfNewType apiOutType currentResponseType (newTypeName ++ "ApiOut")
+            pure (finalOutType, apiErrType)
+          False -> do
+            case (currentCode >= 400 && currentCode <= 431 || currentCode >= 500 && currentCode <= 511) of
+              True -> do
+                finalErrType <- case apiErrType of
+                      Just errType -> do
+                        finalErrType <- checkIfNewType errType currentResponseType (newTypeName ++ "ApiErr")
+                        pure $ Just finalErrType
+                      Nothing -> pure $ Nothing
+                pure (apiOutType, finalErrType)
+              False -> error $ "Response code not matched! Response code received is: " ++ show currentCode
+    ) (pure ("String", Nothing)) responsesHM  
   parseResponseContentGetType :: Referenced Response -> String
   parseResponseContentGetType refResponse = 
     case refResponse of
@@ -194,12 +205,16 @@ readSwaggerJSON = do
 
           
 
-  -- checkIfNewType :: (StateT [CreateNewType] IO n) => String -> String -> StateT IO String 
-  -- checkIfNewType existingType currentType = if (existingType == currentType)
-  --                                           then currentType
-  --                                           else do
-  --                                             -- modify' call to add to StateT here
-  --                                             pure currentType
+checkIfNewType :: String -> String -> String -> (StateT [CreateNewType] IO String)
+checkIfNewType existingType currentType newTypeName = if (existingType == currentType)
+                                          then pure existingType
+                                          else do
+                                            -- TODO: What if the error types are more than just 2? 
+                                            let sumTypeInfo = SumType newTypeName [currentType, existingType]
+                                            modify' (\existingState -> sumTypeInfo:existingState) 
+                                            pure newTypeName
+
+
 
 getPrimitiveTypeFromInlineSchema :: Schema -> String 
 getPrimitiveTypeFromInlineSchema rSchema = 
@@ -220,7 +235,8 @@ getPrimitiveTypeFromInlineSchema rSchema =
                             Inline innerSchema -> getPrimitiveTypeFromInlineSchema innerSchema) 
                         -- Just (SwaggerItemsPrimitive ) -- TODO : Discuss possibility of primitive (query param or similar) here and how it should be handled.
                         Nothing -> error "Expected a SwaggerItems type due to SwaggerArray ParamSchema Type. But it did not find any! Please check the swagger spec!"
-      -- SwaggerObject -> TODO: Is this possible? Having custom models should mean that this does not get used? 
+      -- TODO: Type for SwaggerObject is a very temporary solution and needs to be handled better. We need to look at schemaProperties and additionalProperties
+      SwaggerObject -> "Value"-- case ( _ . _schemaAdditionalProperties)
       x -> ("Got Unexpected Primitive Value : " ++ show x)
  where 
   checkIfArray stringList =  
@@ -248,7 +264,7 @@ data ApiTypeDetails = ApiTypeDetails
   } deriving (Eq, Show)
 
 
-data CreateNewType = SumType String [String] | NType String [(String, String)] 
+data CreateNewType = SumType String [String] | ProductType NewData 
   deriving (Eq, Show)
 
 
