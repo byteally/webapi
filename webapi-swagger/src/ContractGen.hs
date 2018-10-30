@@ -155,15 +155,16 @@ readSwaggerJSON petstoreJSONContents= do
 
 
   processPathItem :: String -> PathItem -> (Map.Map StdMethod ApiTypeDetails) ->  StdMethod -> StateT [CreateNewType] IO (Map.Map StdMethod ApiTypeDetails)
-  processPathItem routeName pathItem methodDataAcc currentMethod = do
+  processPathItem mainRouteName pathItem methodDataAcc currentMethod =
     case currentMethod of
-      GET -> (processOperation routeName methodDataAcc) GET $ _pathItemGet pathItem
-      PUT -> (processOperation routeName methodDataAcc) PUT $ _pathItemPut pathItem
-      POST -> (processOperation routeName methodDataAcc) POST $ _pathItemPost pathItem
-      DELETE -> (processOperation routeName methodDataAcc) DELETE $ _pathItemDelete pathItem
-      OPTIONS -> (processOperation routeName methodDataAcc) OPTIONS $ _pathItemOptions pathItem
-      HEAD -> (processOperation routeName methodDataAcc) HEAD $ _pathItemHead pathItem
-      PATCH -> (processOperation routeName methodDataAcc) PATCH $ _pathItemPatch pathItem
+      GET -> (processOperation mainRouteName methodDataAcc) GET $ _pathItemGet pathItem
+      PUT -> (processOperation mainRouteName methodDataAcc) PUT $ _pathItemPut pathItem
+      POST -> (processOperation mainRouteName methodDataAcc) POST $ _pathItemPost pathItem
+      DELETE -> (processOperation mainRouteName methodDataAcc) DELETE $ _pathItemDelete pathItem
+      OPTIONS -> (processOperation mainRouteName methodDataAcc) OPTIONS $ _pathItemOptions pathItem
+      HEAD -> (processOperation mainRouteName methodDataAcc) HEAD $ _pathItemHead pathItem
+      PATCH -> (processOperation mainRouteName methodDataAcc) PATCH $ _pathItemPatch pathItem
+      _ -> pure $ Map.empty
   processOperation :: String -> Map.Map StdMethod ApiTypeDetails -> StdMethod -> Maybe Operation -> StateT [CreateNewType] IO (Map.Map StdMethod ApiTypeDetails)
   processOperation currentRouteName methodAcc stdMethod mOperationData = 
     case mOperationData of
@@ -171,28 +172,31 @@ readSwaggerJSON petstoreJSONContents= do
     -- check or form ApiErr type by going through Response types. In most cases it will be a String/Text but in some cases we will need to have a sum type incase different err codes return different types.
         let apiResponses = _responsesResponses $ _operationResponses operationData
         -- parse params here and get type for FormParams/QueryParams, add to ApiTypeDetails
-        (apiOutType, apiErrType) <- getApiType (currentRouteName ++ show stdMethod) apiResponses
+        (mApiOutType, apiErrType) <- getApiType (currentRouteName ++ show stdMethod) apiResponses
+        -- TODO: Case match on ApiOut and if `Nothing` then check for default responses in `_responsesDefault $ _operationResponses operationData`
+        -- Discuss if this should be then set to `String` ?? 
+        let apiOutType = fromMaybe "()" mApiOutType
         pure $ Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType Nothing Nothing) methodAcc
       Nothing -> pure methodAcc
-  getApiType :: String -> InsOrdHashMap HttpStatusCode (Referenced Response)  -> StateT [CreateNewType] IO (String, Maybe String)
-  getApiType newTypeName responsesHM = foldlWithKey' (\monadicTuple currentCode currentResponse -> do
-        (apiOutType, apiErrType) <- monadicTuple
+  getApiType :: String -> InsOrdHashMap HttpStatusCode (Referenced Response)  -> StateT [CreateNewType] IO (Maybe String, Maybe String)
+  getApiType newTypeName responsesHM = foldlWithKey' (\stateConfigWrappedTypes currentCode currentResponse -> do
+        (apiOutType, apiErrType) <- stateConfigWrappedTypes
         let currentResponseType = parseResponseContentGetType currentResponse
         case (currentCode >= 200 && currentCode <= 208) of
           True -> do
-            finalOutType <- checkIfNewType apiOutType currentResponseType (newTypeName ++ "ApiOut")
+            finalOutType <- do
+                fOutType <- checkIfNewType apiOutType currentResponseType (newTypeName ++ "ApiOut")
+                pure $ Just fOutType
             pure (finalOutType, apiErrType)
           False -> do
             case (currentCode >= 400 && currentCode <= 431 || currentCode >= 500 && currentCode <= 511) of
               True -> do
-                finalErrType <- case apiErrType of
-                      Just errType -> do
-                        finalErrType <- checkIfNewType errType currentResponseType (newTypeName ++ "ApiErr")
-                        pure $ Just finalErrType
-                      Nothing -> pure $ Nothing
+                finalErrType <- do
+                      fErrType <- checkIfNewType apiErrType currentResponseType (newTypeName ++ "ApiErr")
+                      pure $ Just fErrType
                 pure (apiOutType, finalErrType)
               False -> error $ "Response code not matched! Response code received is: " ++ show currentCode
-    ) (pure ("String", Nothing)) responsesHM  
+    ) (pure (Nothing, Nothing)) responsesHM  
   parseResponseContentGetType :: Referenced Response -> String
   parseResponseContentGetType refResponse = 
     case refResponse of
@@ -205,16 +209,18 @@ readSwaggerJSON petstoreJSONContents= do
 
           
 
-checkIfNewType :: String -> String -> String -> (StateT [CreateNewType] IO String)
-checkIfNewType existingType currentType newTypeName = if (existingType == currentType)
-                                          then pure existingType
-                                          else do
-                                            -- TODO: What if the error types are more than just 2? 
-                                            let sumTypeInfo = SumType newTypeName [currentType, existingType]
-                                            modify' (\existingState -> sumTypeInfo:existingState) 
-                                            pure newTypeName
-
-
+checkIfNewType :: Maybe String -> String -> String -> (StateT [CreateNewType] IO String)
+checkIfNewType existingType currentType newTypeName = 
+  case existingType of 
+    Just eType ->
+      if (eType == currentType)
+      then pure eType
+      else do
+        -- TODO: What if the error types are more than just 2? 
+        let sumTypeInfo = SumType newTypeName [currentType, eType]
+        modify' (\existingState -> sumTypeInfo:existingState) 
+        pure newTypeName
+    Nothing -> pure currentType
 
 getPrimitiveTypeFromInlineSchema :: Schema -> String 
 getPrimitiveTypeFromInlineSchema rSchema = 
