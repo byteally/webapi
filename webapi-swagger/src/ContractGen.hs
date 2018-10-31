@@ -79,7 +79,7 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
       let hModule = 
             Module noSrcSpan 
               (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
-              (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
+              (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances", "DuplicateRecordFields"])
               (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics", "Types"])
               ((createDataDeclarations newData) ++ generateContractBody "Petstore" contractDetailsFromPetstore)
       liftIO $ writeFile (contractOutputFolderPath ++ "Contract.hs") $ prettyPrint hModule
@@ -121,6 +121,7 @@ readSwaggerJSON petstoreJSONContents= do
         splitRoutePath = DLS.splitOn "/" $ removeLeadingSlash swFilePath
         mainRouteName = (DL.concat $ prettifyRouteName splitRoutePath) ++ "R"
 
+    -- TODO: Add a `Static` Type component at the start if the list has just one element of type PathComp
     finalPathWithParamTypes::[PathComponent] <- forM splitRoutePath (\pathComponent -> 
         case isParam pathComponent of 
           True -> do
@@ -183,19 +184,40 @@ readSwaggerJSON petstoreJSONContents= do
   processOperation currentRouteName methodAcc stdMethod mOperationData = 
     case mOperationData of
       Just operationData -> do
-    -- check or form ApiErr type by going through Response types. In most cases it will be a String/Text but in some cases we will need to have a sum type incase different err codes return different types.
         let apiResponses = _responsesResponses $ _operationResponses operationData
-        -- parse params here and get type for FormParams/QueryParams, add to ApiTypeDetails
         (mApiOutType, apiErrType) <- getApiType (currentRouteName ++ show stdMethod) apiResponses
         -- TODO: Case match on ApiOut and if `Nothing` then check for default responses in `_responsesDefault $ _operationResponses operationData`
-        -- Discuss if this should be then set to `String` ?? 
         let apiOutType = fromMaybe "()" mApiOutType
-
-        -- process Params and return Form Param and Query Param types if they exist
-        (mFormParamType, mQueryParamType, mFileParamType, mHeaderInType) <- foldM (getParamTypes (currentRouteName ++ show stdMethod) ) (Nothing, Nothing, Nothing, Nothing) (_operationParameters operationData)
-          -- change the creation of the ApiTypeDetails to include any params present.
+        -- Group the Referenced Params by ParamLocation and then go through each group separately.
+        let (formParamList, queryParamList, fileParamList, headerInList) = DL.foldl' (groupParamTypes) ([], [], [], []) (_operationParameters operationData)
+        mFormParamType <- getParamTypes (currentRouteName ++ show stdMethod) formParamList FormParam
+        mQueryParamType <- getParamTypes (currentRouteName ++ show stdMethod) queryParamList QueryParam
+        mFileParamType <- getParamTypes (currentRouteName ++ show stdMethod) fileParamList FileParam
+        mHeaderInType <- getParamTypes (currentRouteName ++ show stdMethod) headerInList HeaderParam
         pure $ Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType mFormParamType mQueryParamType mFileParamType mHeaderInType) methodAcc
       Nothing -> pure methodAcc
+
+  groupParamTypes :: ([Param], [Param], [Param], [Param]) -> Referenced Param -> ([Param], [Param], [Param], [Param])
+  groupParamTypes (formParamList, queryParamList, fileParamList, headerInList) refParam = 
+    case refParam of
+      Ref someRef -> error $ "Encountered a Referenced type at the first level of a reference param! Not sure what the use case of this is or how to process it! Debug Info : " ++ show refParam
+      Inline param -> 
+        case _paramSchema param of
+          ParamBody _ -> (param:formParamList, queryParamList, fileParamList, headerInList)
+          ParamOther pOtherSchema -> 
+            case _paramOtherSchemaIn pOtherSchema of 
+              ParamQuery -> (formParamList, param:queryParamList, fileParamList, headerInList) 
+              ParamHeader -> (formParamList, queryParamList, fileParamList, param:headerInList)
+              ParamPath -> (formParamList, queryParamList, fileParamList, headerInList) 
+              ParamFormData -> do
+                case (_paramSchema param) of
+                  ParamBody _ -> (param:formParamList, queryParamList, fileParamList, headerInList) 
+                  ParamOther pSchema -> 
+                    case (_paramSchemaType $ _paramOtherSchemaParamSchema pSchema) of
+                      SwaggerFile -> (formParamList, queryParamList, param:fileParamList, headerInList) 
+                      _ -> (param:formParamList, queryParamList, fileParamList, headerInList) 
+
+
   getApiType :: String -> InsOrdHashMap HttpStatusCode (Referenced Response)  -> StateT [CreateNewType] IO (Maybe String, Maybe String)
   getApiType newTypeName responsesHM = foldlWithKey' (\stateConfigWrappedTypes currentCode currentResponse -> do
         (apiOutType, apiErrType) <- stateConfigWrappedTypes
@@ -224,42 +246,61 @@ readSwaggerJSON petstoreJSONContents= do
           Just (Ref refText) -> pure $ toS $ getReference refText
           Just (Inline respSchema) -> ((getTypeFromSwaggerType Nothing (Just respSchema) ) . _schemaParamSchema) respSchema
           Nothing -> pure "String"
-  getParamTypes :: String -> (Maybe String, Maybe String, Maybe String, Maybe String) -> Referenced Param ->  StateT [CreateNewType] IO (Maybe String, Maybe String, Maybe String, Maybe String)
-  getParamTypes newTypeName (mFormParamType, mQueryParamType, mFileParamType, mHeaderInType) refParam =
-    case refParam of
-      Ref _ -> error $ "Encountered Reference for a Parameter at the top level! Not sure what the use case of this is or how to process it! Debug info: " ++ newTypeName
-      Inline param -> do
-        let paramName = toS $ _paramName param
-        let isMandatory = 
-              case _paramRequired param of
-                Just True -> True
-                _ -> False
-        case _paramSchema param of
-          ParamBody refSchema -> 
-            case refSchema of
-              Ref rSchema -> pure ( (Just . toS . getReference) rSchema, mQueryParamType, mFileParamType, mHeaderInType)
-              -- TODO: This needs to be tested for Params. Inspect the swagger data on Haskell side and verify that the correct type is returned.
-              Inline inlineSchema -> do
-                formDataHaskellType <- ( (getTypeFromSwaggerType (Just paramName) (Just inlineSchema) ) . _schemaParamSchema) inlineSchema
-                pure ( Just formDataHaskellType, mQueryParamType, mFileParamType, mHeaderInType)
-          ParamOther paramOtherSchema -> 
-            case _paramOtherSchemaIn paramOtherSchema of
-              ParamFormData -> do
-                formDataType <- ( (getTypeFromSwaggerType (Just paramName) Nothing ) . _paramOtherSchemaParamSchema) paramOtherSchema
-                pure (Just formDataType, mQueryParamType, mFileParamType, mHeaderInType)
-              ParamQuery -> do
-                haskellType <- ( (getTypeFromSwaggerType (Just paramName) Nothing ) . _paramOtherSchemaParamSchema) paramOtherSchema
-                case _paramSchemaType $  _paramOtherSchemaParamSchema paramOtherSchema of
-                  SwaggerArray -> pure (mFormParamType, Just haskellType, mFileParamType, mHeaderInType) 
-                  _ -> do
-                    let newDTypeName = newTypeName ++ "QueryParam"
-                    let queryParamDataInfo = ProductType (NewData newDTypeName [(paramName, addMaybeToType isMandatory haskellType)] )
-                    modify' (\existingState -> queryParamDataInfo:existingState) 
-                    pure (mFormParamType, Just newDTypeName , mFileParamType, mHeaderInType)
-              -- path Params will handled in the route type definition
-              ParamPath -> pure (mFormParamType, mQueryParamType, mFileParamType, mHeaderInType)
-              -- Ignore cookie for now, will need to add it later.
-              ParamHeader -> pure (mFormParamType, mQueryParamType, mFileParamType, mHeaderInType)
+  getParamTypes :: String -> [Param] -> ParamType -> StateT [CreateNewType] IO (Maybe String)
+  getParamTypes newTypeName paramList paramType = 
+    case paramList of
+      [] -> pure $ Nothing
+      _ -> 
+        case paramType of
+          FormParam -> do
+            let paramNames = fmap (\param -> toS $ _paramName param) paramList
+            hTypesWithIsMandatory <- forM paramList (\param -> do 
+              hType <- getParamTypeParam param (Just $ toS ( _paramName param) ) Nothing
+              pure (isMandatory param, hType) )
+            let finalHaskellTypes = fmap (\(isMandatoryType, hType) -> (addMaybeToType isMandatoryType hType) ) hTypesWithIsMandatory
+            let recordTypesInfo = DL.zip paramNames finalHaskellTypes
+            let newDataTypeName = newTypeName ++ "FormParam"
+            let formParamDataInfo = ProductType (NewData newDataTypeName recordTypesInfo)
+
+            modify' (\existingState -> formParamDataInfo:existingState) 
+            liftIO $ putStrLn  $ show paramList
+            pure $ Just newDataTypeName
+          QueryParam -> do
+            let paramNames = fmap (\param -> toS $ _paramName param) paramList
+            hTypesWithIsMandatory <- forM paramList (\param -> do 
+              hType <- getParamTypeParam param (Just $ toS ( _paramName param) ) Nothing
+              pure (isMandatory param, hType) )
+            let finalHaskellTypes = fmap (\(isMandatoryType, hType) -> (addMaybeToType isMandatoryType hType) ) hTypesWithIsMandatory
+            let recordTypesInfo = DL.zip paramNames finalHaskellTypes
+            let newDataTypeName = newTypeName ++ "QueryParam"
+            let queryParamDataInfo = ProductType (NewData newDataTypeName recordTypesInfo)
+            modify' (\existingState -> queryParamDataInfo:existingState) 
+            pure $ Just newDataTypeName
+          HeaderParam -> do
+            typeList <- forM paramList (\param -> getParamTypeParam param (Just $ toS ( _paramName param) ) Nothing )
+            case typeList of
+              [] -> pure Nothing
+              x:[] -> pure $ Just x
+              x:xs -> error "Handle case of multiple Header Params!"
+          FileParam -> do
+            typeList <- forM paramList (\param -> getParamTypeParam param (Just $ toS ( _paramName param) ) Nothing )
+            case typeList of
+              [] -> pure Nothing
+              x:[] -> pure $ Just x
+              x:xs -> error "Handle case of list of FileParam"
+  getParamTypeParam inputParam mParamName mOuterSchema =
+    case _paramSchema inputParam of
+      ParamBody refSchema -> 
+        case refSchema of 
+          Ref refType -> pure $ toS (getReference refType)
+          Inline rSchema -> getTypeFromSwaggerType Nothing (Just rSchema) (_schemaParamSchema rSchema)
+      ParamOther pSchema -> getTypeFromSwaggerType mParamName mOuterSchema $ _paramOtherSchemaParamSchema pSchema
+
+  isMandatory :: Param -> Bool
+  isMandatory param = 
+    case _paramRequired param of
+      Just True -> True
+      _ -> False
   addMaybeToType :: Bool -> String -> String
   addMaybeToType isMandatory haskellType = 
     case isMandatory of
@@ -350,6 +391,12 @@ getTypeFromSwaggerType mParamName mOuterSchema paramSchema =
       sameElem:[] -> pure $ "[" ++ sameElem ++ "]"
       x -> error $ "Got different types in the same list. Not sure how to proceed! Please check the swagger doc! " ++ show x
 
+
+data ParamType = FormParam 
+               | QueryParam
+               | FileParam
+               | HeaderParam
+  deriving (Eq, Show)
 
 data ContractDetails = ContractDetails
   {
@@ -506,7 +553,7 @@ generateContractBody contractName contractDetails =
         queryParamType = queryParam apiDetails
         fileParamType = fileParam apiDetails
         headerParamType = headerIn apiDetails
-        instanceVectorList = catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeName, tInfo] ) typeInfo) $ DL.zip (respType:errType:formParamType:queryParamType:fileParamType:headerParamType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam", "FileParam", "HeaderParam"]
+        instanceVectorList = catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeName, tInfo] ) typeInfo) $ DL.zip (respType:errType:formParamType:queryParamType:fileParamType:headerParamType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam", "FileParam", "HeaderIn"]
     in (topLevelVector, instanceVectorList):accValue
   fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
 
