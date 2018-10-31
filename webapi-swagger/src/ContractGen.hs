@@ -327,7 +327,7 @@ getTypeFromSwaggerType mParamName paramSchema =
                         Nothing -> error "Expected a SwaggerItems type due to SwaggerArray ParamSchema Type. But it did not find any! Please check the swagger spec!"
       -- TODO: Type for SwaggerObject is a very temporary solution and needs to be handled better. We need to look at schemaProperties and additionalProperties
       SwaggerObject -> pure "Value"-- case ( _ . _schemaAdditionalProperties)
-      SwaggerFile -> pure "SWAGGERFILE" -- TODO 
+      SwaggerFile -> pure "FileInfo" -- TODO 
       SwaggerNull -> pure "()"
       -- x -> ("Got Unexpected Primitive Value : " ++ show x)
  where 
