@@ -39,52 +39,54 @@ import Data.Swagger.Declare
 import Data.Swagger.Lens
 import Data.Swagger.Operation
 
-data NewData = NewData
-  {
-    mName :: String
-  , mRecordTypes :: InnerRecords
-  } deriving (Eq, Show)
+
+runDefaultPathCodeGen :: IO ()
+runDefaultPathCodeGen = runCodeGen "webapi-swagger/sampleFiles/swagger-petstore-ex.json" "webapi-swagger/src/"
 
 
-  -- ("Tag",Schema 
-  --             {_schemaTitle = Nothing, 
-  --             _schemaDescription = Nothing, 
-  --             _schemaRequired = [], 
-  --             _schemaAllOf = Nothing, 
-  --             _schemaProperties = fromList [
-  --                 ("name",Inline (
-  --                   Schema {
-  --                     _schemaTitle = Nothing, 
-  --                     _schemaDescription = Nothing, 
-  --                     _schemaRequired = [], 
-  --                     _schemaAllOf = Nothing, 
-  --                     _schemaProperties = fromList [], 
-  --                     _schemaAdditionalProperties = Nothing, 
-  --                     _schemaDiscriminator = Nothing, 
-  --                     _schemaReadOnly = Nothing, 
-  --                     _schemaXml = Nothing, 
-  --                     _schemaExternalDocs = Nothing, 
-  --                     _schemaExample = Nothing, 
-  --                     _schemaMaxProperties = Nothing, 
-  --                     _schemaMinProperties = Nothing, 
-  --                     _schemaParamSchema = ParamSchema {
-  --                                           _paramschemadefault = Nothing, 
-  --                                           _paramSchemaType = SwaggerString, 
-  --                                           _paramSchemaFormat = Nothing, 
-  --                                           _paramSchemaItems = Nothing, 
-  --                                           _paramSchemaMaximum = Nothing, 
-  --                                           _paramSchemaExclusiveMaximum = Nothing, 
-  --                                           _paramSchemaMinimum = Nothing, 
-  --                                           _paramSchemaExclusiveMinimum = Nothing, 
-  --                                           _paramSchemaMaxLength = Nothing, 
-  --                                           _paramSchemaMinLength = Nothing, 
-  --                                           _paramSchemaPattern = Nothing, 
-  --                                           _paramSchemaMaxItems = Nothing, 
-  --                                           _paramSchemaMinItems = Nothing, 
-  --                                           _paramSchemaUniqueItems = Nothing, 
-  --                                           _paramSchemaEnum = Nothing, 
-  --                                           _paramSchemaMultipleOf = Nothing}}))
-  -- ,("id",Inline (Schema {_schemaTitle = Nothing, _schemaDescription = Nothing, _schemaRequired = [], _schemaAllOf = Nothing, _schemaProperties = fromList [], _schemaAdditionalProperties = Nothing, _schemaDiscriminator = Nothing, _schemaReadOnly = Nothing, _schemaXml = Nothing, _schemaExternalDocs = Nothing, _schemaExample = Nothing, _schemaMaxProperties = Nothing, _schemaMinProperties = Nothing, _schemaParamSchema = ParamSchema {_paramSchemaDefault = Nothing, _paramSchemaType = SwaggerInteger, _paramSchemaFormat = Just "int64", _paramSchemaItems = Nothing, _paramSchemaMaximum = Nothing, _paramSchemaExclusiveMaximum = Nothing, _paramSchemaMinimum = Nothing, _paramSchemaExclusiveMinimum = Nothing, _paramSchemaMaxLength = Nothing, _paramSchemaMinLength = Nothing, _paramSchemaPattern = Nothing, _paramSchemaMaxItems = Nothing, _paramSchemaMinItems = Nothing, _paramSchemaUniqueItems = Nothing, _paramSchemaEnum = Nothing, _paramSchemaMultipleOf = Nothing}}))], _schemaAdditionalProperties = Nothing, _schemaDiscriminator = Nothing, _schemaReadOnly = Nothing, _schemaXml = Just (Xml {_xmlName = Just "Tag", _xmlNamespace = Nothing, _xmlPrefix = Nothing, _xmlAttribute = Nothing, _xmlWrapped = Nothing}), _schemaExternalDocs = Nothing, _schemaExample = Nothing, _schemaMaxProperties = Nothing, _schemaMinProperties = Nothing, _schemaParamSchema = ParamSchema {_paramSchemaDefault = Nothing, _paramSchemaType = SwaggerObject, _paramSchemaFormat = Nothing, _paramSchemaItems = Nothing, _paramSchemaMaximum = Nothing, _paramSchemaExclusiveMaximum = Nothing, _paramSchemaMinimum = Nothing, _paramSchemaExclusiveMinimum = Nothing, _paramSchemaMaxLength = Nothing, _paramSchemaMinLength = Nothing, _paramSchemaPattern = Nothing, _paramSchemaMaxItems = Nothing, _paramSchemaMinItems = Nothing, _paramSchemaUniqueItems = Nothing, _paramSchemaEnum = Nothing, _paramSchemaMultipleOf = Nothing}})
+runCodeGen :: FilePath -> FilePath -> IO () --[CreateNewType]
+runCodeGen swaggerJsonInputFilePath contractOutputFolderPath = do
+  newTypeCreationList <- execStateT (readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath)  [] 
+  createNewTypes newTypeCreationList
+ where
+  createNewTypes typeList = do
+    let hModule = 
+          Module noSrcSpan 
+            (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
+            (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
+            (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics"])
+            (fmap createType typeList)
+    writeFile (contractOutputFolderPath ++ "Types.hs") $ prettyPrint hModule
+      
+  createType typeInfo = 
+    case typeInfo of
+      ProductType newData -> dataDeclaration (DataType noSrcSpan) (mName newData) (mRecordTypes newData) ["Eq", "Show"] 
+      SumType tName tConstructors -> sumTypeDeclaration tName tConstructors ["Eq", "Show"] 
+
+
+
+type StateConfig = StateT [CreateNewType] IO ()
+
+readSwaggerGenerateDefnModels :: FilePath -> FilePath -> StateConfig
+readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath = do 
+  petstoreJSONContents <- liftIO $ BSL.readFile swaggerJsonInputFilePath
+  contractDetailsFromPetstore <- readSwaggerJSON petstoreJSONContents
+  let decodedVal = eitherDecode petstoreJSONContents -- :: Either String Data.Swagger.Internal.Swagger
+  case decodedVal of
+    Left errMsg -> liftIO $ putStrLn errMsg
+    Right (swaggerData :: Swagger) -> do
+      newData <- generateSwaggerDefinitionData (_swaggerDefinitions swaggerData) 
+      let hModule = 
+            Module noSrcSpan 
+              (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
+              (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
+              (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics", "Types"])
+              ((createDataDeclarations newData) ++ generateContractBody "Petstore" contractDetailsFromPetstore)
+      liftIO $ writeFile (contractOutputFolderPath ++ "Contract.hs") $ prettyPrint hModule
+ where 
+  createDataDeclarations :: [NewData] -> [Decl SrcSpanInfo]
+  createDataDeclarations newDataList = fmap (\newDataInfo -> dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show"] ) newDataList
+ 
 
 generateSwaggerDefinitionData :: InsOrdHashMap Text Schema -> StateT [CreateNewType] IO [NewData]
 generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (pure []) defDataHM
@@ -102,49 +104,6 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (
             pure $ (innerRecordName, innerRecordType):accList ) (pure []) schemaProperties
     pure $ (NewData (toS modelName) recordNamesAndTypes):accValue
 
-runCodeGen :: IO () --[CreateNewType]
-runCodeGen = do
-  newTypeCreationList <- execStateT readSwaggerGenerateDefnModels [] 
-  createNewTypes newTypeCreationList
- where
-  createNewTypes typeList = do
-    let hModule = 
-          Module noSrcSpan 
-            (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
-            (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
-            (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics"])
-            (fmap createType typeList)
-    writeFile "webapi-swagger/src/Types.hs" $ prettyPrint hModule
-      
-  createType typeInfo = 
-    case typeInfo of
-      ProductType newData -> dataDeclaration (DataType noSrcSpan) (mName newData) (mRecordTypes newData) ["Eq", "Show"] 
-      SumType tName tConstructors -> sumTypeDeclaration tName tConstructors ["Eq", "Show"] 
-  -- createSumTypes typeName listOfCons = sumTypeDeclaration typeName listOfCons ["Eq", "Show"] 
-
-
-type StateConfig = StateT [CreateNewType] IO ()
-
-readSwaggerGenerateDefnModels :: StateConfig
-readSwaggerGenerateDefnModels = do 
-  petstoreJSONContents <- liftIO $ BSL.readFile "webapi-swagger/sampleFiles/swagger-petstore-ex.json"
-  contractDetailsFromPetstore <- readSwaggerJSON petstoreJSONContents
-  let decodedVal = eitherDecode petstoreJSONContents -- :: Either String Data.Swagger.Internal.Swagger
-  case decodedVal of
-    Left errMsg -> liftIO $ putStrLn errMsg
-    Right (swaggerData :: Swagger) -> do
-      newData <- generateSwaggerDefinitionData (_swaggerDefinitions swaggerData) 
-      let hModule = 
-            Module noSrcSpan 
-              (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
-              (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
-              (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics", "Types"])
-              ((createDataDeclarations newData) ++ generateContractBody "Petstore" contractDetailsFromPetstore)
-      liftIO $ writeFile "webapi-swagger/src/Contract.hs" $ prettyPrint hModule
- where 
-  createDataDeclarations :: [NewData] -> [Decl SrcSpanInfo]
-  createDataDeclarations newDataList = fmap (\newDataInfo -> dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show"] ) newDataList
- 
 
 readSwaggerJSON :: BSL.ByteString -> StateT [CreateNewType] IO [ContractDetails]
 readSwaggerJSON petstoreJSONContents= do
@@ -358,6 +317,11 @@ data ApiTypeDetails = ApiTypeDetails
   -- TODO: cookie in/out and header out need to be added when we encounter them
   } deriving (Eq, Show)
 
+data NewData = NewData
+  {
+    mName :: String
+  , mRecordTypes :: InnerRecords
+  } deriving (Eq, Show)
 
 data CreateNewType = SumType String [String] | ProductType NewData 
   deriving (Eq, Show)
