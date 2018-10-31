@@ -102,8 +102,26 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (
             pure $ (innerRecordName, innerRecordType):accList ) (pure []) schemaProperties
     pure $ (NewData (toS modelName) recordNamesAndTypes):accValue
 
-runCodeGen :: IO [CreateNewType]
-runCodeGen = execStateT readSwaggerGenerateDefnModels [] 
+runCodeGen :: IO () --[CreateNewType]
+runCodeGen = do
+  newTypeCreationList <- execStateT readSwaggerGenerateDefnModels [] 
+  createNewTypes newTypeCreationList
+ where
+  createNewTypes typeList = do
+    let hModule = 
+          Module noSrcSpan 
+            (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
+            (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
+            (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics"])
+            (fmap createType typeList)
+    writeFile "webapi-swagger/src/Types.hs" $ prettyPrint hModule
+      
+  createType typeInfo = 
+    case typeInfo of
+      ProductType newData -> dataDeclaration (DataType noSrcSpan) (mName newData) (mRecordTypes newData) ["Eq", "Show"] 
+      SumType tName tConstructors -> sumTypeDeclaration tName tConstructors ["Eq", "Show"] 
+  -- createSumTypes typeName listOfCons = sumTypeDeclaration typeName listOfCons ["Eq", "Show"] 
+
 
 type StateConfig = StateT [CreateNewType] IO ()
 
@@ -120,9 +138,9 @@ readSwaggerGenerateDefnModels = do
             Module noSrcSpan 
               (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
               (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
-              (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics"])
+              (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics", "Types"])
               ((createDataDeclarations newData) ++ generateContractBody "Petstore" contractDetailsFromPetstore)
-      liftIO $ writeFile "webapi-swagger/sampleFiles/modelGenTest.hs" $ prettyPrint hModule
+      liftIO $ writeFile "webapi-swagger/src/Contract.hs" $ prettyPrint hModule
  where 
   createDataDeclarations :: [NewData] -> [Decl SrcSpanInfo]
   createDataDeclarations newDataList = fmap (\newDataInfo -> dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show"] ) newDataList
@@ -466,10 +484,12 @@ generateContractBody contractName contractDetails =
         respType = Just $ apiOut apiDetails
         errType = apiErr apiDetails
         -- TODO: add checks for query, form param here. Default `Nothing` for now
-        formParamType = Nothing
-        queryParamType = Nothing
+        formParamType = formParam apiDetails
+        queryParamType = queryParam apiDetails
+        fileParamType = fileParam apiDetails
+        headerParamType = headerIn apiDetails
         -- Add remaining types and checks for them
-        instanceVectorList = catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeName, tInfo] ) typeInfo) $ DL.zip (respType:errType:formParamType:queryParamType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam"]
+        instanceVectorList = catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeName, tInfo] ) typeInfo) $ DL.zip (respType:errType:formParamType:queryParamType:fileParamType:headerParamType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam", "FileParam", "HeaderParam"]
     in (topLevelVector, instanceVectorList):accValue
   fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
 
@@ -536,6 +556,20 @@ emptyDataDeclaration declName =
     (declarationHead declName) 
     []
     Nothing
+
+
+sumTypeDeclaration :: String -> [String] -> [DerivingClass] -> Decl SrcSpanInfo
+sumTypeDeclaration dataName listOfComponents derivingList = 
+  DataDecl noSrcSpan  
+    (DataType noSrcSpan) Nothing 
+    (declarationHead dataName)
+    (sumTypeConstructor listOfComponents)
+    (Just $ derivingDecl  derivingList)
+ where 
+  sumTypeConstructor = 
+    fmap (\construcorVal -> QualConDecl noSrcSpan Nothing Nothing 
+      (ConDecl noSrcSpan 
+        (nameDecl construcorVal) [] ) )
 
 languageExtension :: String -> ModulePragma SrcSpanInfo
 languageExtension langExtName = LanguagePragma noSrcSpan [nameDecl langExtName]
