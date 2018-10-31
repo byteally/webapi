@@ -117,19 +117,19 @@ readSwaggerJSON petstoreJSONContents= do
     cDetailsList <- contractDetailsList
     let currentRouteId = case cDetailsList of 
           [] -> 1
-          xs -> (routeId $ Prelude.head cDetailsList) + 1
+          xs -> (routeId $ Prelude.head cDetailsList) + 1 -- TODO: Not being used anymore. Should be removed
         splitRoutePath = DLS.splitOn "/" $ removeLeadingSlash swFilePath
         mainRouteName = (DL.concat $ prettifyRouteName splitRoutePath) ++ "R"
 
-    finalPathWithParamTypes <- forM splitRoutePath (\pathComponent -> 
+    finalPathWithParamTypes::[PathComponent] <- forM splitRoutePath (\pathComponent -> 
         case isParam pathComponent of 
           True -> do
             let pathParamName = removeCurlyBraces pathComponent
             (mParamNameList::[Maybe String]) <- mapM (getPathParamTypeFromOperation pathParamName) (getListOfPathOperations swPathDetails::[Maybe Operation])
             case (DL.nub . catMaybes) mParamNameList of
-              singleParamType:[] -> pure singleParamType
+              singleParamType:[] -> pure (PathParamType singleParamType)
               otherVal -> error $ "Expected only a single Param Type to be present in all Methods of this path. Instead got : " ++ show otherVal ++ " Path : " ++ swFilePath
-          False -> pure pathComponent
+          False -> pure (PathComp pathComponent)
           )
          
     let currentRoutePath = finalPathWithParamTypes
@@ -336,7 +336,7 @@ data ContractDetails = ContractDetails
   {
     routeId :: Int 
   , routeName :: String
-  , routePath :: [String]
+  , routePath :: [PathComponent]
   , methodData :: Map.Map StdMethod ApiTypeDetails
   } deriving (Eq, Show)
 
@@ -361,7 +361,8 @@ data NewData = NewData
 data CreateNewType = SumType String [String] | ProductType NewData 
   deriving (Eq, Show)
 
-
+data PathComponent = PathComp String | PathParamType String
+  deriving (Eq, Show)
     -- _operationParameters = 
     --   [Inline (Param {
     --             _paramName = "status", 
@@ -493,25 +494,25 @@ generateContractBody contractName contractDetails =
   fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
 
 
-printHaskellModule :: IO()
-printHaskellModule = 
-  let hModule = Module noSrcSpan (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
-        (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
-        (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics"])
-        [
-        emptyDataDeclaration "EDITranslatorApi",
-        dataDeclaration (NewType noSrcSpan) "EdiStr" [("ediStr", "ByteString")] ["Show", "Generic"],
-        dataDeclaration (NewType noSrcSpan) "CharacterSet" [("characterSet", "ByteString")] ["Show", "Generic"],
-        dataDeclaration (DataType noSrcSpan) "EdiJsonWithDelims" [("ediJson", "ByteString"), ("segmentDelimiter", "Char"), ("elementDelimiter", "Char")] ["Show", "Generic"],
-        routeDeclaration "EdiToJsonR" ["convert", "toJson"],
-        routeDeclaration "EdiFromJsonR" ["convert", "fromJson"],
-        routeDeclaration "PathAfterThat" ["convert", "fromJson", "nextPath", "pathAfterThat"],
-        routeDeclaration "YaPath" ["convert", "fromJson", "somePath", "anotherPath", "yaPathHere"],
-        apiInstanceDeclaration instanceTopVec instanceTypeVec, 
-        fromParamInstanceDecl fromParamVec,
-        webApiInstance "EDITranslatorApi" [("EdiToJsonR", ["POST", "PUT", "GET"]), ("EdiFromJsonR", ["GET", "POST"])]
-        ]
-  in writeFile "webapi-swagger/sampleFiles/codeGen.hs" $ prettyPrint hModule
+-- printHaskellModule :: IO()
+-- printHaskellModule = 
+--   let hModule = Module noSrcSpan (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
+--         (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
+--         (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics"])
+--         [
+--         emptyDataDeclaration "EDITranslatorApi",
+--         dataDeclaration (NewType noSrcSpan) "EdiStr" [("ediStr", "ByteString")] ["Show", "Generic"],
+--         dataDeclaration (NewType noSrcSpan) "CharacterSet" [("characterSet", "ByteString")] ["Show", "Generic"],
+--         dataDeclaration (DataType noSrcSpan) "EdiJsonWithDelims" [("ediJson", "ByteString"), ("segmentDelimiter", "Char"), ("elementDelimiter", "Char")] ["Show", "Generic"],
+--         routeDeclaration "EdiToJsonR" ["convert", "toJson"],
+--         routeDeclaration "EdiFromJsonR" ["convert", "fromJson"],
+--         routeDeclaration "PathAfterThat" ["convert", "fromJson", "nextPath", "pathAfterThat"],
+--         routeDeclaration "YaPath" ["convert", "fromJson", "somePath", "anotherPath", "yaPathHere"],
+--         apiInstanceDeclaration instanceTopVec instanceTypeVec, 
+--         fromParamInstanceDecl fromParamVec,
+--         webApiInstance "EDITranslatorApi" [("EdiToJsonR", ["POST", "PUT", "GET"]), ("EdiFromJsonR", ["GET", "POST"])]
+--         ]
+--   in writeFile "webapi-swagger/sampleFiles/codeGen.hs" $ prettyPrint hModule
 
 
 
@@ -633,24 +634,28 @@ fromParamInstanceDecl instTypes =
         ) 
       Nothing
 
-recursiveTypeForRoute :: [String] -> Type SrcSpanInfo
+recursiveTypeForRoute :: [PathComponent] -> Type SrcSpanInfo
 recursiveTypeForRoute routeComponents = 
   case routeComponents of
     [] -> error "Did not expect an empty list here! "
-    x:[] -> promotedType x
+    x:[] -> processPathComponent x
     prevElem:lastElem:[] -> 
       (TyInfix noSrcSpan 
-        (promotedType prevElem)
+        (processPathComponent prevElem)
         (unQualSymDecl ":/")
-        (promotedType lastElem)
+        (processPathComponent lastElem)
       )
     currentRoute:remainingRoute -> 
       (TyInfix noSrcSpan 
-        (promotedType currentRoute)
+        (processPathComponent currentRoute)
         (unQualSymDecl ":/")
         (recursiveTypeForRoute remainingRoute)
       )   
-
+ where 
+  processPathComponent pathComp = 
+    case pathComp of
+      PathComp pComp -> promotedType pComp
+      PathParamType pType -> typeConstructor pType
 
 promotedType :: String -> Type SrcSpanInfo
 promotedType typeNameData = 
@@ -664,7 +669,7 @@ unQualSymDecl str =
     (Symbol noSrcSpan str)
   )
     
-routeDeclaration :: String -> [String] -> Decl SrcSpanInfo
+routeDeclaration :: String -> [PathComponent] -> Decl SrcSpanInfo
 routeDeclaration routeName routePathComponents = 
   TypeDecl noSrcSpan  
     (declarationHead routeName)
