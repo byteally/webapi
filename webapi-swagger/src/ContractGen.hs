@@ -19,7 +19,7 @@ import GHC.Generics
 import qualified Data.ByteString.Lazy as BSL
 import Data.HashMap.Strict.InsOrd as HMSIns
 import Language.Haskell.Exts hiding (OPTIONS)
-import Data.Vector.Sized as SV hiding ((++), foldM)
+import Data.Vector.Sized as SV hiding ((++), foldM, forM, mapM)
 import Safe
 import Data.Finite.Internal
 import qualified Data.HashMap.Lazy as HML
@@ -71,7 +71,7 @@ readSwaggerGenerateDefnModels :: FilePath -> FilePath -> StateConfig
 readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath = do 
   petstoreJSONContents <- liftIO $ BSL.readFile swaggerJsonInputFilePath
   contractDetailsFromPetstore <- readSwaggerJSON petstoreJSONContents
-  let decodedVal = eitherDecode petstoreJSONContents -- :: Either String Data.Swagger.Internal.Swagger
+  let decodedVal = eitherDecode petstoreJSONContents 
   case decodedVal of
     Left errMsg -> liftIO $ putStrLn errMsg
     Right (swaggerData :: Swagger) -> do
@@ -120,18 +120,53 @@ readSwaggerJSON petstoreJSONContents= do
           xs -> (routeId $ Prelude.head cDetailsList) + 1
         splitRoutePath = DLS.splitOn "/" $ removeLeadingSlash swFilePath
         mainRouteName = (DL.concat $ prettifyRouteName splitRoutePath) ++ "R"
-        currentRoutePath = splitRoutePath
+
+    finalPathWithParamTypes <- forM splitRoutePath (\pathComponent -> 
+        case isParam pathComponent of 
+          True -> do
+            let pathParamName = removeCurlyBraces pathComponent
+            (mParamNameList::[Maybe String]) <- mapM (getPathParamTypeFromOperation pathParamName) (getListOfPathOperations swPathDetails::[Maybe Operation])
+            case (DL.nub . catMaybes) mParamNameList of
+              singleParamType:[] -> pure singleParamType
+              otherVal -> error $ "Expected only a single Param Type to be present in all Methods of this path. Instead got : " ++ show otherVal ++ " Path : " ++ swFilePath
+          False -> pure pathComponent
+          )
+         
+    let currentRoutePath = finalPathWithParamTypes
         methodList = [GET, PUT, POST, PATCH, DELETE, OPTIONS, HEAD]
     currentMethodData <- Control.Monad.foldM (processPathItem mainRouteName swPathDetails) (Map.empty) methodList
     let currentContractDetails = ContractDetails currentRouteId mainRouteName currentRoutePath currentMethodData
     pure (currentContractDetails:cDetailsList)
   removeLeadingSlash inputRoute = fromMaybe inputRoute (DL.stripPrefix "/" inputRoute)
-  prettifyRouteName routeList = case ( routeList) of
+  prettifyRouteName routeList = case routeList of
     [] -> error "Expected atleast one element in the route! Got an empty list!"
     rList -> fmap (\(firstChar:remainingChar) -> (Char.toUpper firstChar):remainingChar ) $ fmap (DL.filter (\x -> not (x == '{' || x == '}') ) ) rList
 
+  isParam (pathComponent::String) = (DL.isPrefixOf "{" pathComponent) && (DL.isSuffixOf "}" pathComponent)
+  removeCurlyBraces = DL.filter (\x -> not (x == '{' || x == '}') )
+  getListOfPathOperations pathItem = [_pathItemGet pathItem, _pathItemPut pathItem, _pathItemPost pathItem, _pathItemDelete pathItem, _pathItemOptions pathItem, _pathItemHead pathItem, _pathItemPatch pathItem]
+  getPathParamTypeFromOperation paramPathName mOperation = case mOperation of
+    Just operation -> do 
+      let paramList = _operationParameters operation
+      mParamType <- foldM (\existingParamType refParam -> 
+        case refParam of
+          Ref referencedParam -> pure existingParamType
+          Inline param -> case (_paramName param == toS paramPathName) of
+            True -> 
+              case (_paramSchema param) of
+                ParamOther paramOtherSchema -> 
+                  case _paramOtherSchemaIn paramOtherSchema of
+                    ParamPath -> do
+                      parameterType <- getTypeFromSwaggerType Nothing (_paramOtherSchemaParamSchema paramOtherSchema) 
+                      pure $ Just parameterType
+                    _ -> pure existingParamType
+                ParamBody _ -> pure existingParamType 
+            False -> pure existingParamType
+        ) Nothing paramList 
+      pure mParamType 
+    Nothing -> pure $ Nothing
 
-
+  
 
   processPathItem :: String -> PathItem -> (Map.Map StdMethod ApiTypeDetails) ->  StdMethod -> StateT [CreateNewType] IO (Map.Map StdMethod ApiTypeDetails)
   processPathItem mainRouteName pathItem methodDataAcc currentMethod =
@@ -252,7 +287,7 @@ getTypeFromSwaggerType :: Maybe String -> ParamSchema t -> StateT [CreateNewType
 getTypeFromSwaggerType mParamName paramSchema = 
     case (_paramSchemaType paramSchema) of 
       SwaggerString -> pure "String" -- add check here for the enum field in param and accordingly create new sumtype/add to StateT and return its name.
-      SwaggerNumber -> pure "Int"
+      SwaggerNumber -> pure "Double" -- TODO: Check format for precision and more info about type
       SwaggerInteger -> pure "Integer"
       SwaggerBoolean -> pure "Bool"
       -- As per the pattern in `PetStore`, for SwaggerArray, we check the Param Schema Items field and look for a reference Name there.
