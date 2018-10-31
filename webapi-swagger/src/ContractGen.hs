@@ -87,7 +87,7 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
   createDataDeclarations :: [NewData] -> [Decl SrcSpanInfo]
   createDataDeclarations newDataList = fmap (\newDataInfo -> dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show"] ) newDataList
  
-
+-- TODO: This function assumes SwaggerObject to be the type and directly reads from schemaProperties. We need to also take additionalProperties into consideration.
 generateSwaggerDefinitionData :: InsOrdHashMap Text Schema -> StateT [CreateNewType] IO [NewData]
 generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (pure []) defDataHM
  where 
@@ -100,7 +100,7 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (
             let innerRecordName = toS $ T.append (T.toLower modelName) $ T.toTitle innerRecord
             innerRecordType <- case iRefSchema of
                     Ref referenceName -> pure $ toS $ getReference referenceName
-                    Inline irSchema -> ((getTypeFromSwaggerType Nothing) . _schemaParamSchema) irSchema
+                    Inline irSchema -> ((getTypeFromSwaggerType Nothing (Just irSchema)) . _schemaParamSchema) irSchema
             pure $ (innerRecordName, innerRecordType):accList ) (pure []) schemaProperties
     pure $ (NewData (toS modelName) recordNamesAndTypes):accValue
 
@@ -157,7 +157,7 @@ readSwaggerJSON petstoreJSONContents= do
                 ParamOther paramOtherSchema -> 
                   case _paramOtherSchemaIn paramOtherSchema of
                     ParamPath -> do
-                      parameterType <- getTypeFromSwaggerType Nothing (_paramOtherSchemaParamSchema paramOtherSchema) 
+                      parameterType <- getTypeFromSwaggerType Nothing Nothing (_paramOtherSchemaParamSchema paramOtherSchema) 
                       pure $ Just parameterType
                     _ -> pure existingParamType
                 ParamBody _ -> pure existingParamType 
@@ -222,7 +222,7 @@ readSwaggerJSON petstoreJSONContents= do
       Inline responseSchema -> 
         case (_responseSchema responseSchema) of
           Just (Ref refText) -> pure $ toS $ getReference refText
-          Just (Inline respSchema) -> ((getTypeFromSwaggerType Nothing) . _schemaParamSchema) respSchema
+          Just (Inline respSchema) -> ((getTypeFromSwaggerType Nothing (Just respSchema) ) . _schemaParamSchema) respSchema
           Nothing -> pure "String"
   getParamTypes :: String -> (Maybe String, Maybe String, Maybe String, Maybe String) -> Referenced Param ->  StateT [CreateNewType] IO (Maybe String, Maybe String, Maybe String, Maybe String)
   getParamTypes newTypeName (mFormParamType, mQueryParamType, mFileParamType, mHeaderInType) refParam =
@@ -240,15 +240,15 @@ readSwaggerJSON petstoreJSONContents= do
               Ref rSchema -> pure ( (Just . toS . getReference) rSchema, mQueryParamType, mFileParamType, mHeaderInType)
               -- TODO: This needs to be tested for Params. Inspect the swagger data on Haskell side and verify that the correct type is returned.
               Inline inlineSchema -> do
-                formDataHaskellType <- ( (getTypeFromSwaggerType $ Just paramName) . _schemaParamSchema) inlineSchema
+                formDataHaskellType <- ( (getTypeFromSwaggerType (Just paramName) (Just inlineSchema) ) . _schemaParamSchema) inlineSchema
                 pure ( Just formDataHaskellType, mQueryParamType, mFileParamType, mHeaderInType)
           ParamOther paramOtherSchema -> 
             case _paramOtherSchemaIn paramOtherSchema of
               ParamFormData -> do
-                formDataType <- ( (getTypeFromSwaggerType $ Just paramName) . _paramOtherSchemaParamSchema) paramOtherSchema
+                formDataType <- ( (getTypeFromSwaggerType (Just paramName) Nothing ) . _paramOtherSchemaParamSchema) paramOtherSchema
                 pure (Just formDataType, mQueryParamType, mFileParamType, mHeaderInType)
               ParamQuery -> do
-                haskellType <- ( (getTypeFromSwaggerType $ Just paramName) . _paramOtherSchemaParamSchema) paramOtherSchema
+                haskellType <- ( (getTypeFromSwaggerType (Just paramName) Nothing ) . _paramOtherSchemaParamSchema) paramOtherSchema
                 case _paramSchemaType $  _paramOtherSchemaParamSchema paramOtherSchema of
                   SwaggerArray -> pure (mFormParamType, Just haskellType, mFileParamType, mHeaderInType) 
                   _ -> do
@@ -283,8 +283,8 @@ checkIfNewType existingType currentType newTypeName =
         pure newTypeName
     Nothing -> pure currentType
 
-getTypeFromSwaggerType :: Maybe String -> ParamSchema t -> StateT [CreateNewType] IO String 
-getTypeFromSwaggerType mParamName paramSchema = 
+getTypeFromSwaggerType :: Maybe String -> Maybe Schema ->  ParamSchema t -> StateT [CreateNewType] IO String 
+getTypeFromSwaggerType mParamName mOuterSchema paramSchema = 
     case (_paramSchemaType paramSchema) of 
       SwaggerString -> pure "String" -- add check here for the enum field in param and accordingly create new sumtype/add to StateT and return its name.
       SwaggerNumber -> pure "Double" -- TODO: Check format for precision and more info about type
@@ -296,12 +296,12 @@ getTypeFromSwaggerType mParamName paramSchema =
                           case obj of
                             Ref reference -> pure $ "[" ++ (toS $ getReference reference) ++ "]"
                             Inline recursiveSchema -> do
-                              hType <- ( ( (getTypeFromSwaggerType Nothing) . _schemaParamSchema) recursiveSchema)
+                              hType <- ( ( (getTypeFromSwaggerType Nothing (Just recursiveSchema) ) . _schemaParamSchema) recursiveSchema)
                               pure $ "[" ++ hType ++ "]"
                         Just (SwaggerItemsArray innerArray) -> checkIfArray $ flip Control.Monad.mapM innerArray (\singleElem -> do
                           case singleElem of
                             Ref ref -> pure $ toS $ getReference ref
-                            Inline innerSchema -> ((getTypeFromSwaggerType Nothing) . _schemaParamSchema) innerSchema) 
+                            Inline innerSchema -> ((getTypeFromSwaggerType Nothing (Just innerSchema) ) . _schemaParamSchema) innerSchema) 
                         Just (SwaggerItemsPrimitive (Just CollectionMulti) innerParamSchema) -> do
                           let paramName = fromJustNote ("Expected a Param Name but got Nothing. Need Param Name to set the name for the new type we need to create. Debug Info: " ++ show paramSchema) mParamName
                           let titleCaseParamName = toS $ T.toTitle $ toS paramName
@@ -312,15 +312,34 @@ getTypeFromSwaggerType mParamName paramSchema =
                               modify'(\existingState -> haskellNewTypeInfo:existingState)
                               pure titleCaseParamName
                             Nothing -> do
-                              arrayType <- getTypeFromSwaggerType Nothing innerParamSchema
+                              arrayType <- getTypeFromSwaggerType Nothing Nothing innerParamSchema
                               let arrayHType =  "[" ++ arrayType ++ "]"
                               let finalProductTypeInfo = ProductType $ NewData titleCaseParamName [(paramName, arrayHType)]
                               modify' (\existingState -> finalProductTypeInfo:existingState)
                               pure titleCaseParamName           
                           -- show $ innerParamSchema
                         Nothing -> error "Expected a SwaggerItems type due to SwaggerArray ParamSchema Type. But it did not find any! Please check the swagger spec!"
-      -- TODO: Type for SwaggerObject is a very temporary solution and needs to be handled better. We need to look at schemaProperties and additionalProperties
-      SwaggerObject -> pure "Value"-- case ( _ . _schemaAdditionalProperties)
+      SwaggerObject -> 
+        case mOuterSchema of
+          Just outerSchema -> 
+            case (HMSIns.toList $ _schemaProperties outerSchema) of
+              [] -> 
+                case (_schemaAdditionalProperties outerSchema) of
+                  Just additionalProps -> 
+                    case additionalProps of
+                      Ref ref -> pure $ "HashMap Text " ++ (toS $ getReference ref)
+                      Inline internalSchema -> ((getTypeFromSwaggerType Nothing (Just internalSchema)) . _schemaParamSchema) internalSchema
+                  Nothing -> error $ "Type SwaggerObject but swaggerProperties and additionalProperties are both absent! Debug Info (Schema): " ++ show outerSchema
+              propertyList -> do -- TODO: This needs to be changed when we encounter _schemaProperties in some swagger doc/schema.
+                innerRecordsInfo <- forM propertyList (\(recordName, iRefSchema) -> do
+                      innerRecordType <- case iRefSchema of
+                          Ref refName -> pure $ toS $ getReference refName
+                          Inline irSchema -> ((getTypeFromSwaggerType Nothing (Just irSchema)) . _schemaParamSchema) irSchema 
+                      pure (toS recordName, innerRecordType) )
+                let finalProductTypeInfo = ProductType $ NewData "ProductTypeName" innerRecordsInfo
+                modify' (\existingState -> finalProductTypeInfo:existingState)
+                pure "ProductTypeName"
+          Nothing -> error $ "Expected outer schema to be present when trying to construct type of SwaggerObject. Debug Info (ParamSchema):  " ++ show paramSchema
       SwaggerFile -> pure "FileInfo" -- TODO 
       SwaggerNull -> pure "()"
       -- x -> ("Got Unexpected Primitive Value : " ++ show x)
@@ -483,12 +502,10 @@ generateContractBody contractName contractDetails =
     let topLevelVector = fromMaybeSV $ SV.fromList ["ApiContract", contractName, (show currentMethod), routeName]
         respType = Just $ apiOut apiDetails
         errType = apiErr apiDetails
-        -- TODO: add checks for query, form param here. Default `Nothing` for now
         formParamType = formParam apiDetails
         queryParamType = queryParam apiDetails
         fileParamType = fileParam apiDetails
         headerParamType = headerIn apiDetails
-        -- Add remaining types and checks for them
         instanceVectorList = catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeName, tInfo] ) typeInfo) $ DL.zip (respType:errType:formParamType:queryParamType:fileParamType:headerParamType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam", "FileParam", "HeaderParam"]
     in (topLevelVector, instanceVectorList):accValue
   fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
@@ -681,7 +698,7 @@ webApiInstance mainTypeName routeAndMethods =
   InstDecl noSrcSpan Nothing 
     (IRule noSrcSpan Nothing Nothing 
       (IHApp noSrcSpan 
-        (instanceHead "WebApi") -- TODO: confirm that this will always remain the same.
+        (instanceHead "WebApi")
         (typeConstructor mainTypeName) 
       )
     ) 
