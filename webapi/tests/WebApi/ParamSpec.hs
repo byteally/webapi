@@ -2,7 +2,7 @@
 {-# LANGUAGE MultiParamTypeClasses, TypeFamilies, OverloadedStrings, DataKinds, TypeOperators, TypeSynonymInstances, FlexibleInstances, DeriveGeneric #-}
 module WebApi.ParamSpec (spec) where
 
-import WebApi.Param
+import WebApi
 import GHC.Generics
 import Data.Text
 import Test.Hspec

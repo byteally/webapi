@@ -67,24 +67,7 @@ import WebApi.Contract
 import WebApi.Internal
 import WebApi.Param
 import WebApi.Util
-import GHC.Exts
 
--- | Datatype representing a endpoint.
-data Route (ms :: [*]) (r :: *)
-
-data StaticPiece (s :: Symbol)
-
-data DynamicPiece (t :: *)
-
-data Namespace (ns :: *)
-
--- | Datatype associating a namespace with a route.
-data (://) (ns :: *) (ps :: k)
-infixr 5 ://
-
--- | Datatype representing a route.
-data (:/) (p1 :: k) (p2 :: k1)
-infixr 5 :/
 
 -- | Get the namespace of a route
 type family NamespaceOf (r :: *) where
@@ -94,12 +77,6 @@ type instance PathParam' m (Static s) = ()
 type instance PathParam' m (p1 :/ p2) = HListToTuple (FilterDynP (ToPieces (p1 :/ p2)))
 type instance PathParam' m (p :// (ps :: *)) = HListToTuple (FilterDynP (ToPieces ps))
 type instance PathParam' m (p :// (ps :: Symbol)) = ()
-
--- | Datatype representing a static path piece.
-data Static (s :: Symbol)
-
-type Root = Static ""
-
 
 data PieceType :: * -> * where
   SPiece  :: Proxy (p :: Symbol) -> PieceType (StaticPiece p)
@@ -138,34 +115,7 @@ dropStaticPiece (ConsStaticPiece _ ps)  = dropStaticPiece ps
 dropStaticPiece (ConsNSPiece _ ps)      = dropStaticPiece ps
 dropStaticPiece (ConsDynamicPiece p ps) = p :* dropStaticPiece ps
 
--- | Convert the path into a flat hierarchy.
-type family ToPieces (r :: k) :: [*] where
-  ToPieces (ns :// (ps :: *))      = Namespace ns ': ToPieces' ps
-  ToPieces (ns :// (ps :: Symbol)) = Namespace ns ': ToPieces' (Static ps)
-  ToPieces p                       = ToPieces' p
 
-type family ToPieces' (r :: k) :: [*] where
-  ToPieces' (Static s)                         = '[StaticPiece s]
-  ToPieces' ((p1 :: Symbol) :/ (p2 :: Symbol)) = '[StaticPiece p1, StaticPiece p2]
-  ToPieces' ((p1 :: *) :/ (p2 :: Symbol))      = '[DynamicPiece p1, StaticPiece p2]
-  ToPieces' ((p1 :: Symbol) :/ (p2 :/ p3))     = StaticPiece p1 ': ToPieces' (p2 :/ p3)
-  ToPieces' ((p1 :: *) :/ (p2 :/ p3))          = DynamicPiece p1 ': ToPieces' (p2 :/ p3)
-  ToPieces' ((p1 :: *) :/ (p2 :: *))           = '[DynamicPiece p1, DynamicPiece p2]
-  ToPieces' ((p1 :: Symbol) :/ (p2 :: *))      = '[StaticPiece p1, DynamicPiece p2]
-
-type family FromPieces (pps :: [*]) :: * where
-  FromPieces (Namespace ns ': ps) = ns :// FromPieces' ps
-  FromPieces ps                   = FromPieces' ps
-
-type family FromPieces' (pps :: [*]) :: * where
-  FromPieces' '[StaticPiece s]                    = Static s
-  FromPieces' '[StaticPiece p1, StaticPiece p2]   = p1 :/ p2
-  FromPieces' '[DynamicPiece p1, DynamicPiece p2] = p1 :/ p2
-  FromPieces' '[StaticPiece p1, DynamicPiece p2]  = p1 :/ p2
-  FromPieces' '[DynamicPiece p1, StaticPiece p2]  = p1 :/ p2
-
-  FromPieces' (DynamicPiece p ': ps)              = p :/ FromPieces' ps
-  FromPieces' (StaticPiece p ': ps)               = p :/ FromPieces' ps
 
 {-
   FromPieces '[StaticPiece p1, StaticPiece p2]   = p1 :/ p2
@@ -436,29 +386,6 @@ snocParsedRoute (ConsStaticPiece sym routes) pt  = (ConsStaticPiece sym $ snocPa
 snocParsedRoute (ConsNSPiece prov routes) pt     = (ConsNSPiece prov $ snocParsedRoute routes pt)
 snocParsedRoute (ConsDynamicPiece sym routes) pt = (ConsDynamicPiece sym $ snocParsedRoute routes pt)
 
-instance (MkFormatStr (ToPieces (a :/ b))) => MkPathFormatString (a :/ b) where
-  mkPathFormatString _ = mkFormatStr (Proxy :: Proxy (ToPieces (a :/ b)))
-
-instance (MkPathFormatString b) => MkPathFormatString (a :// (b :: *)) where
-  mkPathFormatString _ = mkPathFormatString (Proxy :: Proxy b)
-
-instance (MkPathFormatString (Static b)) => MkPathFormatString (a :// (b :: Symbol)) where
-  mkPathFormatString _ = mkPathFormatString (Proxy :: Proxy (Static b))
-
-instance (KnownSymbol s) => MkPathFormatString (Static s) where
-  mkPathFormatString _ = mkFormatStr (Proxy :: Proxy (ToPieces (Static s)))
-
-class MkFormatStr (xs :: [*]) where
-  mkFormatStr :: Proxy xs -> [PathSegment]
-
-instance (KnownSymbol s, MkFormatStr xs) => MkFormatStr (StaticPiece s ': xs) where
-  mkFormatStr _ = StaticSegment (T.pack (symbolVal (Proxy :: Proxy s))) : mkFormatStr (Proxy :: Proxy xs)
-
-instance (MkFormatStr xs) => MkFormatStr (DynamicPiece s ': xs) where
-  mkFormatStr _ = Hole : mkFormatStr (Proxy :: Proxy xs)
-
-instance MkFormatStr '[] where
-  mkFormatStr _ = []
 
 -- | This function is used to call local handler without incurring the cost of network round trip and se/deserialisation of Request and Response.
 apiHandler :: forall query p m r.

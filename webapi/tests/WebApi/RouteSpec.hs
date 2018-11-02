@@ -24,7 +24,7 @@ type RouteWithParamAtBegin = Bool:/"param"
 type RouteWithParams       = Text:/"param1":/Int:/"param2"
 type OverlappingRoute      = "foo":/"param1":/Int:/"param2"
 
-type Namespace        = RoutingSpec :// "foo" :/ "bar"
+type NamespaceR       = RoutingSpec :// "foo" :/ "bar"
 type NamespaceDyn     = RoutingSpec :// "foo" :/ Int :/ "bar"
 type NamespaceDynBeg  = RoutingSpec :// Int :/ "baz" :/ "bar"
 type NamespaceStatic  = RoutingSpec :// "bar"
@@ -38,7 +38,7 @@ instance WebApi RoutingSpec where
                               , Route '[GET] RouteWithParamAtBegin
                               , Route '[GET] OverlappingRoute
                               , Route '[GET] RouteWithParams
-                              , Route '[GET] Namespace
+                              , Route '[GET] NamespaceR
                               , Route '[GET] NamespaceStatic
                               , Route '[GET] NamespaceDyn
                               , Route '[GET] NamespaceDynBeg
@@ -63,8 +63,8 @@ instance ApiContract RoutingSpec GET RouteWithParams where
 instance ApiContract RoutingSpec GET OverlappingRoute where
   type ApiOut GET OverlappingRoute = Text
 
-instance ApiContract RoutingSpec GET Namespace where
-  type ApiOut GET Namespace = Text
+instance ApiContract RoutingSpec GET NamespaceR where
+  type ApiOut GET NamespaceR = Text
 
 instance ApiContract RoutingSpec GET NamespaceDyn where
   type ApiOut GET NamespaceDyn = Text
@@ -103,7 +103,7 @@ instance ApiHandler RoutingSpecImpl GET RouteWithParams where
 instance ApiHandler RoutingSpecImpl GET OverlappingRoute where
   handler _ _ = respond "OverlappingRoute"
 
-instance ApiHandler RoutingSpecImpl GET Namespace where
+instance ApiHandler RoutingSpecImpl GET NamespaceR where
   handler _ _ = respond "Namespace"
 
 instance ApiHandler RoutingSpecImpl GET NamespaceStatic where

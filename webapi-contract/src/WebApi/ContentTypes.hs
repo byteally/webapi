@@ -48,8 +48,7 @@ module WebApi.ContentTypes
        , StripContents
        ) where
 
-import           Blaze.ByteString.Builder           (Builder)
-import qualified Blaze.ByteString.Builder.Char.Utf8 as Utf8 (fromLazyText)
+import           Data.Text.Lazy.Encoding (encodeUtf8Builder)
 import           Data.Aeson                         (ToJSON (..), FromJSON (..), eitherDecode)
 #if MIN_VERSION_aeson(1,0,0)
 import           Data.Aeson.Encoding                (fromEncoding)
@@ -66,7 +65,7 @@ import           Network.HTTP.Media.MediaType
 import           Network.HTTP.Media                 (mapContentMedia)
 import           WebApi.Util
 import           WebApi.Contract                    (JSON)
-import Data.ByteString.Builder (lazyByteString)
+import           Data.ByteString.Builder (lazyByteString, Builder)
 
 
 -- | Type representing content type of @text/plain@.
@@ -150,7 +149,7 @@ instance (ToJSON c) => Encode JSON c where
 #endif
 
 instance (ToText a) => Encode PlainText a where
-  encode _ = Utf8.fromLazyText . toText
+  encode _ = encodeUtf8Builder . toText
 
 -- | (Try to) Decode a type from a specific content type.
 class (Accept c) => Decode c a where

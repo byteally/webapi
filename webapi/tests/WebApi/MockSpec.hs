@@ -41,6 +41,7 @@ instance WebApi MockSpec where
 instance ApiContract MockSpec GET MockApi where
   type QueryParam GET MockApi = QP
   type ApiOut     GET MockApi = MockOut
+  type ApiErr     GET MockApi = ()
 
 
 spec :: Spec

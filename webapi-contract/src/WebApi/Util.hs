@@ -4,10 +4,14 @@
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
 {-# LANGUAGE PolyKinds             #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE UndecidableInstances  #-}
 
 module WebApi.Util where
 
-import Data.Proxy (Proxy)
+import Data.Proxy (Proxy (..))
+import Data.Text (Text, pack)
+import GHC.TypeLits
 
 type family HListToTuple (xs :: [*]) :: * where
   HListToTuple '[]   = ()
@@ -83,3 +87,91 @@ type family StripContent a where
   StripContent t                  = t
 
 data Content (ctypes :: [*]) (a :: *)
+
+
+-- | Datatype representing a endpoint.
+data Route (ms :: [*]) (r :: *)
+
+-- | Datatype associating a namespace with a route.
+data (://) (ns :: *) (ps :: k)
+infixr 5 ://
+
+-- | Datatype representing a route.
+data (:/) (p1 :: k) (p2 :: k1)
+infixr 5 :/
+
+-- | Datatype representing a static path piece.
+data Static (s :: Symbol)
+
+type Root = Static ""
+
+  
+instance (MkFormatStr (ToPieces (a :/ b))) => MkPathFormatString (a :/ b) where
+  mkPathFormatString _ = mkFormatStr (Proxy :: Proxy (ToPieces (a :/ b)))
+
+instance (MkPathFormatString b) => MkPathFormatString (a :// (b :: *)) where
+  mkPathFormatString _ = mkPathFormatString (Proxy :: Proxy b)
+
+instance (MkPathFormatString (Static b)) => MkPathFormatString (a :// (b :: Symbol)) where
+  mkPathFormatString _ = mkPathFormatString (Proxy :: Proxy (Static b))
+
+instance (KnownSymbol s) => MkPathFormatString (Static s) where
+  mkPathFormatString _ = mkFormatStr (Proxy :: Proxy (ToPieces (Static s)))
+
+
+data Namespace (ns :: *)
+
+-- | Convert the path into a flat hierarchy.
+type family ToPieces (r :: k) :: [*] where
+  ToPieces (ns :// (ps :: *))      = Namespace ns ': ToPieces' ps
+  ToPieces (ns :// (ps :: Symbol)) = Namespace ns ': ToPieces' (Static ps)
+  ToPieces p                       = ToPieces' p
+
+type family ToPieces' (r :: k) :: [*] where
+  ToPieces' (Static s)                         = '[StaticPiece s]
+  ToPieces' ((p1 :: Symbol) :/ (p2 :: Symbol)) = '[StaticPiece p1, StaticPiece p2]
+  ToPieces' ((p1 :: *) :/ (p2 :: Symbol))      = '[DynamicPiece p1, StaticPiece p2]
+  ToPieces' ((p1 :: Symbol) :/ (p2 :/ p3))     = StaticPiece p1 ': ToPieces' (p2 :/ p3)
+  ToPieces' ((p1 :: *) :/ (p2 :/ p3))          = DynamicPiece p1 ': ToPieces' (p2 :/ p3)
+  ToPieces' ((p1 :: *) :/ (p2 :: *))           = '[DynamicPiece p1, DynamicPiece p2]
+  ToPieces' ((p1 :: Symbol) :/ (p2 :: *))      = '[StaticPiece p1, DynamicPiece p2]
+
+type family FromPieces (pps :: [*]) :: * where
+  FromPieces (Namespace ns ': ps) = ns :// FromPieces' ps
+  FromPieces ps                   = FromPieces' ps
+
+type family FromPieces' (pps :: [*]) :: * where
+  FromPieces' '[StaticPiece s]                    = Static s
+  FromPieces' '[StaticPiece p1, StaticPiece p2]   = p1 :/ p2
+  FromPieces' '[DynamicPiece p1, DynamicPiece p2] = p1 :/ p2
+  FromPieces' '[StaticPiece p1, DynamicPiece p2]  = p1 :/ p2
+  FromPieces' '[DynamicPiece p1, StaticPiece p2]  = p1 :/ p2
+
+  FromPieces' (DynamicPiece p ': ps)              = p :/ FromPieces' ps
+  FromPieces' (StaticPiece p ': ps)               = p :/ FromPieces' ps
+-- | Type of segments of a Path.
+data PathSegment = StaticSegment Text -- ^ A static segment
+                 | Hole -- ^ A dynamic segment
+                 deriving (Show, Eq)
+
+-- | Describe representation of the route.
+class MkPathFormatString r where
+  -- | Given a route, this function should produce the @[PathSegment]@ of that route. This gives the flexibility to hook in a different routing system into the application.
+  mkPathFormatString :: Proxy r -> [PathSegment]
+
+class MkFormatStr (xs :: [*]) where
+  mkFormatStr :: Proxy xs -> [PathSegment]
+
+instance MkFormatStr '[] where
+  mkFormatStr _ = []  
+
+
+data StaticPiece (s :: Symbol)
+
+instance (KnownSymbol s, MkFormatStr xs) => MkFormatStr (StaticPiece s ': xs) where
+  mkFormatStr _ = StaticSegment (pack (symbolVal (Proxy :: Proxy s))) : mkFormatStr (Proxy :: Proxy xs)
+
+data DynamicPiece (t :: *)
+
+instance (MkFormatStr xs) => MkFormatStr (DynamicPiece s ': xs) where
+  mkFormatStr _ = Hole : mkFormatStr (Proxy :: Proxy xs)
