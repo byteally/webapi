@@ -50,13 +50,8 @@ runCodeGen swaggerJsonInputFilePath contractOutputFolderPath = do
   createNewTypes newTypeCreationList
  where
   createNewTypes typeList = do
-    let hModule = 
-          Module noSrcSpan 
-            (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
-            (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
-            (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics"])
-            (fmap createType typeList)
-    writeFile (contractOutputFolderPath ++ "Types.hs") $ prettyPrint hModule
+    let hTypes = fmap createType typeList
+    appendFile (contractOutputFolderPath ++ "Types.hs") $ DL.unlines $ fmap prettyPrint hTypes
       
   createType typeInfo = 
     case typeInfo of
@@ -76,13 +71,21 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
     Left errMsg -> liftIO $ putStrLn errMsg
     Right (swaggerData :: Swagger) -> do
       newData <- generateSwaggerDefinitionData (_swaggerDefinitions swaggerData) 
-      let hModule = 
+      let hContractModule = 
             Module noSrcSpan 
               (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
-              (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances", "DuplicateRecordFields"])
+              (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
               (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics", "Types"])
-              ((createDataDeclarations newData) ++ generateContractBody "Petstore" contractDetailsFromPetstore)
-      liftIO $ writeFile (contractOutputFolderPath ++ "Contract.hs") $ prettyPrint hModule
+              (generateContractBody "Petstore" contractDetailsFromPetstore)
+      liftIO $ writeFile (contractOutputFolderPath ++ "Contract.hs") $ prettyPrint hContractModule
+      let hTypesModule = 
+            Module noSrcSpan 
+                (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
+                (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances", "DuplicateRecordFields"])
+                (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics"])
+                (createDataDeclarations newData)
+      liftIO $ writeFile (contractOutputFolderPath ++ "Types.hs") $ prettyPrint hTypesModule ++ "\n\n"
+    
  where 
   createDataDeclarations :: [NewData] -> [Decl SrcSpanInfo]
   createDataDeclarations newDataList = fmap (\newDataInfo -> dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show"] ) newDataList
