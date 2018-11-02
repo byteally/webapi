@@ -23,21 +23,17 @@ import           Control.Monad.Trans.Resource       (runResourceT,
                                                      withInternalState)
 import           Data.ByteString                    (ByteString)
 import           Data.ByteString.Builder            (toLazyByteString, Builder)
-import           Data.ByteString.Char8              (pack, unpack)
 import           Data.ByteString.Lazy               as LBS (toStrict)
-import           Data.List                          (find, foldl')
+import           Data.List                          (find)
 import           Data.Monoid                        ((<>))
 import           Data.Maybe                         (fromMaybe)
 import           Data.Proxy
-import           Data.Text                          (Text)
 import qualified Data.Text                          as T (pack)
-import           Data.Text.Encoding                 (decodeUtf8)
 import           Data.Typeable                      (Typeable)
 import           Network.HTTP.Media                 (MediaType, mapAcceptMedia,
                                                      matchAccept, matchContent)
 import           Network.HTTP.Media.RenderHeader    (renderHeader)
 import           Network.HTTP.Types                 hiding (Query)
-import           Network.URI                        (URI (..))
 import qualified Network.Wai                        as Wai
 import qualified Network.Wai.Parse                  as Wai
 import           Web.Cookie
@@ -152,47 +148,6 @@ toWaiResponse wreq resp = case resp of
           , setCookieSecure   = fromMaybe False (cookieSecure v)
           }
 
--- | Generate a type safe URL for a given route type. The URI can be used for setting a base URL if required.
-link :: ( ToParam 'QueryParam (QueryParam m r)
-        , MkPathFormatString r
-        , ToParam 'PathParam (PathParam m r)
-        ) =>
-          route m r
-        -> URI
-        -> PathParam m r
-        -> Maybe (QueryParam m r)
-        -> URI
-link r base paths query = base
-                          { uriPath = unpack $ renderUriPath (pack $ uriPath base) paths r
-                          , uriQuery = maybe "" renderQuery' query
-                          }
-  where renderQuery' :: (ToParam 'QueryParam query) => query -> String
-        renderQuery' = unpack . renderQuery True . toQueryParam
-
-renderUriPath ::  ( ToParam 'PathParam path
-                   , MkPathFormatString r
-                   ) => ByteString -> path -> route m r -> ByteString
-renderUriPath basePth p r = case basePth of
-          ""  -> renderPaths p r
-          "/" -> renderPaths p r
-          _   -> basePth `mappend` renderPaths p r
-
-renderPaths :: ( ToParam 'PathParam path
-                , MkPathFormatString r
-                ) => path -> route m r -> ByteString
-renderPaths p r = toStrict $ toLazyByteString
-                  $ encodePathSegments $ uriPathPieces (toPathParam p)
-
-  where uriPathPieces :: [ByteString] -> [Text]
-        uriPathPieces dynVs = reverse $ fst $ foldl' (flip fillHoles) ([], dynVs) (mkPathFormatString (toRoute r))
-
-        fillHoles :: PathSegment -> ([Text], [ByteString]) -> ([Text], [ByteString])
-        fillHoles (StaticSegment t) (segs, dynVs)    = (t : segs, dynVs)
-        fillHoles  Hole             (segs, dynV: xs) = (decodeUtf8 dynV : segs, xs)
-        fillHoles  Hole             (_segs, [])      = error "Panic: fewer pathparams than holes"
-
-        toRoute :: route m r -> Proxy r
-        toRoute = const Proxy
 
 -- | Describes the implementation of a single API end point corresponding to @ApiContract (ApiInterface p) m r@
 class (ApiContract (ApiInterface p) m r) => ApiHandler (p :: *) (m :: *) (r :: *) where

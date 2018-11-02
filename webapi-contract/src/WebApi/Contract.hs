@@ -259,6 +259,8 @@ pattern Req :: () => (SingMethod m, HListToTuple (StripContents (RequestBody m r
 pattern Req pp qp fp fip hi ci m = Req' pp qp fp fip hi ci () m
 
 
+
+
 -- | Datatype representing a Api Resource. This is a Phantom type similar to 'Proxy', usually used to fix the parameter method (m) and route (r) of functions without resorting to pass 'undefined' as witness
 data Resource m r = Res
 
