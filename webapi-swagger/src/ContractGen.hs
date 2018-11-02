@@ -136,7 +136,7 @@ readSwaggerJSON petstoreJSONContents= do
           False -> pure (PathComp pathComponent)
           )
          
-    let currentRoutePath = finalPathWithParamTypes
+    let currentRoutePath = addStaticKeyword finalPathWithParamTypes
         methodList = [GET, PUT, POST, PATCH, DELETE, OPTIONS, HEAD]
     currentMethodData <- Control.Monad.foldM (processPathItem mainRouteName swPathDetails) (Map.empty) methodList
     let currentContractDetails = ContractDetails currentRouteId mainRouteName currentRoutePath currentMethodData
@@ -145,7 +145,13 @@ readSwaggerJSON petstoreJSONContents= do
   prettifyRouteName routeList = case routeList of
     [] -> error "Expected atleast one element in the route! Got an empty list!"
     rList -> fmap (\(firstChar:remainingChar) -> (Char.toUpper firstChar):remainingChar ) $ fmap (DL.filter (\x -> not (x == '{' || x == '}') ) ) rList
-
+  addStaticKeyword pathComponentList = 
+    case pathComponentList of
+      singleElem:[] -> 
+        case singleElem of
+          PathComp pathElem -> (PathParamType "Static"):singleElem:[]
+          _ -> pathComponentList
+      _ -> pathComponentList
   isParam (pathComponent::String) = (DL.isPrefixOf "{" pathComponent) && (DL.isSuffixOf "}" pathComponent)
   removeCurlyBraces = DL.filter (\x -> not (x == '{' || x == '}') )
   getListOfPathOperations pathItem = [_pathItemGet pathItem, _pathItemPut pathItem, _pathItemPost pathItem, _pathItemDelete pathItem, _pathItemOptions pathItem, _pathItemHead pathItem, _pathItemPatch pathItem]
