@@ -77,6 +77,8 @@ module WebApi.Param
        , filePath
        , nest
        , defaultParamSettings
+       , link
+       , renderUriPath
          
        -- * Generic (De)Serialization fn
        , genericToQueryParam
@@ -94,9 +96,8 @@ module WebApi.Param
 
 import           Data.Aeson                         (FromJSON (..), ToJSON (..), (.:))
 import qualified Data.Aeson                         as A
-import           Data.ByteString                    as SB hiding (index,
-                                                           isPrefixOf)
-import qualified Data.ByteString                    as SB (isPrefixOf)
+import           Data.ByteString                    (ByteString)
+import qualified Data.ByteString                    as SB
 import           Data.ByteString.Builder            (byteString, char7,
                                                      toLazyByteString)
 import           Data.ByteString.Char8              as ASCII (pack, readInteger,
@@ -111,9 +112,10 @@ import           Data.Int
 import qualified Data.List                          as L (find)
 import           Data.Monoid                        ((<>))
 import           Data.Proxy
+import           Data.Text                          (Text)
 import qualified Data.Text                          as T (Text, pack, uncons)
 import qualified Data.Text.Lazy                     as LT
-import           Data.Text.Encoding                 (decodeUtf8', encodeUtf8)
+import           Data.Text.Encoding                 (decodeUtf8, decodeUtf8', encodeUtf8)
 import           Data.Time.Calendar                 (Day)
 import           Data.Time.Clock                    (UTCTime, DiffTime)
 import           Data.Time.LocalTime                (LocalTime, TimeOfDay)
@@ -129,6 +131,8 @@ import           GHC.Generics
 import           Network.HTTP.Types
 import           Network.HTTP.Types                 as Http (Header, QueryItem)
 import           Control.Applicative
+import           WebApi.Util
+import           WebApi.Contract
 
 -- | A type for holding a file.
 data FileInfo = FileInfo
@@ -213,6 +217,49 @@ instance Monoid e => Applicative (Validation e) where
     case a of
       Right va -> fmap va b
       Left ea -> either (Left . mappend ea) (const $ Left ea) b
+
+-- | Generate a type safe URL for a given route type. The URI can be used for setting a base URL if required.
+link :: ( ToParam 'QueryParam (QueryParam m r)
+        , MkPathFormatString r
+        , ToParam 'PathParam (PathParam m r)
+        ) =>
+          route (m :: *) (r :: *)
+        -> ByteString
+        -> PathParam m r
+        -> Maybe (QueryParam m r)
+        -> ByteString
+link r basePath paths query = toStrict $ toLazyByteString $ (byteString base) <> uriPath
+  where
+    uriPath = encodePath (routePaths paths r) (toQueryParam query)
+    base    = case basePath of
+      "/" -> ""
+      _   -> basePath
+
+renderUriPath ::  ( ToParam 'PathParam path
+                   , MkPathFormatString r
+                   ) => ByteString -> path -> route m r -> ByteString
+renderUriPath basePath p r = toStrict $ toLazyByteString $ (byteString base) <> (encodePathSegments $ routePaths p r)
+  where
+    base    = case basePath of
+      "/" -> ""
+      _   -> basePath
+
+routePaths :: ( ToParam 'PathParam path
+                , MkPathFormatString r
+                ) => path -> route m r -> [Text]
+routePaths p r = uriPathPieces (toPathParam p)
+
+  where uriPathPieces :: [ByteString] -> [Text]
+        uriPathPieces dynVs = reverse $ fst $ foldl' (flip fillHoles) ([], dynVs) (mkPathFormatString (toRoute r))
+
+        fillHoles :: PathSegment -> ([Text], [ByteString]) -> ([Text], [ByteString])
+        fillHoles (StaticSegment t) (segs, dynVs)    = (t : segs, dynVs)
+        fillHoles  Hole             (segs, dynV: xs) = (decodeUtf8 dynV : segs, xs)
+        fillHoles  Hole             (_segs, [])      = error "Panic: fewer pathparams than holes"
+
+        toRoute :: route m r -> Proxy r
+        toRoute = const Proxy
+      
 
 -- | Serialize a type into query params.
 toQueryParam :: (ToParam 'QueryParam a) => a -> Query

@@ -45,7 +45,6 @@ library
                      , cookie             >= 0.4  && < 0.5
                      , resourcet          >= 1.1  && < 1.2
                      , exceptions         >= 0.8  && < 1
-                     , network-uri        >= 2.6  && < 2.7
                      , QuickCheck         >= 2.8  && < 2.10
 
   hs-source-dirs:      src

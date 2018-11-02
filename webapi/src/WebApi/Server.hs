@@ -35,7 +35,6 @@ module WebApi.Server
          
        -- * Routing  
        , module WebApi.Router
-       , link
        ) where
 
 import           Control.Monad.Catch
