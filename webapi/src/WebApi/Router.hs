@@ -73,11 +73,6 @@ import WebApi.Util
 type family NamespaceOf (r :: *) where
   NamespaceOf (ns :// r) = ns
 
-type instance PathParam' m (Static s) = ()
-type instance PathParam' m (p1 :/ p2) = HListToTuple (FilterDynP (ToPieces (p1 :/ p2)))
-type instance PathParam' m (p :// (ps :: *)) = HListToTuple (FilterDynP (ToPieces ps))
-type instance PathParam' m (p :// (ps :: Symbol)) = ()
-
 data PieceType :: * -> * where
   SPiece  :: Proxy (p :: Symbol) -> PieceType (StaticPiece p)
   NSPiece :: Proxy (ns :: *) -> PieceType (Namespace ns)
@@ -114,24 +109,6 @@ dropStaticPiece (Nil _)                 = HNil
 dropStaticPiece (ConsStaticPiece _ ps)  = dropStaticPiece ps
 dropStaticPiece (ConsNSPiece _ ps)      = dropStaticPiece ps
 dropStaticPiece (ConsDynamicPiece p ps) = p :* dropStaticPiece ps
-
-
-
-{-
-  FromPieces '[StaticPiece p1, StaticPiece p2]   = p1 :/ p2
-  FromPieces '[DynamicPiece p1, DynamicPiece p2] = p1 :/ p2
-  FromPieces '[StaticPiece p1, DynamicPiece p2]  = p1 :/ p2
-  FromPieces '[DynamicPiece p1, StaticPiece p2]  = p1 :/ p2
-  FromPieces ((StaticPiece p1) ': ((StaticPiece p2) ': pps)) = p1 :/ (FromPieces ((StaticPiece p2) ': pps))
-  FromPieces ((DynamicPiece p1) ': ((DynamicPiece p2) ': pps)) = p1 :/ (FromPieces ((DynamicPiece p2) ': pps))
-  FromPieces ((StaticPiece p1) ': ((DynamicPiece p2) ': pps)) = p1 :/ (FromPieces ((DynamicPiece p2) ': pps))
-  FromPieces ((DynamicPiece p1) ': ((StaticPiece p2) ': pps)) = p1 :/ (FromPieces ((StaticPiece p2) ': pps))
--}
-
-type family FilterDynP (ps :: [*]) :: [*] where
-  FilterDynP (DynamicPiece p1 ': p2) = p1 ': FilterDynP p2
-  FilterDynP (p1 ': p2)              = FilterDynP p2
-  FilterDynP '[]                     = '[]
 
 -- | Class to do the default routing.
 class Router (server :: *) (r :: k) (pr :: (*, [*])) where

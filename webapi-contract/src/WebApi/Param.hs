@@ -1381,7 +1381,7 @@ instance (FromParam par a) => FromParam par [a] where
 instance (FromParam par a) => FromParam par (Vector a) where
   fromParam pt key kvs = case fromParam pt key kvs of
     Validation (Right v)  -> Validation $ Right (V.fromList v)
-    Validation (Left err) -> Validation (Left err)
+    Validation (Left e) -> Validation (Left e)
 
 instance (DecodeParam a) => FromParam 'QueryParam (OptValue a) where
   fromParam pt key kvs = case lookupParam pt key kvs of
