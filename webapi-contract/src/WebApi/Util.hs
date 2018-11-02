@@ -175,3 +175,8 @@ data DynamicPiece (t :: *)
 
 instance (MkFormatStr xs) => MkFormatStr (DynamicPiece s ': xs) where
   mkFormatStr _ = Hole : mkFormatStr (Proxy :: Proxy xs)
+
+type family FilterDynP (ps :: [*]) :: [*] where
+  FilterDynP (DynamicPiece p1 ': p2) = p1 ': FilterDynP p2
+  FilterDynP (p1 ': p2)              = FilterDynP p2
+  FilterDynP '[]                     = '[]

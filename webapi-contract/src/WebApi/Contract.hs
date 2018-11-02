@@ -168,6 +168,11 @@ class ( SingMethod m
 -- Please take a look at the existing instances of 'PathParam'' for reference.
 type family PathParam' m r :: *
 
+type instance PathParam' m (Static s) = ()
+type instance PathParam' m (p1 :/ p2) = HListToTuple (FilterDynP (ToPieces (p1 :/ p2)))
+type instance PathParam' m (p :// (ps :: *)) = HListToTuple (FilterDynP (ToPieces ps))
+type instance PathParam' m (p :// (ps :: Symbol)) = ()  
+
 -- | Datatype representing a request to route `r` with method `m`.
 data Request m r = Req'
   {
