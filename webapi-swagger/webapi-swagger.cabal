@@ -48,7 +48,8 @@ library
     , http-types
     , transformers
   default-language: Haskell2010
-  ghc-options: -Wall -Werror
+  -- ghc-options: -Wall -Werror
+  ghc-options: -Wall
 
 executable webapi-swagger-exe
   main-is: Main.hs
