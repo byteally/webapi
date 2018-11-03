@@ -34,7 +34,7 @@ library
                      , http-types         >= 0.8.6    && < 0.13
                      , aeson              >= 0.9  && < 1.4
                      , http-media         >= 0.6
-                     , time               >= 1.5  && < 1.7
+                     , time               >= 1.5  && < 1.9
                      , bytestring-lexing  == 0.5.*
                      , bytestring-trie    == 0.2.*
                      , case-insensitive   == 1.2.*
