@@ -212,7 +212,7 @@ readSwaggerJSON petstoreJSONContents= do
               ParamQuery -> (formParamList, param:queryParamList, fileParamList, headerInList) 
               ParamHeader -> (formParamList, queryParamList, fileParamList, param:headerInList)
               ParamPath -> (formParamList, queryParamList, fileParamList, headerInList) 
-              ParamFormData -> do
+              ParamFormData ->
                 case (_paramSchema param) of
                   ParamBody _ -> (param:formParamList, queryParamList, fileParamList, headerInList) 
                   ParamOther pSchema -> 
@@ -330,9 +330,25 @@ checkIfNewType existingType currentType newTypeName =
 getTypeFromSwaggerType :: Maybe String -> Maybe Schema ->  ParamSchema t -> StateT [CreateNewType] IO String 
 getTypeFromSwaggerType mParamName mOuterSchema paramSchema = 
     case (_paramSchemaType paramSchema) of 
-      SwaggerString -> pure "String" -- add check here for the enum field in param and accordingly create new sumtype/add to StateT and return its name.
-      SwaggerNumber -> pure "Double" -- TODO: Check format for precision and more info about type
-      SwaggerInteger -> pure "Integer"
+      SwaggerString -> -- do-- pure "String" -- add check here for the enum field in param and accordingly create new sumtype/add to StateT and return its name.
+        case _paramSchemaFormat paramSchema of
+          Just "date" -> pure "Day"
+          Just "date-time" -> pure "UTCTime"
+          Just "password" -> error $ "Encountered SwaggerString with Format as `password`. This needs to be handled! Debug Info : " ++ show paramSchema
+          Just "byte" -> pure "ByteString"
+          Just "binary" -> error $ "Encountered SwaggerString with Format as `binary`. This needs to be handled! Debug Info: " ++ show paramSchema
+          Nothing -> pure "Text"
+          _ -> error $ "Encountered SwaggerString with unknown Format! Debug Info: " ++ show paramSchema
+      SwaggerNumber -> 
+        case _paramSchemaFormat paramSchema of
+          Just "float" -> pure "Float"
+          Just "double" -> pure "Double"
+          _ -> error $ "Encountered SwaggerNumber without format specification (Double or Float) . Debug Info: " ++ show paramSchema
+      SwaggerInteger -> 
+        case _paramSchemaFormat paramSchema of
+          Just "int32" -> pure "Int32"
+          Just "int64" -> pure "Int64"
+          _ -> pure "Int"
       SwaggerBoolean -> pure "Bool"
       -- As per the pattern in `PetStore`, for SwaggerArray, we check the Param Schema Items field and look for a reference Name there.
       SwaggerArray -> case _paramSchemaItems paramSchema of
