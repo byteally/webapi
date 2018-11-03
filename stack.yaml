@@ -1,6 +1,6 @@
 packages:
 - webapi
-# - webapi-docs
+- webapi-docs
 - webapi-contract
 - webapi-swagger
 - location:

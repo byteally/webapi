@@ -206,6 +206,10 @@ quoteFieldExp fld = do
 
 #if __GLASGOW_HASKELL__ >= 800
 instance fn ~ fn' => IsLabel (fn :: Symbol) (FName fn') where
+#if __GLASGOW_HASKELL__ >= 800
+  fromLabel = FN
+#else
   fromLabel _ = FN
+#endif
   {-# INLINE fromLabel #-}
 #endif
