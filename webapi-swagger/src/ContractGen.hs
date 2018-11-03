@@ -79,14 +79,14 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
             Module noSrcSpan 
               (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
               (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
-              (fmap (moduleImport (False, "")) [ "WebApi.Contract", "WebApi.Param", "Types"])
+              (fmap (moduleImport (False, "")) [ "WebApi.Contract", "WebApi.Param", "Types", "Data.Int", "Data.Text"]) -- CommonTypes
               (generateContractBody "Petstore" contractDetailsFromPetstore)
       liftIO $ writeFile (contractOutputFolderPath ++ "Contract.hs") $ prettyPrint hContractModule
       let hTypesModule = 
             Module noSrcSpan 
                 (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
                 (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances", "DuplicateRecordFields"])
-                (fmap (moduleImport (False, "")) []) --"GHC.Generics"
+                (fmap (moduleImport (False, "")) ["Data.Text","Data.Int","Data.Time.Clock", "Data.Set"]) --"GHC.Generics", "Data.Time.Calendar"
                 (createDataDeclarations newData)
       liftIO $ writeFile (contractOutputFolderPath ++ "Types.hs") $ prettyPrint hTypesModule ++ "\n\n"
     
