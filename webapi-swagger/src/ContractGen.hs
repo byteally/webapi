@@ -362,22 +362,28 @@ getTypeFromSwaggerType mParamName mOuterSchema paramSchema =
                           case singleElem of
                             Ref ref -> pure $ toS $ getReference ref
                             Inline innerSchema -> ((getTypeFromSwaggerType Nothing (Just innerSchema) ) . _schemaParamSchema) innerSchema) 
-                        Just (SwaggerItemsPrimitive (Just CollectionMulti) innerParamSchema) -> do
-                          let paramName = fromJustNote ("Expected a Param Name but got Nothing. Need Param Name to set the name for the new type we need to create. Debug Info: " ++ show paramSchema) mParamName
-                          let titleCaseParamName = toS $ T.toTitle $ toS paramName
-                          case _paramSchemaEnum innerParamSchema of
-                            Just enumVals -> do
-                              let enumValList::[String] = fmap (\(Data.Aeson.String val) -> toS $ T.toTitle val ) enumVals
-                              let haskellNewTypeInfo = SumType titleCaseParamName enumValList
-                              modify'(\existingState -> haskellNewTypeInfo:existingState)
-                              pure titleCaseParamName
-                            Nothing -> do
-                              arrayType <- getTypeFromSwaggerType Nothing Nothing innerParamSchema
-                              let arrayHType =  "[" ++ arrayType ++ "]"
-                              let finalProductTypeInfo = ProductType $ NewData titleCaseParamName [(paramName, arrayHType)]
-                              modify' (\existingState -> finalProductTypeInfo:existingState)
-                              pure titleCaseParamName           
-                          -- show $ innerParamSchema
+                        Just (SwaggerItemsPrimitive mCollectionFormat innerParamSchema) -> do
+                          typeName <- do
+                                let paramName = fromJustNote ("Expected a Param Name but got Nothing. Need Param Name to set the name for the new type we need to create. Debug Info: " ++ show paramSchema) mParamName
+                                let titleCaseParamName = toS $ T.toTitle $ toS paramName
+                                case _paramSchemaEnum innerParamSchema of
+                                  Just enumVals -> do
+                                    let enumValList::[String] = fmap (\(Data.Aeson.String val) -> toS $ T.toTitle val ) enumVals
+                                    let haskellNewTypeInfo = SumType titleCaseParamName enumValList
+                                    modify'(\existingState -> haskellNewTypeInfo:existingState)
+                                    pure titleCaseParamName
+                                  Nothing -> do
+                                    arrayType <- getTypeFromSwaggerType Nothing Nothing innerParamSchema
+                                    let finalProductTypeInfo = ProductType $ NewData titleCaseParamName [(paramName, arrayType)]
+                                    modify' (\existingState -> finalProductTypeInfo:existingState)
+                                    pure titleCaseParamName 
+                          case mCollectionFormat of
+                            (Just CollectionMulti) -> pure $ "Set " ++ typeName 
+                            (Just CollectionTSV) -> pure $ "Collection TSV " ++ typeName
+                            (Just CollectionSSV) -> pure $ "Collection SSV " ++ typeName
+                            (Just CollectionPipes) -> pure $ "Collection Pipes " ++ typeName
+                            -- Since CSV is the default, the below case takes care of (Just CSV) as well as Nothing
+                            _ -> pure $ "Collection CSV " ++ typeName
                         Nothing -> error "Expected a SwaggerItems type due to SwaggerArray ParamSchema Type. But it did not find any! Please check the swagger spec!"
       SwaggerObject -> 
         case mOuterSchema of
