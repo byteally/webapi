@@ -266,7 +266,7 @@ readSwaggerJSON petstoreJSONContents= do
             let formParamDataInfo = ProductType (NewData newDataTypeName recordTypesInfo)
 
             modify' (\existingState -> formParamDataInfo:existingState) 
-            liftIO $ putStrLn  $ show paramList
+            -- liftIO $ putStrLn  $ show paramList
             pure $ Just newDataTypeName
           QueryParam -> do
             let paramNames = fmap (\param -> toS $ _paramName param) paramList
@@ -372,11 +372,7 @@ getTypeFromSwaggerType mParamName mOuterSchema paramSchema =
                                     let haskellNewTypeInfo = SumType titleCaseParamName enumValList
                                     modify'(\existingState -> haskellNewTypeInfo:existingState)
                                     pure titleCaseParamName
-                                  Nothing -> do
-                                    arrayType <- getTypeFromSwaggerType Nothing Nothing innerParamSchema
-                                    let finalProductTypeInfo = ProductType $ NewData titleCaseParamName [(paramName, arrayType)]
-                                    modify' (\existingState -> finalProductTypeInfo:existingState)
-                                    pure titleCaseParamName 
+                                  Nothing ->  getTypeFromSwaggerType Nothing Nothing innerParamSchema
                           case mCollectionFormat of
                             (Just CollectionMulti) -> pure $ "Set " ++ typeName 
                             (Just CollectionTSV) -> pure $ "Collection TSV " ++ typeName
