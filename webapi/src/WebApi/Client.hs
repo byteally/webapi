@@ -46,11 +46,11 @@ module WebApi.Client
        , HC.tlsManagerSettings
        ) where
 
-import           Blaze.ByteString.Builder              (toByteString)
 import           Control.Exception
 import           Data.ByteString.Lazy                  (ByteString, fromStrict)
 import qualified Data.ByteString                       as B
 import qualified Data.ByteString                       as B (concat)
+import           Data.ByteString.Builder               (toLazyByteString)
 import           Data.Either                           (isRight)
 import           Data.List                             (find)
 import           Data.Proxy
@@ -62,7 +62,6 @@ import qualified Network.HTTP.Client.TLS               as HC (tlsManagerSettings
 import           Network.HTTP.Media                    (RenderHeader (..),
                                                         mapContentMedia)
 import           Network.HTTP.Types                    hiding (Query)
-import           Network.Wai.Parse                     (fileContent)
 import           WebApi.ContentTypes
 import           WebApi.Contract
 import           WebApi.Internal
@@ -162,7 +161,7 @@ toClientRequest clientReq req = do
                  (_ : _) -> do
                     let (mt, b) = firstPart
                     return cReqUE { HC.requestHeaders = HC.requestHeaders cReqUE ++ [(hContentType, renderHeader mt)]
-                                  , HC.requestBody = HC.RequestBodyBS $ toByteString b
+                                  , HC.requestBody = HC.RequestBodyLBS $ toLazyByteString b
                                   }
                  [] -> return cReqUE
                else if not (Prelude.null filePar) then HC.formDataBody fileParts cReqUE else return cReqUE
@@ -214,7 +213,7 @@ client sett req = do
     [ Handler (\(ex :: HC.HttpException) -> do
                 case ex of
 #if MIN_VERSION_http_client(0,5,0)
-                  HC.HttpExceptionRequest req (HC.StatusCodeException resp _) -> do
+                  HC.HttpExceptionRequest _req (HC.StatusCodeException resp _) -> do
                     let resHeaders = HC.responseHeaders resp
                         status = HC.responseStatus resp
 #else

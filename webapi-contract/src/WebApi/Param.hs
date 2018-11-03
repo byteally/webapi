@@ -77,6 +77,8 @@ module WebApi.Param
        , filePath
        , nest
        , defaultParamSettings
+       , link
+       , renderUriPath
          
        -- * Generic (De)Serialization fn
        , genericToQueryParam
@@ -92,17 +94,15 @@ module WebApi.Param
        ) where
 
 
-import           Blaze.ByteString.Builder           (toByteString)
-import           Blaze.ByteString.Builder.Char.Utf8 (fromChar)
 import           Data.Aeson                         (FromJSON (..), ToJSON (..), (.:))
 import qualified Data.Aeson                         as A
-import           Data.ByteString                    as SB hiding (index,
-                                                           isPrefixOf)
-import qualified Data.ByteString                    as SB (isPrefixOf)
+import           Data.ByteString                    (ByteString)
+import qualified Data.ByteString                    as SB
 import           Data.ByteString.Builder            (byteString, char7,
                                                      toLazyByteString)
 import           Data.ByteString.Char8              as ASCII (pack, readInteger,
-                                                              split, unpack)
+                                                              split, unpack,
+                                                              singleton)
 import           Data.ByteString.Lazy               (toStrict)
 import qualified Data.ByteString.Lex.Fractional     as LexF
 import           Data.ByteString.Lex.Integral
@@ -112,9 +112,10 @@ import           Data.Int
 import qualified Data.List                          as L (find)
 import           Data.Monoid                        ((<>))
 import           Data.Proxy
+import           Data.Text                          (Text)
 import qualified Data.Text                          as T (Text, pack, uncons)
 import qualified Data.Text.Lazy                     as LT
-import           Data.Text.Encoding                 (decodeUtf8', encodeUtf8)
+import           Data.Text.Encoding                 (decodeUtf8, decodeUtf8', encodeUtf8)
 import           Data.Time.Calendar                 (Day)
 import           Data.Time.Clock                    (UTCTime, DiffTime)
 import           Data.Time.LocalTime                (LocalTime, TimeOfDay)
@@ -129,16 +130,21 @@ import           Data.Word
 import           GHC.Generics
 import           Network.HTTP.Types
 import           Network.HTTP.Types                 as Http (Header, QueryItem)
-import qualified Network.Wai.Parse                  as Wai (FileInfo (..))
 import           Control.Applicative
+import           WebApi.Util
+import           WebApi.Contract
 
 -- | A type for holding a file.
-newtype FileInfo = FileInfo { fileInfo :: Wai.FileInfo FilePath }
-                 deriving (Eq, Show)
+data FileInfo = FileInfo
+  { fileName        :: SB.ByteString
+  , fileContentType :: SB.ByteString
+  , fileContent     :: FilePath
+  }
+    deriving (Eq, Show)
 
 -- | Obtain the file path from 'FileInfo'.
 filePath :: FileInfo -> FilePath
-filePath = Wai.fileContent . fileInfo
+filePath = fileContent
 
 -- | (Kind) Describes the various types of Param.
 data ParamK = QueryParam
@@ -189,7 +195,7 @@ defCookieInfo val = CookieInfo
 type family SerializedData (par :: ParamK) where
   SerializedData 'QueryParam = Http.QueryItem
   SerializedData 'FormParam  = (ByteString, ByteString)
-  SerializedData 'FileParam  = (ByteString, Wai.FileInfo FilePath)
+  SerializedData 'FileParam  = (ByteString, FileInfo)
   SerializedData 'PathParam  = ByteString
   SerializedData 'Cookie     = (ByteString, CookieInfo ByteString)
 
@@ -197,7 +203,7 @@ type family SerializedData (par :: ParamK) where
 type family DeSerializedData (par :: ParamK) where
   DeSerializedData 'QueryParam = Maybe ByteString
   DeSerializedData 'FormParam  = ByteString
-  DeSerializedData 'FileParam  = Wai.FileInfo FilePath
+  DeSerializedData 'FileParam  = FileInfo
   DeSerializedData 'PathParam  = ByteString
   DeSerializedData 'Cookie     = ByteString
 
@@ -212,6 +218,49 @@ instance Monoid e => Applicative (Validation e) where
       Right va -> fmap va b
       Left ea -> either (Left . mappend ea) (const $ Left ea) b
 
+-- | Generate a type safe URL for a given route type. The URI can be used for setting a base URL if required.
+link :: ( ToParam 'QueryParam (QueryParam m r)
+        , MkPathFormatString r
+        , ToParam 'PathParam (PathParam m r)
+        ) =>
+          route (m :: *) (r :: *)
+        -> ByteString
+        -> PathParam m r
+        -> Maybe (QueryParam m r)
+        -> ByteString
+link r basePath paths query = toStrict $ toLazyByteString $ (byteString base) <> uriPath
+  where
+    uriPath = encodePath (routePaths paths r) (toQueryParam query)
+    base    = case basePath of
+      "/" -> ""
+      _   -> basePath
+
+renderUriPath ::  ( ToParam 'PathParam path
+                   , MkPathFormatString r
+                   ) => ByteString -> path -> route m r -> ByteString
+renderUriPath basePath p r = toStrict $ toLazyByteString $ (byteString base) <> (encodePathSegments $ routePaths p r)
+  where
+    base    = case basePath of
+      "/" -> ""
+      _   -> basePath
+
+routePaths :: ( ToParam 'PathParam path
+                , MkPathFormatString r
+                ) => path -> route m r -> [Text]
+routePaths p r = uriPathPieces (toPathParam p)
+
+  where uriPathPieces :: [ByteString] -> [Text]
+        uriPathPieces dynVs = reverse $ fst $ foldl' (flip fillHoles) ([], dynVs) (mkPathFormatString (toRoute r))
+
+        fillHoles :: PathSegment -> ([Text], [ByteString]) -> ([Text], [ByteString])
+        fillHoles (StaticSegment t) (segs, dynVs)    = (t : segs, dynVs)
+        fillHoles  Hole             (segs, dynV: xs) = (decodeUtf8 dynV : segs, xs)
+        fillHoles  Hole             (_segs, [])      = error "Panic: fewer pathparams than holes"
+
+        toRoute :: route m r -> Proxy r
+        toRoute = const Proxy
+      
+
 -- | Serialize a type into query params.
 toQueryParam :: (ToParam 'QueryParam a) => a -> Query
 toQueryParam = toParam (Proxy :: Proxy 'QueryParam) ""
@@ -221,7 +270,7 @@ toFormParam :: (ToParam 'FormParam a) => a -> [(ByteString, ByteString)]
 toFormParam = toParam (Proxy :: Proxy 'FormParam) ""
 
 -- | Serialize a type into file params.
-toFileParam :: (ToParam 'FileParam a) => a -> [(ByteString, Wai.FileInfo FilePath)]
+toFileParam :: (ToParam 'FileParam a) => a -> [(ByteString, FileInfo)]
 toFileParam = toParam (Proxy :: Proxy 'FileParam) ""
 
 -- | Serialize a type into path params.
@@ -241,7 +290,7 @@ fromFormParam :: (FromParam 'FormParam a) => [(ByteString, ByteString)] -> Valid
 fromFormParam par = fromParam (Proxy :: Proxy 'FormParam) "" $ Trie.fromList par
 
 -- | (Try to) Deserialize a type from file params.
-fromFileParam :: (FromParam 'FileParam a) => [(ByteString, Wai.FileInfo FilePath)] -> Validation [ParamErr] a
+fromFileParam :: (FromParam 'FileParam a) => [(ByteString, FileInfo)] -> Validation [ParamErr] a
 fromFileParam par = fromParam (Proxy :: Proxy 'FileParam) "" $ Trie.fromList par
 
 -- | (Try to) Deserialize a type from cookie.
@@ -260,10 +309,10 @@ genericToFormParam opts pfx = gtoParam (Proxy :: Proxy 'FormParam) pfx (ParamAcc
 genericFromFormParam :: (Generic a, GFromParam (Rep a) 'FormParam) => ParamSettings -> ByteString -> Trie ByteString -> Validation [ParamErr] a
 genericFromFormParam opts pfx = (fmap to) . gfromParam (Proxy :: Proxy 'FormParam) pfx (ParamAcc 0 False) opts
 
-genericToFileParam :: (Generic a, GToParam (Rep a) 'FileParam) => ParamSettings -> ByteString -> a -> [(ByteString, Wai.FileInfo FilePath)]
+genericToFileParam :: (Generic a, GToParam (Rep a) 'FileParam) => ParamSettings -> ByteString -> a -> [(ByteString, FileInfo)]
 genericToFileParam opts pfx = gtoParam (Proxy :: Proxy 'FileParam) pfx (ParamAcc 0 False) opts . from
 
-genericFromFileParam :: (Generic a, GFromParam (Rep a) 'FileParam) => ParamSettings -> ByteString -> Trie (Wai.FileInfo FilePath) -> Validation [ParamErr] a
+genericFromFileParam :: (Generic a, GFromParam (Rep a) 'FileParam) => ParamSettings -> ByteString -> Trie (FileInfo) -> Validation [ParamErr] a
 genericFromFileParam opts pfx = (fmap to) . gfromParam (Proxy :: Proxy 'FileParam) pfx (ParamAcc 0 False) opts
 
 genericToPathParam :: (Generic a, GToParam (Rep a) 'PathParam) => ParamSettings -> ByteString -> a -> [ByteString]
@@ -409,7 +458,7 @@ instance DecodeParam Double where
     _            -> Nothing
 
 instance EncodeParam Char where
-  encodeParam       = toByteString . fromChar
+  encodeParam       = ASCII.singleton
 
 instance DecodeParam Char where
   decodeParam str = case decodeUtf8' str of
@@ -1332,7 +1381,7 @@ instance (FromParam par a) => FromParam par [a] where
 instance (FromParam par a) => FromParam par (Vector a) where
   fromParam pt key kvs = case fromParam pt key kvs of
     Validation (Right v)  -> Validation $ Right (V.fromList v)
-    Validation (Left err) -> Validation (Left err)
+    Validation (Left e) -> Validation (Left e)
 
 instance (DecodeParam a) => FromParam 'QueryParam (OptValue a) where
   fromParam pt key kvs = case lookupParam pt key kvs of
@@ -1363,11 +1412,11 @@ instance (FromParam 'Cookie a) => FromParam 'Cookie (CookieInfo a) where
 
 
 instance ToParam 'FileParam FileInfo where
-  toParam _ key (FileInfo val) = [(key, val)]
+  toParam _ key val = [(key, val)]
 
 instance FromParam 'FileParam FileInfo where
   fromParam pt key kvs = case lookupParam pt key kvs of
-    Just par -> Validation $ Right (FileInfo par)
+    Just par -> Validation $ Right par
     Nothing  -> Validation $ Left [NotFound key]
 
 instance ToParam 'PathParam ByteString where

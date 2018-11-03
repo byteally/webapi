@@ -24,6 +24,11 @@ Provides the contract for the web api. The contract consists of 'WebApi' and 'Ap
 {-# LANGUAGE TypeFamilies              #-}
 {-# LANGUAGE UndecidableInstances      #-}
 {-# LANGUAGE PatternSynonyms           #-}
+{-# LANGUAGE TypeOperators             #-}
+
+{-# LANGUAGE FlexibleInstances         #-}
+{-# LANGUAGE ScopedTypeVariables       #-}
+
 
 #if __GLASGOW_HASKELL__ >= 800
 {-# LANGUAGE UndecidableSuperClasses   #-}
@@ -58,13 +63,19 @@ module WebApi.Contract
 
        -- * Content type
        , JSON
+
+       -- * Route
+       , Route
+       , (://), (:/), Static, Root
        ) where
 
 import           Control.Exception (SomeException)
+import           Data.Aeson        (Value)
 import           Data.Proxy
 import           Data.Text
 import           Data.Text.Encoding
 import           GHC.Exts
+import           GHC.TypeLits
 import           Network.HTTP.Types
 import           WebApi.Util
 import           WebApi.Method
@@ -148,7 +159,7 @@ class ( SingMethod m
   type CookieIn m r     = ()
   type CookieOut m r    = ()
   type HeaderOut m r    = ()
-  type ApiErr m r       = ()
+  type ApiErr m r       = Value
   type RequestBody m r  = '[]
   type ContentTypes m r = '[JSON]
 
@@ -156,6 +167,11 @@ class ( SingMethod m
 -- then you will have to give an instance for 'PathParam'' for types being used in routing.
 -- Please take a look at the existing instances of 'PathParam'' for reference.
 type family PathParam' m r :: *
+
+type instance PathParam' m (Static s) = ()
+type instance PathParam' m (p1 :/ p2) = HListToTuple (FilterDynP (ToPieces (p1 :/ p2)))
+type instance PathParam' m (p :// (ps :: *)) = HListToTuple (FilterDynP (ToPieces ps))
+type instance PathParam' m (p :// (ps :: Symbol)) = ()  
 
 -- | Datatype representing a request to route `r` with method `m`.
 data Request m r = Req'
@@ -246,6 +262,9 @@ pattern Req :: () => (SingMethod m, HListToTuple (StripContents (RequestBody m r
                 -> Text
                 -> Request m r
 pattern Req pp qp fp fip hi ci m = Req' pp qp fp fip hi ci () m
+
+
+
 
 -- | Datatype representing a Api Resource. This is a Phantom type similar to 'Proxy', usually used to fix the parameter method (m) and route (r) of functions without resorting to pass 'undefined' as witness
 data Resource m r = Res

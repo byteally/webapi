@@ -15,28 +15,25 @@
 
 module WebApi.Internal where
 
-import           Blaze.ByteString.Builder           (Builder, toByteString)
-import qualified Blaze.ByteString.Builder.Char.Utf8 as Utf8 (fromText)
+import           Data.Text.Encoding                 (encodeUtf8Builder)
 import           Control.Exception
 import           Control.Monad.Catch                (MonadCatch)
 import           Control.Monad.IO.Class             (MonadIO)
 import           Control.Monad.Trans.Resource       (runResourceT,
                                                      withInternalState)
 import           Data.ByteString                    (ByteString)
-import           Data.ByteString.Char8              (pack, unpack)
-import           Data.List                          (find, foldl')
+import           Data.ByteString.Builder            (toLazyByteString, Builder)
+import           Data.ByteString.Lazy               as LBS (toStrict)
+import           Data.List                          (find)
 import           Data.Monoid                        ((<>))
 import           Data.Maybe                         (fromMaybe)
 import           Data.Proxy
-import           Data.Text                          (Text)
 import qualified Data.Text                          as T (pack)
-import           Data.Text.Encoding                 (decodeUtf8)
 import           Data.Typeable                      (Typeable)
 import           Network.HTTP.Media                 (MediaType, mapAcceptMedia,
                                                      matchAccept, matchContent)
 import           Network.HTTP.Media.RenderHeader    (renderHeader)
 import           Network.HTTP.Types                 hiding (Query)
-import           Network.URI                        (URI (..))
 import qualified Network.Wai                        as Wai
 import qualified Network.Wai.Parse                  as Wai
 import           Web.Cookie
@@ -78,7 +75,7 @@ fromWaiRequest waiReq pathPar handlerFn = do
         let request = Request <$> pure pathPar
                               <*> (fromQueryParam $ Wai.queryString waiReq)
                               <*> (fromFormParam formPar)
-                              <*> (fromFileParam filePar)
+                              <*> (fromFileParam (fmap fromWaiFile filePar))
                               <*> (fromHeader $ Wai.requestHeaders waiReq)
                               <*> (fromCookie $ maybe [] parseCookies (getCookie waiReq))
                               <*> (fromBody [])
@@ -99,6 +96,12 @@ fromWaiRequest waiReq pathPar handlerFn = do
     handler' (Validation (Left parErr)) = return $ Validation (Left parErr)
     hasFormData x = matchContent [contentType (Proxy :: Proxy MultipartFormData), contentType (Proxy :: Proxy UrlEncoded)] =<< x
     fromBody x = Validation $ either (const (Left [NotFound "415"])) (Right . fromRecTuple (Proxy :: Proxy (StripContents (RequestBody m r)))) $ partDecodings (Proxy :: Proxy (RequestBody m r)) x
+    fromWaiFile :: Wai.File FilePath -> (ByteString, FileInfo)
+    fromWaiFile (fname, waiFileInfo) = (fname, FileInfo
+                                         { fileName        = Wai.fileName waiFileInfo
+                                         , fileContentType = Wai.fileContentType waiFileInfo
+                                         , fileContent     = Wai.fileContent waiFileInfo
+                                         })
 
 toWaiResponse :: ( ToHeader (HeaderOut m r)
                   , ToParam 'Cookie (CookieOut m r)
@@ -114,7 +117,7 @@ toWaiResponse wreq resp = case resp of
     Just (ctype, errs') -> let hds = (hContentType, renderHeader ctype) : handleHeaders (toHeader <$> hdrs) (toCookie <$> cookies)
                            in Wai.responseBuilder status hds errs'
     Nothing -> Wai.responseBuilder notAcceptable406 [] "Matching content type not found"
-  Failure (Right (OtherError ex)) -> Wai.responseBuilder internalServerError500 [] (Utf8.fromText (T.pack (displayException ex)))
+  Failure (Right (OtherError ex)) -> Wai.responseBuilder internalServerError500 [] (encodeUtf8Builder (T.pack (displayException ex)))
 
   where encode' :: ( Encodings (ContentTypes m r) a
                  ) => apiRes m r -> a -> Maybe (MediaType, Builder)
@@ -134,7 +137,7 @@ toWaiResponse wreq resp = case resp of
         handleHeaders' :: [Header] -> [(ByteString, CookieInfo ByteString)] -> [Header]
         handleHeaders' hds cookies = let ckHs = map (\(ck, cv) -> (hSetCookie , renderSC ck cv)) cookies
                                      in hds <> ckHs
-        renderSC k v = toByteString . renderSetCookie $ def
+        renderSC k v = toStrict . toLazyByteString . renderSetCookie $ def
           { setCookieName = k
           , setCookieValue = cookieValue v
           , setCookiePath = cookiePath v
@@ -145,47 +148,6 @@ toWaiResponse wreq resp = case resp of
           , setCookieSecure   = fromMaybe False (cookieSecure v)
           }
 
--- | Generate a type safe URL for a given route type. The URI can be used for setting a base URL if required.
-link :: ( ToParam 'QueryParam (QueryParam m r)
-        , MkPathFormatString r
-        , ToParam 'PathParam (PathParam m r)
-        ) =>
-          route m r
-        -> URI
-        -> PathParam m r
-        -> Maybe (QueryParam m r)
-        -> URI
-link r base paths query = base
-                          { uriPath = unpack $ renderUriPath (pack $ uriPath base) paths r
-                          , uriQuery = maybe "" renderQuery' query
-                          }
-  where renderQuery' :: (ToParam 'QueryParam query) => query -> String
-        renderQuery' = unpack . renderQuery True . toQueryParam
-
-renderUriPath ::  ( ToParam 'PathParam path
-                   , MkPathFormatString r
-                   ) => ByteString -> path -> route m r -> ByteString
-renderUriPath basePth p r = case basePth of
-          ""  -> renderPaths p r
-          "/" -> renderPaths p r
-          _   -> basePth `mappend` renderPaths p r
-
-renderPaths :: ( ToParam 'PathParam path
-                , MkPathFormatString r
-                ) => path -> route m r -> ByteString
-renderPaths p r = toByteString
-                  $ encodePathSegments $ uriPathPieces (toPathParam p)
-
-  where uriPathPieces :: [ByteString] -> [Text]
-        uriPathPieces dynVs = reverse $ fst $ foldl' (flip fillHoles) ([], dynVs) (mkPathFormatString (toRoute r))
-
-        fillHoles :: PathSegment -> ([Text], [ByteString]) -> ([Text], [ByteString])
-        fillHoles (StaticSegment t) (segs, dynVs)    = (t : segs, dynVs)
-        fillHoles  Hole             (segs, dynV: xs) = (decodeUtf8 dynV : segs, xs)
-        fillHoles  Hole             (_segs, [])      = error "Panic: fewer pathparams than holes"
-
-        toRoute :: route m r -> Proxy r
-        toRoute = const Proxy
 
 -- | Describes the implementation of a single API end point corresponding to @ApiContract (ApiInterface p) m r@
 class (ApiContract (ApiInterface p) m r) => ApiHandler (p :: *) (m :: *) (r :: *) where
@@ -231,15 +193,6 @@ data ServerSettings = ServerSettings
 serverSettings :: ServerSettings
 serverSettings = ServerSettings
 
--- | Type of segments of a Path.
-data PathSegment = StaticSegment Text -- ^ A static segment
-                 | Hole -- ^ A dynamic segment
-                 deriving (Show, Eq)
-
--- | Describe representation of the route.
-class MkPathFormatString r where
-  -- | Given a route, this function should produce the @[PathSegment]@ of that route. This gives the flexibility to hook in a different routing system into the application.
-  mkPathFormatString :: Proxy r -> [PathSegment]
 
 -- | Type of Exception raised in a handler.
 data ApiException m r = ApiException { apiException :: ApiError m r }

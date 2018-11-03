@@ -39,6 +39,14 @@ library
     , directory
     , filepath
     , webapi
+    , vector-sized
+    , safe
+    , finite-typelits
+    , split
+    , unordered-containers
+    , containers
+    , http-types
+    , transformers
   default-language: Haskell2010
   ghc-options: -Wall -Werror
 
