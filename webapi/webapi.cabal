@@ -34,18 +34,18 @@ library
                      , aeson              >= 0.9  && < 1.4
                      , bytestring         >= 0.10.6.0 && < 0.11
                      , text               >= 1.2  && < 1.3
-                     , time               >= 1.5  && < 1.7
+                     , time               >= 1.5  && < 1.10
                      , wai-extra          >= 3.0  && < 3.3
-                     , http-types         >= 0.8  && < 0.10
-                     , http-media         >= 0.6  && < 0.7
+                     , http-types         >= 0.8  && < 0.13
+                     , http-media         >= 0.6  && < 0.8
                      , webapi-contract    == 0.4.*
                      , wai                >= 3.0  && < 3.3
                      , http-client        >= 0.4  && < 0.6
                      , http-client-tls    >= 0.2  && < 0.4
                      , cookie             >= 0.4  && < 0.5
-                     , resourcet          >= 1.1  && < 1.2
+                     , resourcet          >= 1.1  && < 1.3
                      , exceptions         >= 0.8  && < 1
-                     , QuickCheck         >= 2.8  && < 2.10
+                     , QuickCheck         >= 2.8  && < 2.13
 
   hs-source-dirs:      src
   default-language:    Haskell2010
@@ -71,14 +71,14 @@ test-suite unit-tests
                      , wai               >= 3.0  && < 3.3
                      , wai-extra         >= 3.0  && < 3.3
                      , warp
-                     , http-media        >= 0.6  && < 0.7
-                     , http-types        >= 0.8  && < 0.10
-                     , hspec             >= 2.1  && < 2.5
-                     , hspec-wai         >= 0.6  && < 0.9
+                     , http-media        >= 0.6  && < 0.8
+                     , http-types        >= 0.8  && < 0.13
+                     , hspec             >= 2.1  && < 2.6
+                     , hspec-wai         >= 0.6  && < 0.10
                      , text              >= 1.2  && < 1.3
                      , bytestring        >= 0.10.6.0 && < 0.11
                      , vector            >= 0.10 && < 0.13
-                     , time              >= 1.5  && < 1.7
-                     , QuickCheck        >= 2.8  && < 2.10
+                     , time              >= 1.5  && < 1.10
+                     , QuickCheck        >= 2.8  && < 2.13
                      , binary            == 0.8.*
                      , webapi

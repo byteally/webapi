@@ -55,7 +55,11 @@ runCodeGen swaggerJsonInputFilePath contractOutputFolderPath = do
       
   createType typeInfo = 
     case typeInfo of
+#if MIN_VERSION_haskell_src_exts(1,20,0)
+      ProductType newData -> dataDeclaration
+#else
       ProductType newData -> dataDeclaration (DataType noSrcSpan) (mName newData) (mRecordTypes newData) ["Eq", "Show"] 
+#endif
       SumType tName tConstructors -> sumTypeDeclaration tName tConstructors ["Eq", "Show"] 
 
 
@@ -88,7 +92,11 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
     
  where 
   createDataDeclarations :: [NewData] -> [Decl SrcSpanInfo]
+#if MIN_VERSION_haskell_src_exts(1,20,0)
+  createDataDeclarations newDataList = [dataDeclaration] -- fmap (\newDataInfo -> dataDeclaration)
+#else
   createDataDeclarations newDataList = fmap (\newDataInfo -> dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show"] ) newDataList
+#endif
  
 -- TODO: This function assumes SwaggerObject to be the type and directly reads from schemaProperties. We need to also take additionalProperties into consideration.
 generateSwaggerDefinitionData :: InsOrdHashMap Text Schema -> StateT [CreateNewType] IO [NewData]
@@ -604,6 +612,8 @@ generateContractBody contractName contractDetails =
 type InnerRecords = [(String, String)]
 type DerivingClass = String  
 
+#if MIN_VERSION_haskell_src_exts(1,20,0)
+#else
 dataDeclaration :: (DataOrNew SrcSpanInfo) -> String -> InnerRecords -> [DerivingClass] -> Decl SrcSpanInfo
 dataDeclaration dataOrNew dataName innerRecords derivingList = 
   DataDecl noSrcSpan  
@@ -612,6 +622,7 @@ dataDeclaration dataOrNew dataName innerRecords derivingList =
     (declarationHead dataName)
     (constructorDeclaration dataName innerRecords)
     (Just $ derivingDecl  derivingList)
+#endif
 
 
 declarationHead :: String -> DeclHead SrcSpanInfo
@@ -629,7 +640,11 @@ fieldDecl (fieldName, fieldType) =
   FieldDecl noSrcSpan [nameDecl fieldName] (TyCon noSrcSpan (UnQual noSrcSpan (nameDecl fieldType)))
 
 derivingDecl :: [String] -> Deriving SrcSpanInfo
+#if MIN_VERSION_haskell_src_exts(1,20,0)
+derivingDecl derivingList = Deriving noSrcSpan Nothing $ fmap iRule derivingList
+#else
 derivingDecl derivingList = Deriving noSrcSpan $ fmap iRule derivingList
+#endif
  where 
   iRule tClass = IRule noSrcSpan Nothing Nothing (IHCon noSrcSpan (UnQual noSrcSpan (nameDecl tClass)))
 
@@ -640,7 +655,11 @@ emptyDataDeclaration declName =
     Nothing
     (declarationHead declName) 
     []
+#if MIN_VERSION_haskell_src_exts(1,20,0)
+    []
+#else
     Nothing
+#endif
 
 
 sumTypeDeclaration :: String -> [String] -> [DerivingClass] -> Decl SrcSpanInfo
@@ -649,7 +668,11 @@ sumTypeDeclaration dataName listOfComponents derivingList =
     (DataType noSrcSpan) Nothing 
     (declarationHead dataName)
     (sumTypeConstructor listOfComponents)
-    (Just $ derivingDecl  derivingList)
+#if MIN_VERSION_haskell_src_exts(1,20,0)
+    [derivingDecl derivingList]
+#else
+    (Just $ derivingDecl derivingList)
+#endif
  where 
   sumTypeConstructor = 
     fmap (\construcorVal -> QualConDecl noSrcSpan Nothing Nothing 
@@ -748,11 +771,20 @@ promotedType typeNameData =
     (PromotedString noSrcSpan typeNameData typeNameData) 
   ) 
 
+#if MIN_VERSION_haskell_src_exts(1,20,0)
+unQualSymDecl :: String -> MaybePromotedName SrcSpanInfo
+unQualSymDecl str =
+  (UnpromotedName noSrcSpan
+   (UnQual noSrcSpan
+    (Symbol noSrcSpan str)
+   ))
+#else
 unQualSymDecl :: String -> QName SrcSpanInfo
 unQualSymDecl str = 
   (UnQual noSrcSpan 
     (Symbol noSrcSpan str)
   )
+#endif
     
 routeDeclaration :: String -> [PathComponent] -> Decl SrcSpanInfo
 routeDeclaration routeName routePathComponents = 
