@@ -42,9 +42,9 @@ install:
      zcat $HOME/.cabal/packages/hackage.haskell.org/00-index.tar.gz >
           $HOME/.cabal/packages/hackage.haskell.org/00-index.tar;
    fi
- - travis_retry cabal update -v
+ - travis_retry cabal new-update -v
  - sed -i 's/^jobs:/-- jobs:/' ${HOME}/.cabal/config
- - cabal install --project-file=$PROJECT_FILE --only-dependencies --enable-tests --enable-benchmarks --dry -v > installplan.txt
+ - cabal new-build all --project-file=$PROJECT_FILE --only-dependencies --enable-tests --enable-benchmarks --dry -v > installplan.txt
  - sed -i -e '1,/^Resolving /d' installplan.txt; cat installplan.txt
  - if [ -f "webapi/configure.ac" ]; then
       (cd "webapi" && autoreconf -i)
@@ -70,8 +70,8 @@ install:
    else
      echo "cabal build-cache MISS";
      rm -rf $HOME/.cabsnap;
-     mkdir -p $HOME/.ghc $HOME/.cabal/lib $HOME/.cabal/share $HOME/.cabal/bin;
-     cabal install --only-dependencies --enable-tests --enable-benchmarks;
+     mkdir -p $HOME/.ghc $HOME/.cabal/lib $HOME/.cabal/share $HOME/.cabal/bin;     
+     cabal new-build all --project-file=$PROJECT_FILE --only-dependencies --enable-tests --enable-benchmarks;
    fi
 
 # snapshot package-db on cache miss
