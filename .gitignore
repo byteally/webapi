@@ -1,4 +1,5 @@
 dist
+dist-*
 cabal-dev
 *.o
 *.hi
@@ -16,3 +17,4 @@ cabal.sandbox.config
 .stack-work/
 *~
 _build_html/
+.ghc.environment.*

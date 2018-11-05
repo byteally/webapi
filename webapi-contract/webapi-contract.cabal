@@ -53,5 +53,3 @@ test-suite unit-tests
     cpp-options:       -DTEST
     ghc-options:       -Wall
     build-depends:     base  >= 4.7  && < 5
-                     , hspec             >= 2.1  && < 2.6
-                     , hspec-wai         >= 0.6  && < 0.10

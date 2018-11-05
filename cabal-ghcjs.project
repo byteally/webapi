@@ -1,0 +1,4 @@
+compiler: ghcjs
+packages:
+  webapi-contract
+  webapi-client-reflex-dom

@@ -1,0 +1,7 @@
+compiler: ghc
+packages:
+  webapi-contract
+  webapi
+  webapi-client-reflex-dom
+  webapi-swagger
+  webapi-docs
