@@ -29,7 +29,7 @@ matrix:
 
 before_install:
  - unset CC
- - export PATH=/opt/ghc/$GHCVER/bin:/opt/cabal/$CABALVER/bin:$PATH
+ - export PATH=/opt/ghc/bin/ghc-$GHCVER:/opt/cabal/bin/cabal:$PATH
 
 install:
  - cabal --version
