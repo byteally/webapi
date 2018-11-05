@@ -8,3 +8,8 @@ packages:
     commit: 47526b2ec810239fe824c03c13cf1d81f0741b5c
   extra-dep: true
 resolver: nightly-2018-11-05
+
+extra-deps: 
+- finite-typelits-0.1.4.2
+- vector-sized-1.0.4.0
+- indexed-list-literals-0.2.1.2
