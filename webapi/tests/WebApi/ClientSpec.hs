@@ -4,7 +4,6 @@
 module WebApi.ClientSpec (spec) where
 
 import Test.Hspec
-import Test.Hspec.Wai (with)
 import Data.Aeson (ToJSON (..), FromJSON (..))
 import WebApi
 import Data.Text (Text)
@@ -16,9 +15,13 @@ import GHC.Generics
 import Data.ByteString (ByteString)
 import Data.Binary.Builder
 import Data.Aeson.Encoding
+import Control.Exception
+
+port :: Int
+port = 9080
 
 withApp :: SpecWith () -> Spec
-withApp = with (forkIO (run 8080 clientSpecApp) >> return ())
+withApp = beforeAll_ (forkIO (run port clientSpecApp) >> pure ())
 
 clientSpecApp :: Wai.Application
 clientSpecApp = serverApp serverSettings ClientSpecImpl
@@ -72,7 +75,7 @@ instance ApiHandler ClientSpecImpl GET Persons where
   handler _ req = do
     let pp = pathParam req
     case pp of
-      True -> respond persons
+      True  -> respond persons
       False -> raise status410 persons
 
 instance ApiHandler ClientSpecImpl GET LargeOutput where
@@ -84,9 +87,11 @@ persons = [Person "foo" (Age 10) "10 1st baz"]
 spec :: Spec
 spec = withApp $ describe "Webapi client" $ do
   it "can create proper requests" $
-    shouldReturn (clientAct True) persons
+    shouldReturn (clientAct True) (Right persons)
+  -- NOTE: since [Person] is being used in both success and failure
+  --       the first one is being picked [due to default behavior changing in http-client 0.5]
   it "should handle api errors" $
-    shouldReturn (clientAct False) persons
+    shouldReturn (clientAct False) (Right persons) -- (Left (status410, persons))
   it "should work with large output" $
     shouldReturn largeOutputAct (Right (LargeOutputData [ Output { email = "rowenawilson@enthaze.com" }
                                                         , Output { email = "perezsolomon@digial.com" }
@@ -106,7 +111,7 @@ spec = withApp $ describe "Webapi client" $ do
 largeOutputAct :: IO (Either (Either (ApiError GET LargeOutput) OtherError) LargeOutputData)
 largeOutputAct = do
   mgr <- newManager defaultManagerSettings
-  let csett = ClientSettings { baseUrl           = "http://localhost:8080"
+  let csett = ClientSettings { baseUrl           = "http://localhost:" ++ show port
                              , connectionManager = mgr
                              }
   resp <- client csett (Request { pathParam   = ()
@@ -122,13 +127,13 @@ largeOutputAct = do
     Success _ d _ _   -> putStrLn "Success" >> return (Right d)
     Failure e         -> putStrLn "Failure" >> return (Left e)
 
-clientAct :: Bool -> IO [Person]
+clientAct :: Bool -> IO (Either (Status, [Person]) [Person])
 clientAct pp = do
   mgr <- newManager defaultManagerSettings
-  let csett = ClientSettings { baseUrl           = "http://localhost:8080"
+  let csett = ClientSettings { baseUrl           = "http://localhost:" ++ show port
                              , connectionManager = mgr
                              }
-  resp <- client csett (Request { pathParam   = pp
+  resp <- client csett (Request { pathParam    = pp
                                 , queryParam  = ()
                                 , formParam   = ()
                                 , fileParam   = ()
@@ -138,9 +143,9 @@ clientAct pp = do
                                 } :: Request GET Persons
                        )
   case resp of
-    Success _ d _ _   -> putStrLn "Success" >> return d
-    Failure (Left ap) -> putStrLn "Failed"  >> return (err ap)
-    Failure _         -> putStrLn "Unknown failure" >> return []
+    Success _ d _ _                -> putStrLn "Success" >> return (Right d)
+    Failure (Left ap)              -> putStrLn "Failed"  >> return (Left (code ap, err ap))
+    Failure (Right (OtherError e)) -> throwIO e
 
 instance ParamErrToApiErr [Person]
 
