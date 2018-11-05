@@ -15,9 +15,9 @@ before_cache:
 
 matrix:
   include:
-    - env: CABALVER=1.24 GHCVER=8.0.2 PROJECT_FILE=cabal.project WEBAPI=webapi
+    - env: CABALVER=2.0.0.1 GHCVER=8.0.2 PROJECT_FILE=cabal.project WEBAPI=webapi
       compiler: ": #GHC 8.0.2"
-      addons: {apt: {packages: [cabal-install-1.24,ghc-8.0.2], sources: [hvr-ghc]}}
+      addons: {apt: {packages: [cabal-install-2.4,ghc-8.0.2], sources: [hvr-ghc]}}
 
     - env: CABALVER=2.2.0.1 GHCVER=8.2.2 PROJECT_FILE=cabal.project WEBAPI=webapi
       compiler: ": #GHC 8.2.2"
@@ -41,7 +41,7 @@ install:
    fi
  - travis_retry cabal update -v
  - sed -i 's/^jobs:/-- jobs:/' ${HOME}/.cabal/config
- - cabal install --only-dependencies --enable-tests --enable-benchmarks --dry -v > installplan.txt
+ - cabal install --project-file=$PROJECT_FILE --only-dependencies --enable-tests --enable-benchmarks --dry -v > installplan.txt
  - sed -i -e '1,/^Resolving /d' installplan.txt; cat installplan.txt
  - if [ -f "webapi/configure.ac" ]; then
       (cd "webapi" && autoreconf -i)
