@@ -1,0 +1,10 @@
+packages:
+- webapi
+- webapi-docs
+- webapi-contract
+- webapi-swagger
+- location:
+    git: https://github.com/capital-match/bytestring-trie.git
+    commit: 47526b2ec810239fe824c03c13cf1d81f0741b5c
+  extra-dep: true
+resolver: nightly-2018-11-05

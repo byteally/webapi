@@ -1,0 +1,6 @@
+packages:
+ - 'webapi'
+ - 'webapi-docs'
+ - 'webapi-contract'
+ - 'webapi-swagger'
+resolver: lts-9.21
