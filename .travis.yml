@@ -17,7 +17,7 @@ matrix:
   include:
     - env: CABALVER=2.0.0.1 GHCVER=8.0.2 PROJECT_FILE=cabal.project WEBAPI=webapi LIBS="webapi webapi-contract webapi-docs webapi-swagger"
       compiler: ": #GHC 8.0.2"
-      addons: {apt: {packages: [cabal-install-2.4,ghc-8.0.2], sources: [hvr-ghc]}}
+      addons: {apt: {packages: [cabal-install-2.4,ghc-8.0.2, build-essential, zlib1g-dev], sources: [hvr-ghc]}}
 
     # - env: CABALVER=2.2.0.1 GHCVER=8.2.2 PROJECT_FILE=cabal.project WEBAPI=webapi LIBS="webapi webapi-contract webapi-docs webapi-swagger"
     #   compiler: ": #GHC 8.2.2"
