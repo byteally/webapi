@@ -19,13 +19,13 @@ matrix:
       compiler: ": #GHC 8.0.2"
       addons: {apt: {packages: [cabal-install-2.4,ghc-8.0.2], sources: [hvr-ghc]}}
 
-    - env: CABALVER=2.2.0.1 GHCVER=8.2.2 PROJECT_FILE=cabal.project WEBAPI=webapi LIBS="webapi webapi-contract webapi-docs webapi-swagger"
-      compiler: ": #GHC 8.2.2"
-      addons: {apt: {packages: [cabal-install-2.4,ghc-8.2.2], sources: [hvr-ghc]}}      
+    # - env: CABALVER=2.2.0.1 GHCVER=8.2.2 PROJECT_FILE=cabal.project WEBAPI=webapi LIBS="webapi webapi-contract webapi-docs webapi-swagger"
+    #   compiler: ": #GHC 8.2.2"
+    #   addons: {apt: {packages: [cabal-install-2.4,ghc-8.2.2], sources: [hvr-ghc]}}      
 
-    - env: CABALVER=2.2.0.1 GHCVER=8.4.4 PROJECT_FILE=cabal.project WEBAPI=webapi LIBS="webapi webapi-contract webapi-docs webapi-swagger"
-      compiler: ": #GHC 8.4.4"
-      addons: {apt: {packages: [cabal-install-2.4,ghc-8.4.4], sources: [hvr-ghc]}}      
+    # - env: CABALVER=2.2.0.1 GHCVER=8.4.4 PROJECT_FILE=cabal.project WEBAPI=webapi LIBS="webapi webapi-contract webapi-docs webapi-swagger"
+    #   compiler: ": #GHC 8.4.4"
+    #   addons: {apt: {packages: [cabal-install-2.4,ghc-8.4.4], sources: [hvr-ghc]}}      
 
 before_install:
  - unset CC
@@ -44,6 +44,8 @@ install:
    fi
  - travis_retry cabal new-update -v
  - sed -i 's/^jobs:/-- jobs:/' ${HOME}/.cabal/config
+ - rm -fv $PROJECT_FILE
+ - "printf 'packages: \"webapi\" \"webapi-contract\" \"webapi-swagger\" \"webapi-docs\"\\n' > $PROJECT_FILE" 
  - cabal new-build $LIBS --project-file=$PROJECT_FILE --only-dependencies --enable-tests --enable-benchmarks --dry -v > installplan.txt
  - sed -i -e '1,/^Resolving /d' installplan.txt; cat installplan.txt
  - if [ -f "webapi/configure.ac" ]; then
