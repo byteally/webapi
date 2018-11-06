@@ -2,7 +2,7 @@
 # and then edited further
 
 language: c
-sudo: true
+sudo: required
 
 cache:
   directories:
@@ -72,7 +72,8 @@ install:
    else
      echo "cabal build-cache MISS";
      rm -rf $HOME/.cabsnap;
-     mkdir -p $HOME/.ghc $HOME/.cabal/lib $HOME/.cabal/share $HOME/.cabal/bin;     
+     mkdir -p $HOME/.ghc $HOME/.cabal/lib $HOME/.cabal/share $HOME/.cabal/bin;
+     cat dist-newstyle/tmp/src-5743/network-2.8.0.0/dist/build/config.log
      cabal new-build $LIBS --project-file=$PROJECT_FILE --only-dependencies --enable-tests --enable-benchmarks;
    fi
 
