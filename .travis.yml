@@ -17,7 +17,7 @@ matrix:
   include:
     - env: CABALVER=2.0.0.1 GHCVER=8.0.2 PROJECT_FILE=cabal.project WEBAPI=webapi LIBS="webapi webapi-contract webapi-docs webapi-swagger"
       compiler: ": #GHC 8.0.2"
-      addons: {apt: {packages: [cabal-install-2.4,ghc-8.0.2, build-essential, zlib1g-dev], sources: [hvr-ghc]}}
+      addons: {apt: {packages: [cabal-install-2.4,ghc-8.0.2, ghc-ppa-tools, build-essential, zlib1g-dev], sources: [hvr-ghc]}}
 
     # - env: CABALVER=2.2.0.1 GHCVER=8.2.2 PROJECT_FILE=cabal.project WEBAPI=webapi LIBS="webapi webapi-contract webapi-docs webapi-swagger"
     #   compiler: ": #GHC 8.2.2"
@@ -73,7 +73,6 @@ install:
      echo "cabal build-cache MISS";
      rm -rf $HOME/.cabsnap;
      mkdir -p $HOME/.ghc $HOME/.cabal/lib $HOME/.cabal/share $HOME/.cabal/bin;
-     cat dist-newstyle/tmp/src-5743/network-2.8.0.0/dist/build/config.log;
      cabal new-build $LIBS --project-file=$PROJECT_FILE --only-dependencies --enable-tests --enable-benchmarks;
    fi
 
