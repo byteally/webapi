@@ -2,6 +2,7 @@
 # and then edited further
 
 language: c
+dist: trusty
 sudo: required
 
 cache:
@@ -29,7 +30,7 @@ matrix:
 
 before_install:
  - unset CC
- - export PATH=/opt/ghc/bin:/opt/cabal/bin:$PATH
+ - export PATH=/opt/ghc/bin:/opt/cabal/bin:/opt/ghc-ppa-tools/bin:$PATH
  - echo $PATH
  - ls /opt/ghc/bin
  - ls /opt/cabal/bin
