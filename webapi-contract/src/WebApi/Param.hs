@@ -110,6 +110,7 @@ import           Data.CaseInsensitive               as CI
 import           Data.Foldable                      as Fold (foldl')
 import           Data.Int
 import qualified Data.List                          as L (find)
+import           Data.Maybe                         (catMaybes)
 import           Data.Monoid                        ((<>))
 import           Data.Proxy
 import           Data.Text                          (Text)
@@ -128,11 +129,16 @@ import           Data.Vector                        (Vector)
 import qualified Data.Vector                        as V
 import           Data.Word
 import           GHC.Generics
+import           GHC.TypeLits
 import           Network.HTTP.Types
 import           Network.HTTP.Types                 as Http (Header, QueryItem)
 import           Control.Applicative
 import           WebApi.Util
 import           WebApi.Contract
+import           Data.Set                           (Set)
+import qualified Data.Set                           as Set
+import           Data.MultiSet                      (MultiSet)
+import qualified Data.MultiSet                      as MultiSet
 
 -- | A type for holding a file.
 data FileInfo = FileInfo
@@ -169,6 +175,9 @@ instance ToJSON a => ToJSON (JsonOf a) where
 
 instance FromJSON a => FromJSON (JsonOf a) where
   parseJSON jval = JsonOf `fmap` parseJSON jval
+
+newtype DelimitedCollection (delim :: Symbol) (t :: *) = DelimitedCollection {getCollection :: Vector t}
+                                                         deriving (Show)
 
 data CookieInfo a = CookieInfo
   { cookieValue    :: a
@@ -552,6 +561,17 @@ instance (ToJSON a) => EncodeParam (JsonOf a) where
 instance (FromJSON a) => DecodeParam (JsonOf a) where
   decodeParam str = A.decodeStrict' str
 
+instance (EncodeParam t, KnownSymbol sym) => EncodeParam (DelimitedCollection sym t) where
+  encodeParam (DelimitedCollection innerVector) = SB.intercalate (ASCII.pack $ symbolVal (Proxy :: Proxy sym)) $ fmap (\singleVal -> encodeParam singleVal ) (V.toList innerVector)
+
+instance (DecodeParam t, KnownSymbol sym) => DecodeParam (DelimitedCollection sym t) where
+  decodeParam str =
+    case symbolVal (Proxy :: Proxy sym) of
+      delim : _ -> case sequenceA $ fmap decodeParam (ASCII.split delim str) of
+        Just parsedList -> Just $ DelimitedCollection $ V.fromList $ parsedList
+        Nothing -> Nothing
+      _ -> Nothing
+
 class GHttpParam f where
   gEncodeParam   :: f a -> ByteString
   gDecodeParam :: ByteString -> Maybe (f a)
@@ -847,6 +867,15 @@ instance (ToJSON a) => ToParam 'FormParam (JsonOf a) where
 instance (ToJSON a) => ToParam 'Cookie (JsonOf a) where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
+instance (EncodeParam a, KnownSymbol del) => ToParam 'QueryParam (DelimitedCollection del a) where
+  toParam _ pfx val = [(pfx, Just $ encodeParam val)]
+
+instance (EncodeParam a, KnownSymbol del) => ToParam 'FormParam (DelimitedCollection del a) where
+  toParam _ pfx val = [(pfx, encodeParam val)]
+
+instance (EncodeParam a, KnownSymbol del) => ToParam 'Cookie (DelimitedCollection del a) where
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]  
+
 instance ToParam par a => ToParam par (Maybe a) where
   toParam pt pfx (Just val) = toParam pt pfx val
   toParam _ _ Nothing      = []
@@ -861,6 +890,24 @@ instance ToParam par a => ToParam par [a] where
 instance ToParam par a => ToParam par (Vector a) where
   toParam pt pfx vals = toParam pt pfx (V.toList vals)
 
+instance EncodeParam a => ToParam 'QueryParam (Set a) where
+  toParam _ pfx vals = fmap (\v -> (pfx, Just $ encodeParam v)) $ Set.toList vals
+
+instance EncodeParam a => ToParam 'FormParam (Set a) where
+  toParam _ pfx vals = fmap (\v -> (pfx, encodeParam v)) $ Set.toList vals
+
+instance EncodeParam a => ToParam 'Cookie (Set a) where
+  toParam _ pfx vals = fmap (\v -> (pfx, defCookieInfo $ encodeParam v)) $ Set.toList vals
+
+instance EncodeParam a => ToParam 'QueryParam (MultiSet a) where
+  toParam _ pfx vals = fmap (\v -> (pfx, Just $ encodeParam v)) $ MultiSet.toList vals
+
+instance EncodeParam a => ToParam 'FormParam (MultiSet a) where
+  toParam _ pfx vals = fmap (\v -> (pfx, encodeParam v)) $ MultiSet.toList vals
+
+instance EncodeParam a => ToParam 'Cookie (MultiSet a) where
+  toParam _ pfx vals = fmap (\v -> (pfx, defCookieInfo $ encodeParam v)) $ MultiSet.toList vals  
+
 instance (FromJSON a) => FromParam 'QueryParam (JsonOf a) where
   fromParam pt key kvs = case lookupParam pt key kvs of
     Just (Just par) -> case decodeParam par of
@@ -874,6 +921,27 @@ instance (FromJSON a) => FromParam 'FormParam (JsonOf a) where
       Just v -> Validation $ Right v
       _      -> Validation $ Left [ParseErr key "Unable to decode from json"]
     _ -> Validation $ Left [NotFound key]
+
+instance (DecodeParam a, KnownSymbol del) => FromParam 'QueryParam (DelimitedCollection del a) where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+    Just (Just par) -> case decodeParam par of
+      Just v -> Validation $ Right v
+      _      -> Validation $ Left [ParseErr key "Unable to decode from DelimitedCollection"]
+    _ -> Validation $ Left [NotFound key]
+
+instance (DecodeParam a, KnownSymbol del) => FromParam 'FormParam (DelimitedCollection del a) where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+    Just par -> case decodeParam par of
+      Just v -> Validation $ Right v
+      _      -> Validation $ Left [ParseErr key "Unable to decode from DelimitedCollection"]
+    _ -> Validation $ Left [NotFound key]
+
+instance (DecodeParam a, KnownSymbol del) => FromParam 'Cookie (DelimitedCollection del a) where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+    Just par -> case decodeParam par of
+      Just v -> Validation $ Right v
+      _      -> Validation $ Left [ParseErr key "Unable to decode from DelimitedCollection"]
+    _ -> Validation $ Left [NotFound key]       
 
 instance FromParam parK () where
   fromParam _ _ _ = pure ()
@@ -1367,22 +1435,53 @@ instance (FromParam par a) => FromParam par [a] where
     True  ->  Validation $ Right []
     False ->
       let pars = Prelude.map (\(nkey, kv) -> fromParam pt nkey kv :: Validation [ParamErr] a) kvitems
-      in Prelude.reverse <$> Fold.foldl' accRes (Validation $ Right []) pars
+      in catValidations pars
     where kvs' = submap key kvs
           kvitems = Prelude.takeWhile (not . Prelude.null . snd)  (Prelude.map (\ix ->
             let ixkey = key `nest` (ASCII.pack $ show ix)
             in (ixkey, submap ixkey kvs')) [(0 :: Word) .. 2000])
-          accRes acc elemt = case (acc, elemt) of
-            (Validation (Right as), Validation (Right e)) -> Validation $ Right (e:as)
-            (Validation (Left as), Validation (Right _)) -> Validation $ Left as
-            (Validation (Right _), Validation (Left es)) -> Validation $ Left es
-            (Validation (Left as), Validation (Left es)) -> Validation $ Left (es ++ as)
+
+catValidations :: Foldable c => c (Validation [e] a) -> Validation [e] [a]
+catValidations res = Prelude.reverse <$> Fold.foldl' accRes (Validation $ Right []) res
+  where
+    accRes acc elemt = case (acc, elemt) of
+      (Validation (Right as), Validation (Right e)) -> Validation $ Right (e:as)
+      (Validation (Left as), Validation (Right _)) -> Validation $ Left as
+      (Validation (Right _), Validation (Left es)) -> Validation $ Left es
+      (Validation (Left as), Validation (Left es)) -> Validation $ Left (es ++ as)
 
 instance (FromParam par a) => FromParam par (Vector a) where
   fromParam pt key kvs = case fromParam pt key kvs of
     Validation (Right v)  -> Validation $ Right (V.fromList v)
     Validation (Left e) -> Validation (Left e)
 
+fromParamToSetLike :: forall a.(DecodeParam a) => ByteString -> [ByteString] -> Validation [ParamErr] [a]
+fromParamToSetLike _ [] = Validation $ Right []
+fromParamToSetLike key kvs' = 
+  let pars = Prelude.map (\(ix, kv) -> case decodeParam kv :: Maybe a of
+                             Just v -> Validation $ Right v
+                             Nothing -> Validation $ Left [ParseErr key $ "Unable to cast to Set elem at index: " <> (T.pack $ show ix)]
+                         ) (Prelude.zip [(1 :: Word) .. ] kvs')
+  in catValidations pars
+
+instance (DecodeParam a, Ord a) => FromParam 'QueryParam (Set a) where
+  fromParam _ key kvs = Set.fromList <$> fromParamToSetLike key (catMaybes $ Trie.elems $ submap key kvs)
+  
+instance (DecodeParam a, Ord a) => FromParam 'FormParam (Set a) where
+  fromParam _ key kvs = Set.fromList <$> fromParamToSetLike key (Trie.elems $ submap key kvs)
+
+instance (DecodeParam a, Ord a) => FromParam 'Cookie (Set a) where
+  fromParam _ key kvs = Set.fromList <$> fromParamToSetLike key (Trie.elems $ submap key kvs)
+
+instance (DecodeParam a, Ord a) => FromParam 'QueryParam (MultiSet a) where
+  fromParam _ key kvs = MultiSet.fromList <$> fromParamToSetLike key (catMaybes $ Trie.elems $ submap key kvs)
+  
+instance (DecodeParam a, Ord a) => FromParam 'FormParam (MultiSet a) where
+  fromParam _ key kvs = MultiSet.fromList <$> fromParamToSetLike key (Trie.elems $ submap key kvs)
+
+instance (DecodeParam a, Ord a) => FromParam 'Cookie (MultiSet a) where
+  fromParam _ key kvs = MultiSet.fromList <$> fromParamToSetLike key (Trie.elems $ submap key kvs)  
+  
 instance (DecodeParam a) => FromParam 'QueryParam (OptValue a) where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
