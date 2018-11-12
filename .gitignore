@@ -18,4 +18,3 @@ cabal.sandbox.config
 *~
 _build_html/
 .ghc.environment.*
-sampleFiles

@@ -21,7 +21,6 @@ source-repository head
 library
   exposed-modules:
       ContractGen
-    -- , Contract
   other-modules:
       Paths_webapi_swagger
   hs-source-dirs:
