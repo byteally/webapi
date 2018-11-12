@@ -86,7 +86,7 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
             Module noSrcSpan 
                 (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
                 (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances", "DuplicateRecordFields"])
-                (fmap (moduleImport (False, "")) ["Data.Text","Data.Int","Data.Time.Clock", "Data.Set"]) --"GHC.Generics", "Data.Time.Calendar"
+                (fmap (moduleImport (False, "")) ["Data.Text","Data.Int","Data.Time.Clock", "Data.Set", "GHC.Generics", "Data.Aeson"]) --"GHC.Generics", "Data.Time.Calendar"
                 (createDataDeclarations newData)
       liftIO $ writeFile (contractOutputFolderPath ++ "Types.hs") $ prettyPrint hTypesModule ++ "\n\n"
     
@@ -108,7 +108,7 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (
     let (schemaProperties::InsOrdHashMap Text (Referenced Schema) ) = _schemaProperties modelSchema
     recordNamesAndTypes <- foldlWithKey' (\scAccList innerRecord iRefSchema -> do 
             accList <- scAccList
-            let innerRecordName = toS $ T.append (T.toLower modelName) $ T.toTitle innerRecord
+            let innerRecordName = toS innerRecord
             innerRecordType <- case iRefSchema of
                     Ref referenceName -> pure $ toS $ getReference referenceName
                     Inline irSchema -> ((getTypeFromSwaggerType Nothing (Just irSchema)) . _schemaParamSchema) irSchema
@@ -256,7 +256,7 @@ readSwaggerJSON petstoreJSONContents= do
         case (_responseSchema responseSchema) of
           Just (Ref refText) -> pure $ toS $ getReference refText
           Just (Inline respSchema) -> ((getTypeFromSwaggerType Nothing (Just respSchema) ) . _schemaParamSchema) respSchema
-          Nothing -> pure "String"
+          Nothing -> pure "Text"
   getParamTypes :: String -> [Param] -> ParamType -> StateT [CreateNewType] IO (Maybe String)
   getParamTypes newTypeName paramList paramType = 
     case paramList of
