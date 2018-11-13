@@ -205,33 +205,38 @@ readSwaggerJSON petstoreJSONContents= do
         -- TODO: Case match on ApiOut and if `Nothing` then check for default responses in `_responsesDefault $ _operationResponses operationData`
         let apiOutType = fromMaybe "()" mApiOutType
         -- Group the Referenced Params by ParamLocation and then go through each group separately.
-        let (formParamList, queryParamList, fileParamList, headerInList) = DL.foldl' (groupParamTypes) ([], [], [], []) (_operationParameters operationData)
+        let (formParamList, queryParamList, fileParamList, headerInList, bodyParamList) = DL.foldl' (groupParamTypes) ([], [], [], [], []) (_operationParameters operationData)
         mFormParamType <- getParamTypes (currentRouteName ++ show stdMethod) formParamList FormParam
         mQueryParamType <- getParamTypes (currentRouteName ++ show stdMethod) queryParamList QueryParam
         mFileParamType <- getParamTypes (currentRouteName ++ show stdMethod) fileParamList FileParam
         mHeaderInType <- getParamTypes (currentRouteName ++ show stdMethod) headerInList HeaderParam
-        pure $ Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType mFormParamType mQueryParamType mFileParamType mHeaderInType) methodAcc
+        mReqBodyType <- getParamTypes (currentRouteName ++ show stdMethod) bodyParamList BodyParam
+        let finalReqBodyType = flip fmap mReqBodyType (\reqBodyType -> 
+              case (DL.isPrefixOf "[" reqBodyType) of
+                True -> reqBodyType
+                False -> "[" ++ reqBodyType ++ "]" )
+        pure $ Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType mFormParamType mQueryParamType mFileParamType mHeaderInType finalReqBodyType) methodAcc
       Nothing -> pure methodAcc
 
-  groupParamTypes :: ([Param], [Param], [Param], [Param]) -> Referenced Param -> ([Param], [Param], [Param], [Param])
-  groupParamTypes (formParamList, queryParamList, fileParamList, headerInList) refParam = 
+  groupParamTypes :: ([Param], [Param], [Param], [Param], [Param]) -> Referenced Param -> ([Param], [Param], [Param], [Param], [Param])
+  groupParamTypes (formParamList, queryParamList, fileParamList, headerInList, bodyParamList) refParam = 
     case refParam of
       Ref someRef -> error $ "Encountered a Referenced type at the first level of a reference param! Not sure what the use case of this is or how to process it! Debug Info : " ++ show refParam
       Inline param -> 
         case _paramSchema param of
-          ParamBody _ -> (param:formParamList, queryParamList, fileParamList, headerInList)
+          ParamBody _ -> (formParamList, queryParamList, fileParamList, headerInList, param:bodyParamList)
           ParamOther pOtherSchema -> 
             case _paramOtherSchemaIn pOtherSchema of 
-              ParamQuery -> (formParamList, param:queryParamList, fileParamList, headerInList) 
-              ParamHeader -> (formParamList, queryParamList, fileParamList, param:headerInList)
-              ParamPath -> (formParamList, queryParamList, fileParamList, headerInList) 
+              ParamQuery -> (formParamList, param:queryParamList, fileParamList, headerInList, bodyParamList) 
+              ParamHeader -> (formParamList, queryParamList, fileParamList, param:headerInList, bodyParamList)
+              ParamPath -> (formParamList, queryParamList, fileParamList, headerInList, bodyParamList) 
               ParamFormData ->
                 case (_paramSchema param) of
-                  ParamBody _ -> (param:formParamList, queryParamList, fileParamList, headerInList) 
+                  -- ParamBody _ -> (formParamList, queryParamList, fileParamList, headerInList) -- this line seems to be unreachable code.
                   ParamOther pSchema -> 
                     case (_paramSchemaType $ _paramOtherSchemaParamSchema pSchema) of
-                      SwaggerFile -> (formParamList, queryParamList, param:fileParamList, headerInList) 
-                      _ -> (param:formParamList, queryParamList, fileParamList, headerInList) 
+                      SwaggerFile -> (formParamList, queryParamList, param:fileParamList, headerInList, bodyParamList) 
+                      _ -> (param:formParamList, queryParamList, fileParamList, headerInList, bodyParamList) 
 
 
   getApiType :: String -> InsOrdHashMap HttpStatusCode (Referenced Response)  -> StateT [CreateNewType] IO (Maybe String, Maybe String)
@@ -279,7 +284,6 @@ readSwaggerJSON petstoreJSONContents= do
             let formParamDataInfo = ProductType (NewData newDataTypeName recordTypesInfo)
 
             modify' (\existingState -> formParamDataInfo:existingState) 
-            -- liftIO $ putStrLn  $ show paramList
             pure $ Just newDataTypeName
           QueryParam -> do
             let paramNames = fmap (\param -> toS $ _paramName param) paramList
@@ -304,6 +308,12 @@ readSwaggerJSON petstoreJSONContents= do
               [] -> pure Nothing
               x:[] -> pure $ Just x
               x:xs -> error "Handle case of list of FileParam"
+          BodyParam -> do
+            listOfTypes <- forM paramList (\param -> getParamTypeParam param (Just $ toS (_paramName param)) Nothing  )
+            case listOfTypes of
+              [] -> error $ "Tried to Get Body Param type but got an empty list/string! Debug Info: " ++ show paramList
+              x:[] -> pure $ Just x
+              x:xs -> error $ "Encountered a list of Body Params. WebApi does not support this currently! Debug Info: " ++ show paramList
   getParamTypeParam inputParam mParamName mOuterSchema =
     case _paramSchema inputParam of
       ParamBody refSchema -> 
@@ -430,6 +440,7 @@ data ParamType = FormParam
                | QueryParam
                | FileParam
                | HeaderParam
+               | BodyParam
   deriving (Eq, Show)
 
 data ContractDetails = ContractDetails
@@ -449,6 +460,7 @@ data ApiTypeDetails = ApiTypeDetails
   , queryParam :: Maybe String
   , fileParam :: Maybe String
   , headerIn :: Maybe String
+  , requestBody :: Maybe String
   -- TODO: cookie in/out and header out need to be added when we encounter them
   } deriving (Eq, Show)
 
@@ -587,7 +599,8 @@ generateContractBody contractName contractDetails =
         queryParamType = queryParam apiDetails
         fileParamType = fileParam apiDetails
         headerParamType = headerIn apiDetails
-        instanceVectorList = catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeName, tInfo] ) typeInfo) $ DL.zip (respType:errType:formParamType:queryParamType:fileParamType:headerParamType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam", "FileParam", "HeaderIn"]
+        requestBodyType = requestBody apiDetails
+        instanceVectorList = catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeName, tInfo] ) typeInfo) $ DL.zip (respType:errType:formParamType:queryParamType:fileParamType:headerParamType:requestBodyType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam", "FileParam", "HeaderIn", "RequestBody"]
     in (topLevelVector, instanceVectorList):accValue
   fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
 
