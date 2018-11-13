@@ -59,7 +59,7 @@ runCodeGen swaggerJsonInputFilePath contractOutputFolderPath = do
       SumType tName tConstructors -> do
         let toParamEncodeParamQueryParamInstance = [toParamQueryParamInstance tName] ++ [encodeParamSumTypeInstance tName (DL.zip tConstructors ( (fmap . fmap) Char.toLower tConstructors) ) ]
         let fromParamDecodeParamQueryParamInstance = [fromParamQueryParamInstance tName] ++ [decodeParamSumTypeInstance tName (DL.zip ((fmap . fmap) Char.toLower tConstructors) tConstructors ) ]
-        accValue ++ ([sumTypeDeclaration tName tConstructors ["Eq", "Show", "Generic"] ] ++ (instanceDeclForJSON tName) ++ toParamEncodeParamQueryParamInstance ++ fromParamDecodeParamQueryParamInstance )
+        accValue ++ ([sumTypeDeclaration tName tConstructors ["Eq", "Show", "Generic", "Ord"] ] ++ (instanceDeclForJSON tName) ++ toParamEncodeParamQueryParamInstance ++ fromParamDecodeParamQueryParamInstance )
 
 
 
@@ -85,7 +85,7 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
             Module noSrcSpan 
                 (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
                 (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances", "DuplicateRecordFields", "OverloadedStrings"])
-                (fmap (moduleImport (False, "")) ["Data.Text","Data.Int","Data.Time.Clock", "Data.MultiSet", "GHC.Generics", "Data.Aeson", "WebApi.Param"]) --"GHC.Generics", "Data.Time.Calendar"
+                (fmap (moduleImport (False, "")) ["Data.Text","Data.Int","Data.Time.Clock", "GHC.Generics", "Data.Aeson", "WebApi.Param"]) --"GHC.Generics", "Data.Time.Calendar"
                 (createDataDeclarations newData)
       liftIO $ writeFile (contractOutputFolderPath ++ "Types.hs") $ prettyPrint hTypesModule ++ "\n\n"
     
