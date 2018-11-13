@@ -13,3 +13,4 @@ extra-deps:
 - finite-typelits-0.1.4.2
 - vector-sized-1.0.4.0
 - indexed-list-literals-0.2.1.2
+- multiset-0.3.4.1
