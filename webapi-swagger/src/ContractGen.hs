@@ -48,7 +48,6 @@ runCodeGen :: FilePath -> FilePath -> IO ()
 runCodeGen swaggerJsonInputFilePath contractOutputFolderPath = do
   newTypeCreationList <- execStateT (readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath)  [] 
   createNewTypes newTypeCreationList
-  liftIO $ putStrLn $ show newTypeCreationList
  where
   createNewTypes typeList = do
     let hTypes = DL.foldl' createType ([]::[Decl SrcSpanInfo]) typeList
@@ -56,11 +55,7 @@ runCodeGen swaggerJsonInputFilePath contractOutputFolderPath = do
       
   createType accValue typeInfo = 
     case typeInfo of
-#if MIN_VERSION_haskell_src_exts(1,20,0)
-      ProductType newData -> accValue ++ [dataDeclaration]
-#else
       ProductType newData -> accValue ++ [dataDeclaration (DataType noSrcSpan) (mName newData) (mRecordTypes newData) ["Eq", "Show", "Generic"] ] ++ (instanceDeclForJSON (mName newData) )
-#endif
       SumType tName tConstructors -> do
         let toParamEncodeParamQueryParamInstance = [toParamQueryParamInstance tName] ++ [encodeParamSumTypeInstance tName (DL.zip tConstructors ( (fmap . fmap) Char.toLower tConstructors) ) ]
         let fromParamDecodeParamQueryParamInstance = [fromParamQueryParamInstance tName] ++ [decodeParamSumTypeInstance tName (DL.zip ((fmap . fmap) Char.toLower tConstructors) tConstructors ) ]
@@ -96,12 +91,8 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
     
  where 
   createDataDeclarations :: [NewData] -> [Decl SrcSpanInfo]
-#if MIN_VERSION_haskell_src_exts(1,20,0)
-  createDataDeclarations newDataList = [dataDeclaration] -- fmap (\newDataInfo -> dataDeclaration)
-#else
   createDataDeclarations newDataList = DL.foldl' (\accValue newDataInfo -> 
       accValue ++ (dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show", "Generic"]):instanceDeclForJSON (mName newDataInfo) ) [] newDataList
-#endif
  
 -- TODO: This function assumes SwaggerObject to be the type and directly reads from schemaProperties. We need to also take additionalProperties into consideration.
 generateSwaggerDefinitionData :: InsOrdHashMap Text Schema -> StateT [CreateNewType] IO [NewData]
@@ -630,7 +621,16 @@ generateContractBody contractName contractDetails =
 type InnerRecords = [(String, String)]
 type DerivingClass = String  
 
+
 #if MIN_VERSION_haskell_src_exts(1,20,0)
+dataDeclaration :: (DataOrNew SrcSpanInfo) -> String -> InnerRecords -> [DerivingClass] -> Decl SrcSpanInfo
+dataDeclaration dataOrNew dataName innerRecords derivingList = 
+    DataDecl noSrcSpan  
+      dataOrNew 
+      Nothing 
+      (declarationHead dataName)
+      (constructorDeclaration dataName innerRecords)
+      [derivingDecl  derivingList]
 #else
 dataDeclaration :: (DataOrNew SrcSpanInfo) -> String -> InnerRecords -> [DerivingClass] -> Decl SrcSpanInfo
 dataDeclaration dataOrNew dataName innerRecords derivingList = 
@@ -1097,21 +1097,13 @@ webApiInstance mainTypeName routeAndMethods =
         ) 
         (typeConstructor rName)
 
+
+
 ---------------------------------------------------------------------------------------
 -- Support multiple versions of GHC (Use ifndef )
 -- for LTS 9.0 -> 1.18.2
 
-#if MIN_VERSION_haskell_src_exts(1,20,0)
--- for haskell-src-exts 1.20.x
-dataDeclaration :: Decl SrcSpanInfo
-dataDeclaration = 
-    DataDecl noSrcSpan  
-      (NewType noSrcSpan) 
-      Nothing 
-      (DHead noSrcSpan (Ident noSrcSpan "CharacterSet") )
-      [QualConDecl noSrcSpan Nothing Nothing (RecDecl noSrcSpan (Ident noSrcSpan "CharacterSet") [FieldDecl noSrcSpan [Ident noSrcSpan "characterSet"] (TyCon noSrcSpan (UnQual noSrcSpan (Ident noSrcSpan "ByteString")))])] 
-      [Deriving noSrcSpan Nothing [IRule noSrcSpan Nothing Nothing (IHCon noSrcSpan (UnQual noSrcSpan (Ident noSrcSpan "Show"))),IRule noSrcSpan Nothing Nothing (IHCon noSrcSpan (UnQual noSrcSpan (Ident noSrcSpan "Generic")))]]
-#endif
+
 
 
 
