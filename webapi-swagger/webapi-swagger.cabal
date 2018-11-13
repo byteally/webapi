@@ -47,6 +47,10 @@ library
     , containers
     , http-types
     , transformers
+    , webapi-contract
+    , vector
+    , time
+    , containers
   default-language: Haskell2010
   -- ghc-options: -Wall -Werror
   ghc-options: -Wall
