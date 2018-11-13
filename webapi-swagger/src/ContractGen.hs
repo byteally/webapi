@@ -11,7 +11,7 @@
 
 module ContractGen where
 
-import Control.Lens
+import Control.Lens hiding (List)
 import Data.Aeson 
 import Data.Proxy
 import Data.Text as T
@@ -44,23 +44,27 @@ runDefaultPathCodeGen :: IO ()
 runDefaultPathCodeGen = runCodeGen "webapi-swagger/sampleFiles/swagger-petstore-ex.json" "webapi-swagger/src/"
 
 
-runCodeGen :: FilePath -> FilePath -> IO () --[CreateNewType]
+runCodeGen :: FilePath -> FilePath -> IO () 
 runCodeGen swaggerJsonInputFilePath contractOutputFolderPath = do
   newTypeCreationList <- execStateT (readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath)  [] 
   createNewTypes newTypeCreationList
+  liftIO $ putStrLn $ show newTypeCreationList
  where
   createNewTypes typeList = do
-    let hTypes = fmap createType typeList
+    let hTypes = DL.foldl' createType ([]::[Decl SrcSpanInfo]) typeList
     appendFile (contractOutputFolderPath ++ "Types.hs") $ DL.unlines $ fmap prettyPrint hTypes
       
-  createType typeInfo = 
+  createType accValue typeInfo = 
     case typeInfo of
 #if MIN_VERSION_haskell_src_exts(1,20,0)
-      ProductType newData -> dataDeclaration
+      ProductType newData -> accValue ++ [dataDeclaration]
 #else
-      ProductType newData -> dataDeclaration (DataType noSrcSpan) (mName newData) (mRecordTypes newData) ["Eq", "Show"] 
+      ProductType newData -> accValue ++ [dataDeclaration (DataType noSrcSpan) (mName newData) (mRecordTypes newData) ["Eq", "Show", "Generic"] ] ++ (instanceDeclForJSON (mName newData) )
 #endif
-      SumType tName tConstructors -> sumTypeDeclaration tName tConstructors ["Eq", "Show"] 
+      SumType tName tConstructors -> do
+        let toParamEncodeParamQueryParamInstance = [toParamQueryParamInstance tName] ++ [encodeParamSumTypeInstance tName (DL.zip tConstructors ( (fmap . fmap) Char.toLower tConstructors) ) ]
+        let fromParamDecodeParamQueryParamInstance = [fromParamQueryParamInstance tName] ++ [decodeParamSumTypeInstance tName (DL.zip ((fmap . fmap) Char.toLower tConstructors) tConstructors ) ]
+        accValue ++ ([sumTypeDeclaration tName tConstructors ["Eq", "Show", "Generic"] ] ++ (instanceDeclForJSON tName) ++ toParamEncodeParamQueryParamInstance ++ fromParamDecodeParamQueryParamInstance )
 
 
 
@@ -85,8 +89,8 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
       let hTypesModule = 
             Module noSrcSpan 
                 (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
-                (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances", "DuplicateRecordFields"])
-                (fmap (moduleImport (False, "")) ["Data.Text","Data.Int","Data.Time.Clock", "Data.Set", "GHC.Generics", "Data.Aeson"]) --"GHC.Generics", "Data.Time.Calendar"
+                (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances", "DuplicateRecordFields", "OverloadedStrings"])
+                (fmap (moduleImport (False, "")) ["Data.Text","Data.Int","Data.Time.Clock", "Data.Set", "GHC.Generics", "Data.Aeson", "WebApi.Param"]) --"GHC.Generics", "Data.Time.Calendar"
                 (createDataDeclarations newData)
       liftIO $ writeFile (contractOutputFolderPath ++ "Types.hs") $ prettyPrint hTypesModule ++ "\n\n"
     
@@ -95,7 +99,8 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
 #if MIN_VERSION_haskell_src_exts(1,20,0)
   createDataDeclarations newDataList = [dataDeclaration] -- fmap (\newDataInfo -> dataDeclaration)
 #else
-  createDataDeclarations newDataList = fmap (\newDataInfo -> dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show"] ) newDataList
+  createDataDeclarations newDataList = DL.foldl' (\accValue newDataInfo -> 
+      accValue ++ (dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show", "Generic"]):instanceDeclForJSON (mName newDataInfo) ) [] newDataList
 #endif
  
 -- TODO: This function assumes SwaggerObject to be the type and directly reads from schemaProperties. We need to also take additionalProperties into consideration.
@@ -632,6 +637,13 @@ constructorDeclaration :: String -> InnerRecords -> [QualConDecl SrcSpanInfo]
 constructorDeclaration constructorName innerRecords = 
   [QualConDecl noSrcSpan Nothing Nothing (RecDecl noSrcSpan (nameDecl constructorName) (fmap fieldDecl innerRecords) )] 
 
+
+stringLiteral :: String -> Exp SrcSpanInfo
+stringLiteral str = (Lit noSrcSpan (Language.Haskell.Exts.String noSrcSpan str str))
+
+variableName :: String -> Exp SrcSpanInfo
+variableName name = (Var noSrcSpan (UnQual noSrcSpan (nameDecl name) ) )
+
 nameDecl :: String -> Name SrcSpanInfo
 nameDecl = Ident noSrcSpan 
 
@@ -728,6 +740,10 @@ typeConstructor typeConName = (TyCon noSrcSpan
                                 (UnQual noSrcSpan $ nameDecl typeConName)
                               )
 
+dataConstructor :: String -> Exp SrcSpanInfo
+dataConstructor dataConName = Con noSrcSpan (UnQual noSrcSpan $ nameDecl dataConName)
+
+
 fromParamInstanceDecl :: Vector 3 String -> Decl SrcSpanInfo 
 fromParamInstanceDecl instTypes = 
   InstDecl noSrcSpan Nothing 
@@ -750,13 +766,13 @@ recursiveTypeForRoute routeComponents =
     prevElem:lastElem:[] -> 
       (TyInfix noSrcSpan 
         (processPathComponent prevElem)
-        (unQualSymDecl ":/")
+        (unPromotedUnQualSymDecl ":/")
         (processPathComponent lastElem)
       )
     currentRoute:remainingRoute -> 
       (TyInfix noSrcSpan 
         (processPathComponent currentRoute)
-        (unQualSymDecl ":/")
+        (unPromotedUnQualSymDecl ":/")
         (recursiveTypeForRoute remainingRoute)
       )   
  where 
@@ -772,20 +788,251 @@ promotedType typeNameData =
   ) 
 
 #if MIN_VERSION_haskell_src_exts(1,20,0)
-unQualSymDecl :: String -> MaybePromotedName SrcSpanInfo
-unQualSymDecl str =
+unPromotedUnQualSymDecl :: String -> MaybePromotedName SrcSpanInfo
+unPromotedUnQualSymDecl str =
   (UnpromotedName noSrcSpan
    (UnQual noSrcSpan
     (Symbol noSrcSpan str)
    ))
 #else
+unPromotedUnQualSymDecl :: String -> QName SrcSpanInfo
+unPromotedUnQualSymDecl = unQualSymDecl
+#endif
+
 unQualSymDecl :: String -> QName SrcSpanInfo
 unQualSymDecl str = 
   (UnQual noSrcSpan 
     (Symbol noSrcSpan str)
   )
-#endif
-    
+ 
+patternVariable :: String -> Pat SrcSpanInfo
+patternVariable varName = PVar noSrcSpan (nameDecl varName)
+
+
+-- Instances for ToJSON and FromJSON
+instanceDeclForJSON :: String -> [Decl SrcSpanInfo]
+instanceDeclForJSON dataTypeName = [jsonInstance "ToJSON", jsonInstance "FromJSON"]
+ where 
+  jsonInstance jsonDirection = 
+    InstDecl noSrcSpan Nothing 
+      (IRule noSrcSpan Nothing Nothing 
+        (IHApp noSrcSpan 
+          (instanceHead jsonDirection) 
+          (typeConstructor dataTypeName)
+        )
+      ) Nothing
+
+queryParamInstanceIRule :: String -> String -> InstRule SrcSpanInfo
+queryParamInstanceIRule paramDirection sumTypeName = 
+  IRule noSrcSpan Nothing Nothing 
+    (IHApp noSrcSpan 
+      (IHApp noSrcSpan 
+        (instanceHead paramDirection)
+        (TyPromoted noSrcSpan (PromotedCon noSrcSpan True (UnQual noSrcSpan (nameDecl "QueryParam") ) ) )) 
+      (typeConstructor sumTypeName) )
+
+-- The ToParam 'QueryParam instance for Sum Type
+toParamQueryParamInstance :: String -> Decl SrcSpanInfo
+toParamQueryParamInstance sumTypeName = 
+  InstDecl noSrcSpan Nothing
+  (queryParamInstanceIRule "ToParam" sumTypeName)
+  ( Just [InsDecl noSrcSpan 
+          (FunBind noSrcSpan 
+            [Match noSrcSpan 
+              (nameDecl "toParam") 
+              [PWildCard noSrcSpan , PVar noSrcSpan (nameDecl "pfx"),PVar noSrcSpan (nameDecl (fmap Char.toLower sumTypeName) )] 
+              (UnGuardedRhs noSrcSpan 
+                (List noSrcSpan 
+                  [Tuple noSrcSpan 
+                    Boxed 
+                    [Var noSrcSpan 
+                      (UnQual noSrcSpan 
+                        (nameDecl "pfx")
+                      ),
+                    InfixApp noSrcSpan 
+                      (dataConstructor "Just")
+                      (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan "$"))) 
+                      (App noSrcSpan 
+                        (variableName "encodeParam")
+                        (variableName (fmap Char.toLower sumTypeName) )
+                      )
+                    ]])) 
+              Nothing ])])
+
+
+encodeCaseStatementOption :: (String, String) -> Alt SrcSpanInfo
+encodeCaseStatementOption (caseMatchOn, caseResult) = 
+  Alt noSrcSpan 
+    (PApp noSrcSpan 
+      (UnQual noSrcSpan 
+        (nameDecl caseMatchOn)
+      ) 
+      []
+    ) 
+    (UnGuardedRhs noSrcSpan (stringLiteral caseResult)  ) 
+    Nothing
+                
+
+decodeCaseStatementOption :: (String, String) -> Alt SrcSpanInfo
+decodeCaseStatementOption (caseMatchOnStr, resultOfCaseMatch) = 
+  Alt noSrcSpan 
+    (PLit noSrcSpan (Signless noSrcSpan) (Language.Haskell.Exts.String noSrcSpan caseMatchOnStr caseMatchOnStr ) ) 
+    (UnGuardedRhs noSrcSpan (App noSrcSpan (dataConstructor "Just") (dataConstructor resultOfCaseMatch) )) 
+    Nothing
+
+-- the EncodeParam instance for Sum Type
+encodeParamSumTypeInstance :: String -> [(String, String)] -> Decl SrcSpanInfo
+encodeParamSumTypeInstance sumTypeName caseOptions =
+  InstDecl noSrcSpan Nothing
+  (IRule noSrcSpan Nothing Nothing (IHApp noSrcSpan (instanceHead "EncodeParam") (typeConstructor sumTypeName) ))
+   (Just [InsDecl noSrcSpan 
+    (FunBind noSrcSpan 
+      [Match noSrcSpan 
+        (nameDecl "encodeParam") 
+        [PVar noSrcSpan (nameDecl (fmap Char.toLower sumTypeName) )] 
+        (UnGuardedRhs noSrcSpan 
+          (Case noSrcSpan 
+            (variableName (fmap Char.toLower sumTypeName) )
+            (fmap encodeCaseStatementOption caseOptions) )) 
+        Nothing
+      ])])
+
+
+-- The DecodeParam Instance for Sum Type
+decodeParamSumTypeInstance :: String -> [(String, String)] -> Decl SrcSpanInfo
+decodeParamSumTypeInstance sumTypeName caseOptions = 
+  InstDecl noSrcSpan Nothing
+    (IRule noSrcSpan Nothing Nothing (IHApp noSrcSpan (instanceHead "DecodeParam") (typeConstructor sumTypeName) ))
+    (Just [InsDecl noSrcSpan 
+      (FunBind noSrcSpan 
+        [Match noSrcSpan (nameDecl "decodeParam") 
+          [PVar noSrcSpan (nameDecl (fmap Char.toLower sumTypeName) )] 
+          (UnGuardedRhs noSrcSpan 
+            (Case noSrcSpan 
+              (variableName  (fmap Char.toLower sumTypeName)) 
+              ((fmap decodeCaseStatementOption caseOptions) ++ [Alt noSrcSpan (PWildCard noSrcSpan) (UnGuardedRhs noSrcSpan (dataConstructor "Nothing") ) Nothing] ) )) 
+          Nothing
+        ])])
+
+-- The FromParam 'QueryParam instance for Sum Type
+fromParamQueryParamInstance :: String -> Decl SrcSpanInfo
+fromParamQueryParamInstance sumTypeName = 
+  InstDecl noSrcSpan Nothing
+  (queryParamInstanceIRule "FromParam" sumTypeName)
+  (Just 
+    [InsDecl noSrcSpan 
+      (FunBind noSrcSpan 
+        [Match noSrcSpan 
+          (nameDecl "fromParam") 
+          (fmap patternVariable ["pt","key","kvs"])
+          (UnGuardedRhs noSrcSpan 
+            (Case noSrcSpan 
+              (App noSrcSpan 
+                (App noSrcSpan 
+                  (App noSrcSpan 
+                    (variableName "lookupParam")                    
+                    (variableName "pt") ) 
+                  (variableName "key") )
+                (variableName"kvs")
+              ) 
+              [Alt noSrcSpan 
+                (PApp noSrcSpan 
+                  (UnQual noSrcSpan 
+                    (nameDecl "Just")
+                  ) 
+                  [PParen noSrcSpan 
+                    (PApp noSrcSpan 
+                      (UnQual noSrcSpan 
+                        (nameDecl "Just")
+                      ) [patternVariable "par"]
+                    )
+                  ]
+                ) 
+                (UnGuardedRhs noSrcSpan 
+                  (Do noSrcSpan 
+                    [Qualifier noSrcSpan 
+                      (Case noSrcSpan 
+                        (App noSrcSpan 
+                          (variableName "decodeParam")
+                          (variableName "par")
+                        ) 
+                        [Alt noSrcSpan 
+                          (PApp noSrcSpan 
+                            (UnQual noSrcSpan (nameDecl "Just")) 
+                            [patternVariable "v"]
+                          ) 
+                          (UnGuardedRhs noSrcSpan 
+                            (InfixApp noSrcSpan 
+                              (dataConstructor "Validation") 
+                              (QVarOp noSrcSpan 
+                                (unQualSymDecl "$")
+                              ) 
+                              (App noSrcSpan 
+                                (dataConstructor "Right") 
+                                (variableName "v")
+                              )
+                            )
+                          ) 
+                          Nothing,
+                        Alt noSrcSpan 
+                          (PWildCard noSrcSpan) 
+                          (UnGuardedRhs noSrcSpan 
+                            (InfixApp noSrcSpan 
+                              (dataConstructor "Validation")
+                              (QVarOp noSrcSpan 
+                                (unQualSymDecl "$")
+                              ) 
+                              (App noSrcSpan 
+                                (dataConstructor "Left")
+                                (List noSrcSpan 
+                                  [App noSrcSpan 
+                                    (App noSrcSpan 
+                                      (dataConstructor "ParseErr")
+                                      (variableName "key")
+                                    ) 
+                                    (stringLiteral ("Unable to cast to " ++ sumTypeName) )
+                                  ]
+                                )
+                              )
+                            )
+                          ) 
+                          Nothing
+                        ]
+                      )
+                    ]
+                  )
+                ) 
+                Nothing,
+                Alt noSrcSpan 
+                  (PWildCard noSrcSpan) 
+                  (UnGuardedRhs noSrcSpan 
+                    (InfixApp noSrcSpan 
+                      (dataConstructor "Validation")
+                      (QVarOp noSrcSpan 
+                        (unQualSymDecl "$")
+                      ) 
+                      (App noSrcSpan 
+                        (dataConstructor "Left")
+                        (List noSrcSpan 
+                          [App noSrcSpan 
+                            (dataConstructor "NotFound")
+                            (variableName "key")
+                          ]
+                        )
+                      )
+                    )
+                  ) 
+                  Nothing
+                ]
+              )
+            ) 
+            Nothing
+          ]
+        )
+      ]
+    )
+
+
 routeDeclaration :: String -> [PathComponent] -> Decl SrcSpanInfo
 routeDeclaration routeName routePathComponents = 
   case routePathComponents of
