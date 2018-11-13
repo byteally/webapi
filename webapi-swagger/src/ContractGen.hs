@@ -85,7 +85,7 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
             Module noSrcSpan 
                 (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
                 (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances", "DuplicateRecordFields", "OverloadedStrings"])
-                (fmap (moduleImport (False, "")) ["Data.Text","Data.Int","Data.Time.Clock", "Data.Set", "GHC.Generics", "Data.Aeson", "WebApi.Param"]) --"GHC.Generics", "Data.Time.Calendar"
+                (fmap (moduleImport (False, "")) ["Data.Text","Data.Int","Data.Time.Clock", "Data.MultiSet", "GHC.Generics", "Data.Aeson", "WebApi.Param"]) --"GHC.Generics", "Data.Time.Calendar"
                 (createDataDeclarations newData)
       liftIO $ writeFile (contractOutputFolderPath ++ "Types.hs") $ prettyPrint hTypesModule ++ "\n\n"
     
@@ -388,12 +388,12 @@ getTypeFromSwaggerType mParamName mOuterSchema paramSchema =
                                     pure titleCaseParamName
                                   Nothing ->  getTypeFromSwaggerType Nothing Nothing innerParamSchema
                           case mCollectionFormat of
-                            (Just CollectionMulti) -> pure $ "Set " ++ typeName 
-                            (Just CollectionTSV) -> pure $ "Collection TSV " ++ typeName
-                            (Just CollectionSSV) -> pure $ "Collection SSV " ++ typeName
-                            (Just CollectionPipes) -> pure $ "Collection Pipes " ++ typeName
+                            (Just CollectionMulti) -> pure $ "MultiSet " ++ typeName 
+                            (Just CollectionTSV) -> pure $ "DelimitedCollection \"\t\" " ++ typeName
+                            (Just CollectionSSV) -> pure $ "DelimitedCollection \" \"" ++ typeName
+                            (Just CollectionPipes) -> pure $ "DelimitedCollection \"|\"" ++ typeName
                             -- Since CSV is the default, the below case takes care of (Just CSV) as well as Nothing
-                            _ -> pure $ "Collection CSV " ++ typeName
+                            _ -> pure $ "DelimitedCollection \",\" " ++ typeName
                         Nothing -> error "Expected a SwaggerItems type due to SwaggerArray ParamSchema Type. But it did not find any! Please check the swagger spec!"
       SwaggerObject -> 
         case mOuterSchema of
