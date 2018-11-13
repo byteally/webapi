@@ -70,6 +70,7 @@ module WebApi.Param
        , OptValue (..)
        , FileInfo (..)
        , NonNested (..)
+       , DelimitedCollection (..)
 
        -- * Helpers
        , ParamK (..)
