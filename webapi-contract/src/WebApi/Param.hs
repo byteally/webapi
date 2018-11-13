@@ -26,7 +26,7 @@ Deserialization works analogously, 'FromParam' and 'DecodeParam' are counterpart
 
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE DefaultSignatures     #-}
-{-# LANGUAGE DeriveAnyClass        #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveFunctor         #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE FlexibleInstances     #-}
@@ -71,6 +71,7 @@ module WebApi.Param
        , FileInfo (..)
        , NonNested (..)
        , DelimitedCollection (..)
+       , MultiSet
 
        -- * Helpers
        , ParamK (..)
@@ -131,6 +132,7 @@ import qualified Data.Vector                        as V
 import           Data.Word
 import           GHC.Generics
 import           GHC.TypeLits
+import qualified GHC.Exts as GHC
 import           Network.HTTP.Types
 import           Network.HTTP.Types                 as Http (Header, QueryItem)
 import           Control.Applicative
@@ -138,8 +140,8 @@ import           WebApi.Util
 import           WebApi.Contract
 import           Data.Set                           (Set)
 import qualified Data.Set                           as Set
-import           Data.MultiSet                      (MultiSet)
 import qualified Data.MultiSet                      as MultiSet
+import           Data.Semigroup                     (Semigroup)
 
 -- | A type for holding a file.
 data FileInfo = FileInfo
@@ -178,7 +180,27 @@ instance FromJSON a => FromJSON (JsonOf a) where
   parseJSON jval = JsonOf `fmap` parseJSON jval
 
 newtype DelimitedCollection (delim :: Symbol) (t :: *) = DelimitedCollection {getCollection :: Vector t}
-                                                         deriving (Show)
+                                                         deriving (Show, Read, Eq, Ord, FromJSON, ToJSON, Monad, Applicative, Functor, Foldable, Alternative, Monoid, Semigroup)
+
+
+instance GHC.IsList (DelimitedCollection s a) where
+  type Item (DelimitedCollection s a) = GHC.Item (Vector a)
+  fromList = DelimitedCollection . V.fromList
+  toList = V.toList . getCollection
+
+newtype MultiSet a = MultiSet (MultiSet.MultiSet a)
+                   deriving (Show, Eq, Ord, Read, Foldable)
+
+instance Ord a => GHC.IsList (MultiSet a) where
+  type Item (MultiSet a) = GHC.Item ([a])
+  fromList = MultiSet . MultiSet.fromList
+  toList (MultiSet ms) = MultiSet.toList ms
+
+instance (FromJSON a, Ord a) => FromJSON (MultiSet a) where
+  parseJSON val = (MultiSet . MultiSet.fromList) <$> parseJSON val
+
+instance (ToJSON a) => ToJSON (MultiSet a) where
+  toJSON (MultiSet ms) = toJSON $ MultiSet.toList ms
 
 data CookieInfo a = CookieInfo
   { cookieValue    :: a
@@ -901,13 +923,13 @@ instance EncodeParam a => ToParam 'Cookie (Set a) where
   toParam _ pfx vals = fmap (\v -> (pfx, defCookieInfo $ encodeParam v)) $ Set.toList vals
 
 instance EncodeParam a => ToParam 'QueryParam (MultiSet a) where
-  toParam _ pfx vals = fmap (\v -> (pfx, Just $ encodeParam v)) $ MultiSet.toList vals
+  toParam _ pfx (MultiSet vals) = fmap (\v -> (pfx, Just $ encodeParam v)) $ MultiSet.toList vals
 
 instance EncodeParam a => ToParam 'FormParam (MultiSet a) where
-  toParam _ pfx vals = fmap (\v -> (pfx, encodeParam v)) $ MultiSet.toList vals
+  toParam _ pfx (MultiSet vals) = fmap (\v -> (pfx, encodeParam v)) $ MultiSet.toList vals
 
 instance EncodeParam a => ToParam 'Cookie (MultiSet a) where
-  toParam _ pfx vals = fmap (\v -> (pfx, defCookieInfo $ encodeParam v)) $ MultiSet.toList vals  
+  toParam _ pfx (MultiSet vals) = fmap (\v -> (pfx, defCookieInfo $ encodeParam v)) $ MultiSet.toList vals  
 
 instance (FromJSON a) => FromParam 'QueryParam (JsonOf a) where
   fromParam pt key kvs = case lookupParam pt key kvs of
@@ -1475,13 +1497,13 @@ instance (DecodeParam a, Ord a) => FromParam 'Cookie (Set a) where
   fromParam _ key kvs = Set.fromList <$> fromParamToSetLike key (Trie.elems $ submap key kvs)
 
 instance (DecodeParam a, Ord a) => FromParam 'QueryParam (MultiSet a) where
-  fromParam _ key kvs = MultiSet.fromList <$> fromParamToSetLike key (catMaybes $ Trie.elems $ submap key kvs)
+  fromParam _ key kvs = (MultiSet . MultiSet.fromList) <$> fromParamToSetLike key (catMaybes $ Trie.elems $ submap key kvs)
   
 instance (DecodeParam a, Ord a) => FromParam 'FormParam (MultiSet a) where
-  fromParam _ key kvs = MultiSet.fromList <$> fromParamToSetLike key (Trie.elems $ submap key kvs)
+  fromParam _ key kvs = (MultiSet . MultiSet.fromList) <$> fromParamToSetLike key (Trie.elems $ submap key kvs)
 
 instance (DecodeParam a, Ord a) => FromParam 'Cookie (MultiSet a) where
-  fromParam _ key kvs = MultiSet.fromList <$> fromParamToSetLike key (Trie.elems $ submap key kvs)  
+  fromParam _ key kvs = (MultiSet . MultiSet.fromList) <$> fromParamToSetLike key (Trie.elems $ submap key kvs)  
   
 instance (DecodeParam a) => FromParam 'QueryParam (OptValue a) where
   fromParam pt key kvs = case lookupParam pt key kvs of
