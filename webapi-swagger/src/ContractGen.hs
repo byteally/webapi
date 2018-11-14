@@ -34,10 +34,12 @@ import Control.Monad
 import Control.Monad.Trans.State.Strict
 import Control.Monad.IO.Class
 
-import Data.Swagger
+import Data.Swagger hiding (get)
 import Data.Swagger.Declare
-import Data.Swagger.Lens
+-- import Data.Swagger.Lens
 import Data.Swagger.Operation
+
+import Debug.Trace as DT
 
 
 runDefaultPathCodeGen :: IO ()
@@ -375,8 +377,17 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                 let enumVals = fmap (\(Data.Aeson.String enumVal) -> toS $ T.toTitle enumVal ) valueEnumList
                 let innerRecordTypeName = fromJustNote ("Expected a Param Name but got Nothing. Need Param Name to set the name for the new type we need to create. Debug Info: " ++ show paramSchema) mParamNameOrRecordName
                 let haskellNewTypeInfo = SumType innerRecordTypeName enumVals
-                modify' (\existingState -> haskellNewTypeInfo:existingState)
-                pure innerRecordTypeName
+                currentState <- get
+                let onlySumTypes = DL.filter (\newTypeObj -> 
+                          case newTypeObj of 
+                            SumType _ _-> True
+                            _ -> False ) currentState
+                let (createNewType, newOrExistingName) = DL.foldl' (checkIfSumTypeExists haskellNewTypeInfo) (False, innerRecordTypeName) onlySumTypes
+                case createNewType of
+                  True -> do
+                    modify' (\existingState -> haskellNewTypeInfo:existingState)
+                    pure innerRecordTypeName
+                  False -> pure newOrExistingName
           _ -> error $ "Encountered SwaggerString with unknown Format! Debug Info: " ++ show paramSchema
       SwaggerNumber -> 
         case _paramSchemaFormat paramSchema of
@@ -450,6 +461,14 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
     case DL.nub stringList of
       sameElem:[] -> pure $ "[" ++ sameElem ++ "]"
       x -> error $ "Got different types in the same list. Not sure how to proceed! Please check the swagger doc! " ++ show x
+  checkIfSumTypeExists (SumType newTypeName newTypeVals) (createType, newOrExistingTypeName) (SumType typeName tVals) = 
+    case (newTypeVals == tVals) of 
+      True -> (False, typeName)
+      False -> 
+        case (newTypeVals `DL.intersect` tVals) of
+          [] -> (True, newTypeName)
+          _ -> error $ "A new sum type would be created with elements already existing in other sum types! This needs to be handled! Debug Info: Type1 -> " ++ show (SumType newTypeName newTypeVals) ++ " Type2 (added to state first) -> " ++ show (SumType typeName tVals)
+
 
 
 data ParamType = FormParam 
