@@ -65,11 +65,11 @@ runCodeGen swaggerJsonInputFilePath contractOutputFolderPath = do
                   case (DL.isInfixOf "FormParam" $ mName newData) of
                     True -> [defaultToParamInstance (mName newData) "FormParam"]
                     False -> []
-        accValue ++ [dataDeclaration (DataType noSrcSpan) (mName newData) (mRecordTypes newData) ["Eq", "Show", "Generic"] ] ++ (instanceDeclForJSON (mName newData) ) ++ toParamInstances
+        accValue ++ [dataDeclaration (DataType noSrcSpan) (mName newData) (mRecordTypes newData) ["Eq", "Show", "Generic"] ] ++ (jsonInstances (mName newData) ) ++ toParamInstances
       SumType tName tConstructors -> do
         let toParamEncodeParamQueryParamInstance = [toParamQueryParamInstance tName] ++ [encodeParamSumTypeInstance tName (DL.zip tConstructors ( (fmap . fmap) Char.toLower tConstructors) ) ]
         let fromParamDecodeParamQueryParamInstance = [fromParamQueryParamInstance tName] ++ [decodeParamSumTypeInstance tName (DL.zip ((fmap . fmap) Char.toLower tConstructors) tConstructors ) ]
-        accValue ++ ([sumTypeDeclaration tName tConstructors ["Eq", "Show", "Generic", "Ord"] ] ++ (instanceDeclForJSON tName) ++ toParamEncodeParamQueryParamInstance ++ fromParamDecodeParamQueryParamInstance )
+        accValue ++ ([sumTypeDeclaration tName tConstructors ["Eq", "Generic", "Ord"] ] ++ (instanceDeclForShow tName) ++ (instanceDeclForJSONForSumType tName) ++ toParamEncodeParamQueryParamInstance ++ fromParamDecodeParamQueryParamInstance )
 
 
 
@@ -88,21 +88,22 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
             Module noSrcSpan 
               (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
               (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
-              (fmap (moduleImport (False, "")) [ "WebApi.Contract", "WebApi.Param", "Types", "Data.Int", "Data.Text"]) -- CommonTypes
+              (fmap (\modName -> moduleImport (modName,(False, Nothing)) ) [ "WebApi.Contract", "WebApi.Param", "Types", "Data.Int", "Data.Text"]) -- CommonTypes
               (generateContractBody "Petstore" contractDetailsFromPetstore)
       liftIO $ writeFile (contractOutputFolderPath ++ "Contract.hs") $ prettyPrint hContractModule
+      let qualifiedImportsForTypes = [("Data.ByteString.Char8", (True, Just $ ModuleName noSrcSpan "ASCII"))]
       let hTypesModule = 
             Module noSrcSpan 
                 (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
                 (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances", "DuplicateRecordFields", "OverloadedStrings"])
-                (fmap (moduleImport (False, "")) ["Data.Text","Data.Int","Data.Time.Clock", "GHC.Generics", "Data.Aeson", "WebApi.Param"]) --"GHC.Generics", "Data.Time.Calendar"
+                (fmap (moduleImport) ( (DL.zip ["Data.Text","Data.Int","Data.Time.Clock", "GHC.Generics", "Data.Aeson", "WebApi.Param", "Data.Text.Encoding"] (cycle [(False, Nothing)]) ) ++ qualifiedImportsForTypes ) ) --"GHC.Generics", "Data.Time.Calendar"
                 (createDataDeclarations newData)
       liftIO $ writeFile (contractOutputFolderPath ++ "Types.hs") $ prettyPrint hTypesModule ++ "\n\n"
     
  where 
   createDataDeclarations :: [NewData] -> [Decl SrcSpanInfo]
   createDataDeclarations newDataList = DL.foldl' (\accValue newDataInfo -> 
-      accValue ++ (dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show", "Generic"]):instanceDeclForJSON (mName newDataInfo) ) [] newDataList
+      accValue ++ (dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show", "Generic"]):jsonInstances (mName newDataInfo) ) [] newDataList
  
 -- TODO: This function assumes SwaggerObject to be the type and directly reads from schemaProperties. We need to also take additionalProperties into consideration.
 generateSwaggerDefinitionData :: InsOrdHashMap Text Schema -> StateT [CreateNewType] IO [NewData]
@@ -681,8 +682,18 @@ languageExtension langExtName = LanguagePragma noSrcSpan [nameDecl langExtName]
 
 
 -- Modules imported as *NOT qualified* by default for now
-moduleImport :: (Bool, String) -> String -> ImportDecl SrcSpanInfo
-moduleImport (isQualified, qualifiedName) moduleName  = ImportDecl {importAnn = noSrcSpan, importModule = ModuleName noSrcSpan moduleName, importQualified = False, importSrc = False, importSafe = False, importPkg = Nothing, importAs = Nothing, importSpecs = Nothing}
+moduleImport :: (String, (Bool, Maybe (ModuleName SrcSpanInfo)) )-> ImportDecl SrcSpanInfo
+moduleImport (moduleName, (isQualified, qualifiedName) ) = 
+  ImportDecl {
+              importAnn = noSrcSpan, 
+              importModule = ModuleName noSrcSpan moduleName,
+              importQualified = isQualified,
+              importSrc = False,
+              importSafe = False,
+              importPkg = Nothing,
+              importAs = qualifiedName,
+              importSpecs = Nothing
+             }
 
 
 apiInstanceDeclaration :: Vector 4 String -> [Vector 4 String] -> Decl SrcSpanInfo
@@ -794,10 +805,90 @@ patternVariable :: String -> Pat SrcSpanInfo
 patternVariable varName = PVar noSrcSpan (nameDecl varName)
 
 
--- Instances for ToJSON and FromJSON
-instanceDeclForJSON :: String -> [Decl SrcSpanInfo]
-instanceDeclForJSON dataTypeName = [jsonInstance "ToJSON", jsonInstance "FromJSON"]
+-- Show Instance for Enum Type 
+instanceDeclForShow :: String -> [Decl SrcSpanInfo]
+instanceDeclForShow dataTypeName =
+  [InstDecl noSrcSpan Nothing 
+    (IRule noSrcSpan Nothing Nothing 
+      (IHApp noSrcSpan 
+        (instanceHead "Show") 
+        (typeConstructor dataTypeName)
+      )
+    )
+    (Just 
+      [InsDecl noSrcSpan 
+        (FunBind noSrcSpan 
+          [Match noSrcSpan (Ident noSrcSpan "show") 
+            [PVar noSrcSpan (Ident noSrcSpan "st")] 
+            (UnGuardedRhs noSrcSpan (InfixApp noSrcSpan (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "ASCII") (nameDecl "unpack"))) 
+              (QVarOp noSrcSpan (unQualSymDecl "$") ) 
+              (App noSrcSpan 
+                (variableName "encodeParam")
+                (variableName "st")
+              ))) Nothing])]) ]
+
+-- Instances for ToJSON and FromJSON For Sum Types
+instanceDeclForJSONForSumType :: String -> [Decl SrcSpanInfo]
+instanceDeclForJSONForSumType dataTypeName = [toJsonInstance, fromJsonInstance]
  where 
+  toJsonInstance = 
+    InstDecl noSrcSpan Nothing 
+      (IRule noSrcSpan Nothing Nothing 
+        (IHApp noSrcSpan 
+          (instanceHead "ToJSON") 
+          (typeConstructor dataTypeName)
+        )
+      )
+      (Just 
+        [InsDecl noSrcSpan 
+          (FunBind noSrcSpan 
+            [Match noSrcSpan 
+              (nameDecl "toJSON") 
+              [PVar noSrcSpan (nameDecl "enumVal")] 
+              (UnGuardedRhs noSrcSpan (InfixApp noSrcSpan (dataConstructor "String")
+                  (QVarOp noSrcSpan (unQualSymDecl "$") ) 
+                  (InfixApp noSrcSpan (variableName "pack") 
+                    (QVarOp noSrcSpan (unQualSymDecl "$")) 
+                    (App noSrcSpan 
+                      (variableName "show") 
+                      (variableName "enumVal")
+                    )
+                  )
+                )) Nothing])])
+  fromJsonInstance = 
+    InstDecl noSrcSpan Nothing 
+      (IRule noSrcSpan Nothing Nothing 
+        (IHApp noSrcSpan 
+          (instanceHead "FromJSON") 
+          (typeConstructor dataTypeName)
+        )
+      ) 
+      (Just 
+        [InsDecl noSrcSpan 
+          (FunBind noSrcSpan
+            [Match noSrcSpan (nameDecl "parseJSON") 
+              [PVar noSrcSpan (nameDecl "jsonVal")] 
+              (UnGuardedRhs noSrcSpan 
+                (App noSrcSpan 
+                  (App noSrcSpan 
+                    (App noSrcSpan (variableName "withText") (stringLiteral "Expected Text in the JSON!" ) ) 
+                    (Paren noSrcSpan (Lambda noSrcSpan [PVar noSrcSpan (nameDecl "textVal")] 
+                      (Case noSrcSpan (InfixApp noSrcSpan (variableName "decodeParam") (QVarOp noSrcSpan (unQualSymDecl "$")) (App noSrcSpan (variableName "encodeUtf8") (variableName "textVal") )) 
+                        [Alt noSrcSpan 
+                          (PApp noSrcSpan (UnQual noSrcSpan (nameDecl "Just")) [PVar noSrcSpan (nameDecl "x")]) 
+                          (UnGuardedRhs noSrcSpan 
+                            (App noSrcSpan (variableName "pure") (variableName "x") )) 
+                          Nothing
+                        ,Alt noSrcSpan 
+                          (PApp noSrcSpan (UnQual noSrcSpan (nameDecl "Nothing")) []) 
+                          (UnGuardedRhs noSrcSpan (App noSrcSpan (variableName "error") (stringLiteral "Failed while parsing Status value from JSON")))
+                          Nothing ]
+                      )))) (variableName"jsonVal") )) Nothing])])
+
+
+jsonInstances :: String -> [Decl SrcSpanInfo]
+jsonInstances dataTypeName = [jsonInstance "ToJSON", jsonInstance "FromJSON"]
+ where
   jsonInstance jsonDirection = 
     InstDecl noSrcSpan Nothing 
       (IRule noSrcSpan Nothing Nothing 
