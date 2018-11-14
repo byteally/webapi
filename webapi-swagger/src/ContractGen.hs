@@ -276,7 +276,7 @@ readSwaggerJSON petstoreJSONContents= do
   getParamTypes newTypeName paramList paramType = 
     case paramList of
       [] -> pure $ Nothing
-      _ -> 
+      _ -> -- TODO : Refactor handling of adding Maybes and adding to State into a single function and call from all places.
         case paramType of
           FormParam -> do
             let paramNames = fmap (\param -> toS $ _paramName param) paramList
@@ -302,8 +302,11 @@ readSwaggerJSON petstoreJSONContents= do
             modify' (\existingState -> queryParamDataInfo:existingState) 
             pure $ Just newDataTypeName
           HeaderParam -> do
-            typeList <- forM paramList (\param -> getParamTypeParam param (Just $ toS ( _paramName param) ) Nothing )
-            case typeList of
+            typeListWithIsMandatory <- forM paramList (\param -> do
+                    hType <- getParamTypeParam param (Just $ toS ( _paramName param) ) Nothing
+                    pure (isMandatory param, hType) )
+            let finalHaskellTypes = fmap (\(isMandatoryType, hType) -> (addMaybeToType isMandatoryType hType) ) typeListWithIsMandatory
+            case finalHaskellTypes of
               [] -> pure Nothing
               x:[] -> pure $ Just x
               x:xs -> error "Handle case of multiple Header Params!"
@@ -358,7 +361,7 @@ checkIfNewType existingType currentType newTypeName =
 getTypeFromSwaggerType :: Maybe String -> Maybe Schema ->  ParamSchema t -> StateT [CreateNewType] IO String 
 getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema = 
     case (_paramSchemaType paramSchema) of 
-      SwaggerString ->  -- add check here for the enum field in param and accordingly create new sumtype/add to StateT and return its name.
+      SwaggerString -> 
         case _paramSchemaFormat paramSchema of
           Just "date" -> pure "Day"
           Just "date-time" -> pure "UTCTime"
