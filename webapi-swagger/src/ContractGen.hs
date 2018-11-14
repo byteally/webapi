@@ -57,9 +57,12 @@ runCodeGen swaggerJsonInputFilePath contractOutputFolderPath = do
     case typeInfo of
       ProductType newData -> do
         let toParamInstances =
-              case (DL.isInfixOf "Query" $ mName newData) of
-                True -> [defaultToParamQueryParamInstance (mName newData)]
-                False -> []
+              case (DL.isInfixOf "QueryParam" $ mName newData) of
+                True -> [defaultToParamInstance (mName newData) "QueryParam"] 
+                False -> 
+                  case (DL.isInfixOf "FormParam" $ mName newData) of
+                    True -> [defaultToParamInstance (mName newData) "FormParam"]
+                    False -> []
         accValue ++ [dataDeclaration (DataType noSrcSpan) (mName newData) (mRecordTypes newData) ["Eq", "Show", "Generic"] ] ++ (instanceDeclForJSON (mName newData) ) ++ toParamInstances
       SumType tName tConstructors -> do
         let toParamEncodeParamQueryParamInstance = [toParamQueryParamInstance tName] ++ [encodeParamSumTypeInstance tName (DL.zip tConstructors ( (fmap . fmap) Char.toLower tConstructors) ) ]
@@ -1036,14 +1039,14 @@ webApiInstance mainTypeName routeAndMethods =
         (typeConstructor rName)
 
 
-defaultToParamQueryParamInstance :: String -> Decl SrcSpanInfo
-defaultToParamQueryParamInstance dataTypeName =
+defaultToParamInstance :: String -> String -> Decl SrcSpanInfo
+defaultToParamInstance dataTypeName paramType =
   InstDecl noSrcSpan Nothing 
     (IRule noSrcSpan Nothing Nothing 
       (IHApp noSrcSpan 
         (IHApp noSrcSpan 
           (instanceHead "ToParam") 
-          (TyPromoted noSrcSpan (PromotedCon noSrcSpan True (UnQual noSrcSpan (nameDecl "QueryParam"))))) 
+          (TyPromoted noSrcSpan (PromotedCon noSrcSpan True (UnQual noSrcSpan (nameDecl paramType))))) 
         (typeConstructor dataTypeName) )) 
     Nothing
 
