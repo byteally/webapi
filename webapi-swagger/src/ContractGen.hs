@@ -114,9 +114,10 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (
     recordNamesAndTypes <- foldlWithKey' (\scAccList innerRecord iRefSchema -> do 
             accList <- scAccList
             let innerRecordName = toS innerRecord
+            let innerRecordTypeName = toS $ T.append (T.toTitle modelName) (T.toTitle innerRecord)
             innerRecordType <- case iRefSchema of
                     Ref referenceName -> pure $ toS $ getReference referenceName
-                    Inline irSchema -> ((getTypeFromSwaggerType Nothing (Just irSchema)) . _schemaParamSchema) irSchema
+                    Inline irSchema -> ((getTypeFromSwaggerType (Just innerRecordTypeName) (Just irSchema)) . _schemaParamSchema) irSchema
             let recordTypeWithMaybe = 
                   case (innerRecordName `DL.elem` mandatoryFields) of 
                     True -> innerRecordType
@@ -355,16 +356,24 @@ checkIfNewType existingType currentType newTypeName =
     Nothing -> pure currentType
 
 getTypeFromSwaggerType :: Maybe String -> Maybe Schema ->  ParamSchema t -> StateT [CreateNewType] IO String 
-getTypeFromSwaggerType mParamName mOuterSchema paramSchema = 
+getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema = 
     case (_paramSchemaType paramSchema) of 
-      SwaggerString -> -- do-- pure "String" -- add check here for the enum field in param and accordingly create new sumtype/add to StateT and return its name.
+      SwaggerString ->  -- add check here for the enum field in param and accordingly create new sumtype/add to StateT and return its name.
         case _paramSchemaFormat paramSchema of
           Just "date" -> pure "Day"
           Just "date-time" -> pure "UTCTime"
           Just "password" -> error $ "Encountered SwaggerString with Format as `password`. This needs to be handled! Debug Info : " ++ show paramSchema
           Just "byte" -> pure "ByteString"
           Just "binary" -> error $ "Encountered SwaggerString with Format as `binary`. This needs to be handled! Debug Info: " ++ show paramSchema
-          Nothing -> pure "Text"
+          Nothing -> 
+            case _paramSchemaEnum paramSchema of
+              Nothing -> pure "Text"
+              Just valueEnumList -> do
+                let enumVals = fmap (\(Data.Aeson.String enumVal) -> toS $ T.toTitle enumVal ) valueEnumList
+                let innerRecordTypeName = fromJustNote ("Expected a Param Name but got Nothing. Need Param Name to set the name for the new type we need to create. Debug Info: " ++ show paramSchema) mParamNameOrRecordName
+                let haskellNewTypeInfo = SumType innerRecordTypeName enumVals
+                modify' (\existingState -> haskellNewTypeInfo:existingState)
+                pure innerRecordTypeName
           _ -> error $ "Encountered SwaggerString with unknown Format! Debug Info: " ++ show paramSchema
       SwaggerNumber -> 
         case _paramSchemaFormat paramSchema of
@@ -391,7 +400,7 @@ getTypeFromSwaggerType mParamName mOuterSchema paramSchema =
                             Inline innerSchema -> ((getTypeFromSwaggerType Nothing (Just innerSchema) ) . _schemaParamSchema) innerSchema) 
                         Just (SwaggerItemsPrimitive mCollectionFormat innerParamSchema) -> do
                           typeName <- do
-                                let paramName = fromJustNote ("Expected a Param Name but got Nothing. Need Param Name to set the name for the new type we need to create. Debug Info: " ++ show paramSchema) mParamName
+                                let paramName = fromJustNote ("Expected a Param Name but got Nothing. Need Param Name to set the name for the new type we need to create. Debug Info: " ++ show paramSchema) mParamNameOrRecordName
                                 let titleCaseParamName = toS $ T.toTitle $ toS paramName
                                 case _paramSchemaEnum innerParamSchema of
                                   Just enumVals -> do
