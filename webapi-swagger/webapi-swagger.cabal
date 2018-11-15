@@ -51,6 +51,7 @@ library
     , vector
     , time
     , containers
+    , multiset
   default-language: Haskell2010
   -- ghc-options: -Wall -Werror
   ghc-options: -Wall
