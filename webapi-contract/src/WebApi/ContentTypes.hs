@@ -59,17 +59,15 @@ import qualified Data.ByteString                    as SB
 import           Data.ByteString.Lazy               (ByteString)
 import           Data.Maybe                         (fromMaybe)
 import           Data.Proxy
+import qualified Data.Text                          as T
 import qualified Data.Text.Lazy                     as LT
 import           Data.Text.Lazy.Encoding            (decodeUtf8)
 import           Network.HTTP.Media.MediaType
 import           Network.HTTP.Media                 (mapContentMedia)
 import           WebApi.Util
-import           WebApi.Contract                    (JSON)
+import           WebApi.Contract                    (JSON, PlainText)
 import           Data.ByteString.Builder (lazyByteString, Builder)
 
-
--- | Type representing content type of @text/plain@.
-data PlainText
 
 -- | Type representing content type of @text/html@.
 data HTML
@@ -164,14 +162,27 @@ instance (FromText a) => Decode PlainText a where
 class ToText a where
   toText :: a -> LT.Text
 
+instance ToText T.Text where
+  toText = LT.fromStrict
+  
 instance ToText LT.Text where
   toText = id
+
+instance ToText () where
+  toText _ = ""
 
 class FromText a where
   fromText :: LT.Text -> Maybe a
 
+instance FromText T.Text where
+  fromText = Just . LT.toStrict
+  
 instance FromText LT.Text where
   fromText = Just
+
+instance FromText () where
+  fromText "" = Just ()
+  fromText _  = Nothing
 
 newtype Html = Html ByteString
 

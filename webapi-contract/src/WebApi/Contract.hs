@@ -63,6 +63,7 @@ module WebApi.Contract
 
        -- * Content type
        , JSON
+       , PlainText
 
        -- * Route
        , Route
@@ -72,7 +73,8 @@ module WebApi.Contract
 import           Control.Exception (SomeException)
 import           Data.Aeson        (Value)
 import           Data.Proxy
-import           Data.Text
+import           Data.Text (Text)
+import qualified Data.Text.Lazy as LT
 import           Data.Text.Encoding
 import           GHC.Exts
 import           GHC.TypeLits
@@ -159,7 +161,7 @@ class ( SingMethod m
   type CookieIn m r     = ()
   type CookieOut m r    = ()
   type HeaderOut m r    = ()
-  type ApiErr m r       = Value
+  type ApiErr m r       = DefaultApiErr (ContentTypes m r)
   type RequestBody m r  = '[]
   type ContentTypes m r = '[JSON]
 
@@ -171,7 +173,11 @@ type family PathParam' m r :: *
 type instance PathParam' m (Static s) = ()
 type instance PathParam' m (p1 :/ p2) = HListToTuple (FilterDynP (ToPieces (p1 :/ p2)))
 type instance PathParam' m (p :// (ps :: *)) = HListToTuple (FilterDynP (ToPieces ps))
-type instance PathParam' m (p :// (ps :: Symbol)) = ()  
+type instance PathParam' m (p :// (ps :: Symbol)) = ()
+
+type family DefaultApiErr (ctype :: [*]) :: * where
+  DefaultApiErr '[JSON]      = Value
+  DefaultApiErr _            = LT.Text
 
 -- | Datatype representing a request to route `r` with method `m`.
 data Request m r = Req'
@@ -284,3 +290,6 @@ type family ReqInvariant (form :: *) (file :: *) (body :: [*]) :: Constraint whe
 
 -- | Type representing content type of @application/json@.
 data JSON
+
+-- | Type representing content type of @text/plain@.
+data PlainText
