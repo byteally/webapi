@@ -212,6 +212,11 @@ readSwaggerJSON petstoreJSONContents= do
         (mApiOutType, apiErrType) <- getApiType (currentRouteName ++ show stdMethod) apiResponses
         -- TODO: Case match on ApiOut and if `Nothing` then check for default responses in `_responsesDefault $ _operationResponses operationData`
         let apiOutType = fromMaybe "()" mApiOutType
+        let mContentTypes = 
+              case apiOutType of
+                "()" -> Just "'[PlainText]"
+                "Text" -> Just "'[PlainText]"
+                _ -> Nothing
         -- Group the Referenced Params by ParamLocation and then go through each group separately.
         let (formParamList, queryParamList, fileParamList, headerInList, bodyParamList) = DL.foldl' (groupParamTypes) ([], [], [], [], []) (_operationParameters operationData)
         mFormParamType <- getParamTypes (currentRouteName ++ show stdMethod) formParamList FormParam
@@ -223,7 +228,7 @@ readSwaggerJSON petstoreJSONContents= do
               case (DL.isPrefixOf "[" reqBodyType) of
                 True -> "'" ++ reqBodyType
                 False -> "'[" ++ reqBodyType ++ "]" )
-        pure $ Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType mFormParamType mQueryParamType mFileParamType mHeaderInType finalReqBodyType) methodAcc
+        pure $ Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType mFormParamType mQueryParamType mFileParamType mHeaderInType finalReqBodyType mContentTypes) methodAcc
       Nothing -> pure methodAcc
 
   groupParamTypes :: ([Param], [Param], [Param], [Param], [Param]) -> Referenced Param -> ([Param], [Param], [Param], [Param], [Param])
@@ -497,6 +502,7 @@ data ApiTypeDetails = ApiTypeDetails
   , fileParam :: Maybe String
   , headerIn :: Maybe String
   , requestBody :: Maybe String
+  , contentTypes :: Maybe String
   -- TODO: cookie in/out and header out need to be added when we encounter them
   } deriving (Eq, Show)
 
@@ -564,7 +570,8 @@ generateContractBody contractName contractDetails =
         fileParamType = fileParam apiDetails
         headerParamType = headerIn apiDetails
         requestBodyType = requestBody apiDetails
-        instanceVectorList = catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeName, tInfo] ) typeInfo) $ DL.zip (respType:errType:formParamType:queryParamType:fileParamType:headerParamType:requestBodyType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam", "FileParam", "HeaderIn", "RequestBody"]
+        contentType = contentTypes apiDetails
+        instanceVectorList = catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeName, tInfo] ) typeInfo) $ DL.zip (respType:errType:formParamType:queryParamType:fileParamType:headerParamType:requestBodyType:contentType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam", "FileParam", "HeaderIn", "RequestBody", "ContentTypes"]
     in (topLevelVector, instanceVectorList):accValue
   fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
 
