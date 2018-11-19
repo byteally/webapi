@@ -45,7 +45,7 @@ swaggerJSON = do
                 & SwaggerLens.name .~ "body"
                 & description ?~ "Created user object"
                 & required ?~ True
-                & schema .~ (ParamBody $ Ref $ Reference "User") ] ) ),userUserNamePath] )
+                & schema .~ (ParamBody $ Ref $ Reference "User") ] ) ),userUserNamePath, petFindByTagsPath] )
   encode api
 
 userUserNamePath :: (FilePath, PathItem)
@@ -57,15 +57,34 @@ userUserNamePath = ("/user", mempty
                                                                                & schema ?~ (Ref $ Reference "User") ),
                                                          (400, Inline $ mempty & description .~ "Invalid Username supplied" ), 
                                                          (404, Inline $ mempty & description .~ "User Not Found")]) ) 
-        & summary ?~ "Create user"
+        & summary ?~ "Get user by user name"
         & description ?~ "This can only be done by the logged in user."
-        & operationId ?~ "createUser" 
+        & operationId ?~ "getUserByName" 
         & produces ?~ MimeList ["application/json", "application/xml"]
         & parameters .~ [ Inline $ mempty
-                & SwaggerLens.name .~ "body"
-                & description ?~ "Created user object"
+                & SwaggerLens.name .~ "username"
+                & description ?~ "The name that needs to be fetched. User User1 for testing"
                 & required ?~ True
-                & schema .~ (ParamBody $ Ref $ Reference "User") ] ) 
+                & schema .~  (ParamOther (ParamOtherSchema ParamPath Nothing (mempty & type_ .~ SwaggerString ) ) ) ] ) 
+  & put ?~ (mempty 
+        & SwaggerLens.tags .~ (Set.singleton "user")   
+        & responses .~ (mempty & default_ .~ (Just $ Inline (Response "successful operation" Nothing (fromList []) Nothing ) )
+                               & responses .~ (fromList [(400, Inline $ mempty & description .~ "Invalid Username supplied" ), 
+                                                         (404, Inline $ mempty & description .~ "User Not Found")]) ) 
+        & summary ?~ "Updated user"
+        & description ?~ "This can only be done by the logged in user."
+        & operationId ?~ "updateUser" 
+        & produces ?~ MimeList ["application/json", "application/xml"]
+        & parameters .~ [ Inline $ mempty
+                                  & SwaggerLens.name .~ "username"
+                                  & description ?~ "The name that needs to be updated"
+                                  & required ?~ True
+                                  & schema .~  (ParamOther (ParamOtherSchema ParamPath Nothing (mempty & type_ .~ SwaggerString ) ) ),
+                          Inline $ mempty
+                                  & SwaggerLens.name .~ "body"
+                                  & description ?~ "Updated User Object"
+                                  & required ?~ True
+                                  & schema .~ (ParamBody $ Ref $ Reference "User") ] ) 
   & SwaggerLens.delete ?~ (mempty
     & SwaggerLens.tags .~ (Set.singleton "user")
     & responses .~ (mempty & responses .~ (fromList [(400, Inline $ mempty & description .~ "Invalid Username supplied" ), 
@@ -82,6 +101,26 @@ userUserNamePath = ("/user", mempty
 
   ) ) 
   
+
+petFindByTagsPath :: (FilePath, PathItem)
+petFindByTagsPath = ("/pet/findByTags", mempty
+    & get ?~ (mempty 
+        & SwaggerLens.tags .~ (Set.singleton "pet")   
+        & responses .~ (mempty & responses .~ (fromList [(200, Inline $ mempty & description .~ "successful operation" 
+                                                                               & schema ?~ (Inline $ mempty & (paramSchema .~ (mempty & type_ .~ SwaggerArray   
+                                                                                                                                      & items ?~ (SwaggerItemsObject (Ref $ Reference "Pet") ) ) ) ) ), 
+                                                         (400, Inline $ mempty & description .~ "Invalid Tag Value" )]) ) 
+        & summary ?~ "Finds Pets by tags"
+        & description ?~ "Muliple tags can be provided with comma separated strings. Use         tag1, tag2, tag3 for testing."
+        & operationId ?~ "findPetsByTags" 
+        & produces ?~ MimeList ["application/json", "application/xml"]
+        & parameters .~ [ Inline $ mempty
+                & SwaggerLens.name .~ "tags"
+                & description ?~ "Tags to filter by"
+                & required ?~ True
+                & schema .~  (ParamOther (ParamOtherSchema ParamQuery Nothing (mempty & type_ .~ SwaggerArray 
+                                                                                      & items ?~ SwaggerItemsPrimitive (Just CollectionMulti) (mempty &  type_ .~ SwaggerString)  ) ) ) ] ) )
+
 
 declTestSwagger :: Declare (Definitions Schema) Swagger
 declTestSwagger = do
