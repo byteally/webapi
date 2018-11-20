@@ -9,16 +9,15 @@
 module SwaggerJSONGen where
   
 import Data.Aeson as A
-import Data.List as DL
 import Data.Text as T
 import Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import GHC.Generics
 import Data.Proxy
-import Data.HashMap.Strict.InsOrd as HMSIns
+import qualified Data.HashMap.Strict.InsOrd as HMSIns 
 import qualified Data.Set as Set
 
-
+import Network.HTTP.Types.Method
 import Contract
 import Types
 import Data.Swagger
@@ -33,10 +32,10 @@ import Control.Lens
 
 swaggerJSON :: BSL.ByteString
 swaggerJSON = do
-  let api = (mempty :: Swagger) & paths .~ (fromList [("/user", mempty & post ?~ (mempty 
+  let api = (mempty :: Swagger) & paths .~ (HMSIns.fromList [("/user", mempty & post ?~ (mempty 
         & SwaggerLens.tags .~ (Set.singleton "user")   
-        & responses .~ (mempty & default_ .~ (Just $ Inline (Response "successful operation" Nothing (fromList []) Nothing ) )
-                               & responses .~ (fromList []) ) 
+        & responses .~ (mempty & default_ .~ (Just $ Inline (Response "successful operation" Nothing (HMSIns.fromList []) Nothing ) )
+                               & responses .~ (HMSIns.fromList []) ) 
         & summary ?~ "Create user"
         & description ?~ "This can only be done by the logged in user."
         & operationId ?~ "createUser" 
@@ -52,8 +51,8 @@ userUserNamePath :: (FilePath, PathItem)
 userUserNamePath = ("/user", mempty 
   & get ?~ (mempty 
         & SwaggerLens.tags .~ (Set.singleton "user")   
-        & responses .~ (mempty & default_ .~ (Just $ Inline (Response "successful operation" Nothing (fromList []) Nothing ) )
-                               & responses .~ (fromList [(200, Inline $ mempty & description .~ "successful operation" 
+        & responses .~ (mempty & default_ .~ (Just $ Inline (Response "successful operation" Nothing (HMSIns.fromList []) Nothing ) )
+                               & responses .~ (HMSIns.fromList [(200, Inline $ mempty & description .~ "successful operation" 
                                                                                & schema ?~ (Ref $ Reference "User") ),
                                                          (400, Inline $ mempty & description .~ "Invalid Username supplied" ), 
                                                          (404, Inline $ mempty & description .~ "User Not Found")]) ) 
@@ -68,8 +67,8 @@ userUserNamePath = ("/user", mempty
                 & schema .~  (ParamOther (ParamOtherSchema ParamPath Nothing (mempty & type_ .~ SwaggerString ) ) ) ] ) 
   & put ?~ (mempty 
         & SwaggerLens.tags .~ (Set.singleton "user")   
-        & responses .~ (mempty & default_ .~ (Just $ Inline (Response "successful operation" Nothing (fromList []) Nothing ) )
-                               & responses .~ (fromList [(400, Inline $ mempty & description .~ "Invalid Username supplied" ), 
+        & responses .~ (mempty & default_ .~ (Just $ Inline (Response "successful operation" Nothing (HMSIns.fromList []) Nothing ) )
+                               & responses .~ (HMSIns.fromList [(400, Inline $ mempty & description .~ "Invalid Username supplied" ), 
                                                          (404, Inline $ mempty & description .~ "User Not Found")]) ) 
         & summary ?~ "Updated user"
         & description ?~ "This can only be done by the logged in user."
@@ -87,7 +86,7 @@ userUserNamePath = ("/user", mempty
                                   & schema .~ (ParamBody $ Ref $ Reference "User") ] ) 
   & SwaggerLens.delete ?~ (mempty
     & SwaggerLens.tags .~ (Set.singleton "user")
-    & responses .~ (mempty & responses .~ (fromList [(400, Inline $ mempty & description .~ "Invalid Username supplied" ), 
+    & responses .~ (mempty & responses .~ (HMSIns.fromList [(400, Inline $ mempty & description .~ "Invalid Username supplied" ), 
                                                       (404, Inline $ mempty & description .~ "User Not Found")]) )
     & summary ?~ " Delete user"
     & description ?~ "This can only be done by the logged in user."
@@ -102,11 +101,30 @@ userUserNamePath = ("/user", mempty
   ) ) 
   
 
+
+--                                                  RespCode          ParamName
+constructPathOperation :: StdMethod -> FilePath -> [(Int, Referenced Response)] -> [(Text, ParamAnySchema)] -> (FilePath, PathItem)
+constructPathOperation stdMethod routeName respCodeWithTypes paramNameWithTypes = do
+  case stdMethod of
+    GET -> (routeName, mempty & get ?~ constructPathItem)
+    POST -> (routeName, mempty & post ?~ constructPathItem)
+    PUT -> (routeName, mempty & put ?~ constructPathItem)
+    PATCH -> (routeName, mempty & patch ?~ constructPathItem)
+    DELETE ->(routeName, mempty & delete ?~ constructPathItem)
+ where
+  constructPathItem = (mempty & responses .~ (mempty & responses .~ HMSIns.fromList respCodeWithTypes ) 
+                                               & produces ?~ MimeList ["application/json", "application/xml"]
+                                               & parameters .~ (processParams paramNameWithTypes) ) 
+  processParams paramList = flip fmap paramList (\(paramName, paramInfo) -> Inline $ mempty & SwaggerLens.name .~ paramName
+                                                                              --  & required ?~ True
+                                                                                            & schema .~ paramInfo )
+
+
 petFindByTagsPath :: (FilePath, PathItem)
 petFindByTagsPath = ("/pet/findByTags", mempty
     & get ?~ (mempty 
         & SwaggerLens.tags .~ (Set.singleton "pet")   
-        & responses .~ (mempty & responses .~ (fromList [(200, Inline $ mempty & description .~ "successful operation" 
+        & responses .~ (mempty & responses .~ (HMSIns.fromList [(200, Inline $ mempty & description .~ "successful operation" 
                                                                                & schema ?~ (Inline $ mempty & (paramSchema .~ (mempty & type_ .~ SwaggerArray   
                                                                                                                                       & items ?~ (SwaggerItemsObject (Ref $ Reference "Pet") ) ) ) ) ), 
                                                          (400, Inline $ mempty & description .~ "Invalid Tag Value" )]) ) 
