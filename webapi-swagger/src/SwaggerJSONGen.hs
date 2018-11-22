@@ -10,6 +10,7 @@ module SwaggerJSONGen where
   
 import Data.Aeson as A
 import Data.Text as T
+import qualified Data.List as DL
 import Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import GHC.Generics
@@ -17,11 +18,13 @@ import Data.Proxy
 import qualified Data.HashMap.Strict.InsOrd as HMSIns 
 import qualified Data.Set as Set
 import Safe
+import Data.Maybe
 
 import Network.HTTP.Types.Method
 import Contract
 import Types
 import Data.Swagger
+import Data.Swagger.Internal
 import Data.Swagger.Declare
 import Data.Swagger.Lens as SwaggerLens
 import Data.Swagger.Operation
@@ -103,72 +106,97 @@ userUserNamePath = ("/user", mempty
   
 data ApiTypeDetails = ApiTypeDetails
   {
-    apiOut :: String
-  , apiErr :: Maybe String
-  , formParam :: Maybe String
-  , queryParam :: Maybe String
-  , fileParam :: Maybe String
-  , headerIn :: Maybe String
-  , requestBody :: Maybe String
-  , contentTypes :: Maybe String
+    apiOut :: Text
+  , apiErr :: Maybe Text
+  , formParam :: Maybe Text
+  , queryParam :: Maybe Text
+  , fileParam :: Maybe Text
+  , headerIn :: Maybe Text
+  , requestBody :: Maybe Text
+  , contentTypes :: Maybe Text
+  -- TODO : Add path params to this? 
   -- TODO: cookie in/out and header out need to be added when we encounter them
   } deriving (Eq, Show)
 
 -- For each Route type (e.g. UserUsernameR) we will have a [(StdMethod, ApiTypeDetails)] and we will parse that in order to generate the arguments required by constructPathOperation function
-getParamsAndResponsesFromRoute :: [(StdMethod, ApiTypeDetails)] -> FilePath -> [String] -- [(FilePath, PathItem)]
-getParamsAndResponsesFromRoute methodWithApiDetails routeName = do
-  flip fmap methodWithApiDetails (\(stdMethod, apiTypeDetails) -> 
-    -- for anything other than `Text`, `Int` and other primitive types, return a Ref (use a function for this and call it at all places -> out, err, params)
-      case apiOut apiTypeDetails of 
-        "()" -> ""
-        x -> "" 
-      -- case formParam apiTypeDetails of -- consider using fmap here
-      --   Just x -> 
-      --   Nothing -> 
-        )
+getParamsAndResponsesFromRoute :: [(StdMethod, ApiTypeDetails)] -> FilePath -> (FilePath, PathItem)
+getParamsAndResponsesFromRoute methodWithApiDetails routeName = 
+  let completePathItem = DL.foldl' (\ currentPathItem (stdMethod, apiTypeDetails) -> do
+        let mFormParams = fmap (\formParamType -> constructParamSchema (Just ParamFormData) formParamType ) (formParam apiTypeDetails)
+        let mQueryParams = fmap (\qParamType -> constructParamSchema (Just ParamQuery) qParamType ) (queryParam apiTypeDetails)
+        let mHeaderParams = fmap (\headerParamType -> constructParamSchema (Just ParamHeader) headerParamType ) (headerIn apiTypeDetails)
+        let mBodyParams = fmap (\bodyParamType -> constructParamSchema (Nothing) bodyParamType ) (requestBody apiTypeDetails)
+        -- let mFileParams = TODO : Send as SwaggerFile type in FormData param type. Handle separately.
+        let paramList = DL.concat $ catMaybes [mFormParams, mQueryParams, mHeaderParams, mBodyParams] 
+    -- for ApiOut, call with 200, ApiErr -> 400, 
+        let mSuccessResponse = 
+              case apiOut apiTypeDetails of 
+                "()" -> Nothing
+                responseType -> Just (200, constructRefResponse responseType)
+        let mErrorResponse = fmap (\errorType -> (400, constructRefResponse errorType ) ) (apiErr apiTypeDetails)
+        let responsesList = catMaybes [mSuccessResponse, mErrorResponse]
+        constructPathOperation stdMethod responsesList paramList currentPathItem
+        ) (mempty::PathItem) methodWithApiDetails 
+  in (routeName, completePathItem)
  where 
   -- for Params, check if body or not, then construct value of ParamAnySchema.
-  -- If Body Param then first argument will be `Nothing`
-  constructParamSchema :: Maybe ParamLocation -> Text -> ParamAnySchema
+  -- If Body Param then the first argument will be `Nothing`
+  constructParamSchema :: Maybe ParamLocation -> Text -> [(Text, ParamAnySchema)]
   constructParamSchema mParamLocation paramType = 
     case mParamLocation of 
       Just otherLocation -> paramOtherSchema otherLocation paramType
-          -- ParamHeader -> 
-          -- ParamPath -> 
-          -- ParamFormData ->   
-      Nothing -> (ParamBody $ Ref $ Reference paramType )
+      Nothing -> ("body",ParamBody $ Ref $ Reference paramType ):[] -- default name for body param is "body"
   paramOtherSchema paramLocation pType = 
-    case pType `Prelude.elem` primitiveTypes of
-      True -> let (swaggerType, swFormat) = (getSwaggerTypeFromHType pType)
-              in (ParamOther $ mempty & in_ .~ paramLocation 
-                                      & paramSchema .~ (mempty & (type_ .~ swaggerType)
-                                                               & format .~ swFormat ) )
-      False -> 
-        case T.isPrefixOf "[" pType of
-          True -> do
-            let prefixStripped = fromJustNote "Type is Array. But no [ found" $ T.stripPrefix "[" pType
-                listBracketsRemovedType = fromJustNote "Type is Array. But no ] found" $ T.stripSuffix "]" prefixStripped
-            case listBracketsRemovedType `Prelude.elem` primitiveTypes of
-              True -> do -- construct ParamAnySchema with Array of Primitive SwaggerType
-                let (swaggerType, swFormat) = getSwaggerTypeFromHType listBracketsRemovedType
-                (ParamOther $ mempty & in_ .~ paramLocation 
-                                        & paramSchema .~ (mempty & (type_ .~ SwaggerArray) 
-                                                                 & items ?~ SwaggerItemsPrimitive Nothing (mempty & type_ .~ swaggerType
-                                                                                                                  & format .~ swFormat )  ) )
-                                        -- Just (SwaggerItemsObject (Inline (Schema 
-                                                                            -- _schemaParamSchema = ParamSchema {
-                                                                                                    -- _paramSchemaType = SwaggerString and set Format also
-              False -> error "Encountered list of custom data type for Param. This needs to be handled!"
-                -- (ParamOther $ mempty & in_ .~ Param 
-                --                      & paramSchema .~ (mempty & (type_ .~ SwaggerArray) 
-                --                                               & items ?~ (review _SwaggerItemsObject $ Ref $ Reference listBracketsRemovedType)) )
-              -- _paramSchemaItems = Just (SwaggerItemsObject (Ref (Reference {getReference = "Pet"})))
+    case paramLocation of
+      ParamQuery -> paramOtherSchemaWithCustomData paramLocation pType
+      ParamFormData -> paramOtherSchemaWithCustomData paramLocation pType
+      _ ->
+        case pType `Prelude.elem` primitiveTypes of
+          True -> let (swaggerType, swFormat) = (getSwaggerTypeFromHType pType)
+                  in ("",ParamOther $ mempty & in_ .~ paramLocation 
+                                          & paramSchema .~ (mempty & (type_ .~ swaggerType)
+                                                                  & format .~ swFormat ) ):[]
+          False -> 
+            case T.isPrefixOf "[" pType of
+              True -> do
+                let prefixStripped = fromJustNote "Type is Array. But no [ found" $ T.stripPrefix "[" pType
+                    listBracketsRemovedType = fromJustNote "Type is Array. But no ] found" $ T.stripSuffix "]" prefixStripped
+                case listBracketsRemovedType `Prelude.elem` primitiveTypes of
+                  True -> do -- construct ParamAnySchema with Array of Primitive SwaggerType
+                    let (swaggerType, swFormat) = getSwaggerTypeFromHType listBracketsRemovedType
+                    ("", ParamOther $ mempty & in_ .~ paramLocation 
+                                            & paramSchema .~ (mempty & (type_ .~ SwaggerArray) 
+                                                                    & items ?~ SwaggerItemsPrimitive Nothing (mempty & type_ .~ swaggerType
+                                                                                                                      & format .~ swFormat )  ) ):[]
+                  False -> error "Encountered list of custom data type for Param. This needs to be handled!"
           -- False ->  -- construct ParamAnySchema with Ref type (unless it's a QueryParam)
           -- check for Set or Collection here. for MultiCollection
+  paramOtherSchemaWithCustomData paramLocation paramType = 
+    case paramType `Prelude.elem` primitiveTypes of
+      True -> let (swaggerType, swFormat) = (getSwaggerTypeFromHType paramType)
+              in ("", ParamOther $ mempty & in_ .~ paramLocation 
+                                      & paramSchema .~ (mempty & (type_ .~ swaggerType)
+                                                              & format .~ swFormat ) ):[]
+      False -> 
+        case T.isPrefixOf "[" paramType of
+          True -> error $ "Encountered QueryParam or FormParam with a List. Debug Info: " ++ (show paramType)
+          False -> 
+            let paramNamesWithTypes = getRecordNamesForQueryParam (Proxy::Proxy UserLoginRGETQueryParam) -- currently being used for all Form and Query params with custom data types
+            in fmap (\(paramName, paramType) -> (paramName, constructQueryFormParamSchema paramType paramLocation) ) paramNamesWithTypes
           
-
-        
-  -- ParamOther $ ParamOtherSchema ($depends on `in` value) (Nothing) (paramSchema -> type and format here)
+  constructBasicParamSchema :: Text -> ParamLocation -> ParamAnySchema
+  constructBasicParamSchema pHaskellType paramLocation = 
+    let (swaggerType, swFormat) = (getSwaggerTypeFromHType pHaskellType)
+    in (ParamOther $ mempty & in_ .~ paramLocation 
+                            & paramSchema .~ (mempty & (type_ .~ swaggerType)
+                                                     & format .~ swFormat ) )
+                                                  
+  constructQueryFormParamSchema :: SwaggerType 'Data.Swagger.Internal.SwaggerKindParamOtherSchema -> ParamLocation -> ParamAnySchema
+  constructQueryFormParamSchema swaggerType pLocation = 
+    (ParamOther $ mempty & in_ .~ pLocation 
+                         & paramSchema .~ (mempty & (type_ .~ swaggerType) ) )
+    
+                    
   constructRefResponse :: Text -> Referenced Response
   constructRefResponse typeStr =
     -- edgecase : when it's an array, we need to check if it's an array of primitive. Usually would not be the case.
@@ -177,7 +205,7 @@ getParamsAndResponsesFromRoute methodWithApiDetails routeName = do
         let (swaggerType, swaggerFormat) = getSwaggerTypeFromHType typeStr
         in Inline $ mempty & schema ?~ (Inline $ mempty & paramSchema .~ (mempty & type_ .~ swaggerType 
                                                                                  & format .~ swaggerFormat) )
-      False -> Ref $ Reference typeStr -- TODO: take care of arrays of custom types and then primitives
+      False -> Ref $ Reference typeStr -- TODO: take care of arrays of custom types
   getSwaggerTypeFromHType haskellType = 
     case haskellType of
       "Text" -> (SwaggerString, Nothing)
@@ -195,15 +223,15 @@ getParamsAndResponsesFromRoute methodWithApiDetails routeName = do
 primitiveTypes = ["Day", "UTCTime", "ByteString", "Text", "Float", "Double", "Int32", "Int64", "Bool"]
 
 
---                                                  RespCode                       ParamName (not present?)
-constructPathOperation :: StdMethod -> FilePath -> [(Int, Referenced Response)] -> [(Text, ParamAnySchema)] -> (FilePath, PathItem)
-constructPathOperation stdMethod routeName respCodeWithTypes paramNameWithTypes = do
+--                                                  RespCode                       ParamName (not present in some cases)
+constructPathOperation :: StdMethod -> [(Int, Referenced Response)] -> [(Text, ParamAnySchema)] -> PathItem -> PathItem
+constructPathOperation stdMethod respCodeWithTypes paramNameWithTypes existingPathItem = do
   case stdMethod of
-    GET -> (routeName, mempty & get ?~ constructPathItem)
-    POST -> (routeName, mempty & post ?~ constructPathItem)
-    PUT -> (routeName, mempty & put ?~ constructPathItem)
-    PATCH -> (routeName, mempty & patch ?~ constructPathItem)
-    DELETE ->(routeName, mempty & delete ?~ constructPathItem)
+    GET -> existingPathItem & get ?~ constructPathItem
+    POST -> existingPathItem & post ?~ constructPathItem
+    PUT -> existingPathItem & put ?~ constructPathItem
+    PATCH -> existingPathItem & patch ?~ constructPathItem
+    DELETE -> existingPathItem & delete ?~ constructPathItem
  where
   constructPathItem = (mempty & responses .~ (mempty & responses .~ HMSIns.fromList respCodeWithTypes ) 
                                                & produces ?~ MimeList ["application/json", "application/xml"]
@@ -246,12 +274,22 @@ userSwagger =
   in spec { _swaggerDefinitions = defs }
 
 
-getRecordNamesForQueryParam :: [Text]
-getRecordNamesForQueryParam = do
-  let (defs, _) = runDeclare (declareResponse (Proxy :: Proxy UserLoginRGETQueryParam)) mempty
+getRecordNamesForQueryParam :: (ToSchema a) => Proxy a -> [(Text, SwaggerType 'Data.Swagger.Internal.SwaggerKindParamOtherSchema)]
+getRecordNamesForQueryParam inputProxy = do
+  let (defs, _) = runDeclare (declareResponse inputProxy) mempty
   case HMSIns.toList defs of
     (dataName, dataSchema):[] -> do
       let schemaPropertyList = HMSIns.toList $ _schemaProperties dataSchema 
       let (recordNames, refSchemaList) = Prelude.unzip schemaPropertyList
-      recordNames
+      let typesList = fmap (\(Inline innerSchema) -> (convertToParamOtherSchema . _paramSchemaType . _schemaParamSchema) innerSchema ) refSchemaList
+      Prelude.zip recordNames typesList
     _ -> error "Expecting only one element in the definitions list"
+ where 
+  convertToParamOtherSchema :: SwaggerType t -> SwaggerType 'Data.Swagger.Internal.SwaggerKindParamOtherSchema
+  convertToParamOtherSchema inputSwaggerType = 
+    case inputSwaggerType of
+      SwaggerString -> SwaggerString
+      SwaggerNumber -> SwaggerNumber
+      SwaggerInteger -> SwaggerInteger
+      SwaggerBoolean -> SwaggerBoolean
+
