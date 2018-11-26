@@ -213,11 +213,11 @@ readSwaggerJSON petstoreJSONContents= do
         (mApiOutType, apiErrType) <- getApiType (currentRouteName ++ show stdMethod) apiResponses
         -- TODO: Case match on ApiOut and if `Nothing` then check for default responses in `_responsesDefault $ _operationResponses operationData`
         let apiOutType = fromMaybe "()" mApiOutType
-        let mContentTypes = 
+        let addPlainText = 
               case apiOutType of
-                "()" -> Just "'[PlainText]"
-                "Text" -> Just "'[PlainText]"
-                _ -> Nothing
+                "()" -> True
+                "Text" -> True
+                _ -> False
         -- Group the Referenced Params by ParamLocation and then go through each group separately.
         let (formParamList, queryParamList, fileParamList, headerInList, bodyParamList) = DL.foldl' (groupParamTypes) ([], [], [], [], []) (_operationParameters operationData)
         mFormParamType <- getParamTypes (currentRouteName ++ show stdMethod) formParamList FormParam
@@ -225,6 +225,7 @@ readSwaggerJSON petstoreJSONContents= do
         mFileParamType <- getParamTypes (currentRouteName ++ show stdMethod) fileParamList FileParam
         mHeaderInType <- getParamTypes (currentRouteName ++ show stdMethod) headerInList HeaderParam
         mReqBodyType <- getParamTypes (currentRouteName ++ show stdMethod) bodyParamList BodyParam
+        let mContentTypes = getContentTypes (_operationProduces operationData) addPlainText
         let finalReqBodyType = flip fmap mReqBodyType (\reqBodyType -> 
               case (DL.isPrefixOf "[" reqBodyType) of
                 True -> "'" ++ reqBodyType
@@ -252,6 +253,19 @@ readSwaggerJSON petstoreJSONContents= do
                       SwaggerFile -> (formParamList, queryParamList, param:fileParamList, headerInList, bodyParamList) 
                       _ -> (param:formParamList, queryParamList, fileParamList, headerInList, bodyParamList) 
 
+  getContentTypes :: Maybe MimeList -> Bool -> Maybe String
+  getContentTypes mContentList addPlainText = do
+    let plainTextList = if addPlainText then ["PlainText"] else []
+    case mContentList of 
+      Just contentList -> 
+        case getMimeList contentList of
+          [] -> Nothing
+          mimeList -> Just $ '\'':DL.filter (/= '"') (show $ plainTextList ++ flip fmap mimeList (\mimeType -> case mimeType of
+            "application/xml" -> "XML"
+            "application/json" -> "JSON" ) )
+      Nothing -> Nothing
+  
+  -- constructContentTypesList :: [String]
 
   getApiType :: String -> InsOrdHashMap HttpStatusCode (Referenced Response)  -> StateT [CreateNewType] IO (Maybe String, Maybe String)
   getApiType newTypeName responsesHM = foldlWithKey' (\stateConfigWrappedTypes currentCode currentResponse -> do
