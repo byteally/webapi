@@ -18,7 +18,7 @@ import Data.Text as T
 import GHC.Generics
 import qualified Data.ByteString.Lazy as BSL
 import Data.HashMap.Strict.InsOrd as HMSIns
-import Language.Haskell.Exts hiding (OPTIONS)
+import Language.Haskell.Exts as LHE hiding (OPTIONS)
 import Data.Vector.Sized as SV hiding ((++), foldM, forM, mapM)
 import Safe
 import Data.Finite.Internal
@@ -65,11 +65,12 @@ runCodeGen swaggerJsonInputFilePath contractOutputFolderPath = do
                   case (DL.isInfixOf "FormParam" $ mName newData) of
                     True -> [defaultToParamInstance (mName newData) "FormParam"]
                     False -> []
-        accValue ++ [dataDeclaration (DataType noSrcSpan) (mName newData) (mRecordTypes newData) ["Eq", "Show", "Generic"] ] ++ (jsonInstances (mName newData) ) ++ toParamInstances
+        accValue ++ [dataDeclaration (DataType noSrcSpan) (mName newData) (mRecordTypes newData) ["Eq", "Show", "Generic"] ] ++ (jsonInstances (mName newData) ) ++ toParamInstances ++ [defaultToSchemaInstance (mName newData)]
       SumType tName tConstructors -> do
         let toParamEncodeParamQueryParamInstance = [toParamQueryParamInstance tName] ++ [encodeParamSumTypeInstance tName (DL.zip tConstructors ( (fmap . fmap) Char.toLower tConstructors) ) ]
         let fromParamDecodeParamQueryParamInstance = [fromParamQueryParamInstance tName] ++ [decodeParamSumTypeInstance tName (DL.zip ((fmap . fmap) Char.toLower tConstructors) tConstructors ) ]
-        accValue ++ ([sumTypeDeclaration tName tConstructors ["Eq", "Generic", "Ord"] ] ++ (instanceDeclForShow tName) ++ (instanceDeclForJSONForSumType tName) ++ toParamEncodeParamQueryParamInstance ++ fromParamDecodeParamQueryParamInstance )
+        let toSchemaInstance = [toSchemaInstanceForSumType tName (DL.zip ((fmap . fmap) Char.toLower tConstructors) tConstructors ) ]
+        accValue ++ ([sumTypeDeclaration tName tConstructors ["Eq", "Generic", "Ord"] ] ++ (instanceDeclForShow tName) ++ (instanceDeclForJSONForSumType tName) ++ toParamEncodeParamQueryParamInstance ++ fromParamDecodeParamQueryParamInstance ++ toSchemaInstance)
 
 
 
@@ -96,14 +97,14 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
             Module noSrcSpan 
                 (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
                 (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances", "DuplicateRecordFields", "OverloadedStrings"])
-                (fmap (moduleImport) ( (DL.zip ["Data.Text","Data.Int","Data.Time.Clock", "GHC.Generics", "Data.Aeson", "WebApi.Param", "Data.Text.Encoding"] (cycle [(False, Nothing)]) ) ++ qualifiedImportsForTypes ) ) --"GHC.Generics", "Data.Time.Calendar"
+                (fmap (moduleImport) ( (DL.zip ["Data.Text","Data.Int","Data.Time.Clock", "GHC.Generics", "Data.Aeson", "WebApi.Param", "Data.Text.Encoding", "Data.Swagger.Schema"] (cycle [(False, Nothing)]) ) ++ qualifiedImportsForTypes ) ) --"GHC.Generics", "Data.Time.Calendar"
                 (createDataDeclarations newData)
       liftIO $ writeFile (contractOutputFolderPath ++ "Types.hs") $ prettyPrint hTypesModule ++ "\n\n"
     
  where 
   createDataDeclarations :: [NewData] -> [Decl SrcSpanInfo]
   createDataDeclarations newDataList = DL.foldl' (\accValue newDataInfo -> 
-      accValue ++ (dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show", "Generic"]):jsonInstances (mName newDataInfo) ) [] newDataList
+      accValue ++ [(dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show", "Generic"])] ++ jsonInstances (mName newDataInfo) ++ [defaultToSchemaInstance (mName newDataInfo)] ) [] newDataList
  
 -- TODO: This function assumes SwaggerObject to be the type and directly reads from schemaProperties. We need to also take additionalProperties into consideration.
 generateSwaggerDefinitionData :: InsOrdHashMap Text Schema -> StateT [CreateNewType] IO [NewData]
@@ -212,6 +213,11 @@ readSwaggerJSON petstoreJSONContents= do
         (mApiOutType, apiErrType) <- getApiType (currentRouteName ++ show stdMethod) apiResponses
         -- TODO: Case match on ApiOut and if `Nothing` then check for default responses in `_responsesDefault $ _operationResponses operationData`
         let apiOutType = fromMaybe "()" mApiOutType
+        let addPlainText = 
+              case apiOutType of
+                "()" -> True
+                "Text" -> True
+                _ -> False
         -- Group the Referenced Params by ParamLocation and then go through each group separately.
         let (formParamList, queryParamList, fileParamList, headerInList, bodyParamList) = DL.foldl' (groupParamTypes) ([], [], [], [], []) (_operationParameters operationData)
         mFormParamType <- getParamTypes (currentRouteName ++ show stdMethod) formParamList FormParam
@@ -219,11 +225,12 @@ readSwaggerJSON petstoreJSONContents= do
         mFileParamType <- getParamTypes (currentRouteName ++ show stdMethod) fileParamList FileParam
         mHeaderInType <- getParamTypes (currentRouteName ++ show stdMethod) headerInList HeaderParam
         mReqBodyType <- getParamTypes (currentRouteName ++ show stdMethod) bodyParamList BodyParam
+        let mContentTypes = getContentTypes (_operationProduces operationData) addPlainText
         let finalReqBodyType = flip fmap mReqBodyType (\reqBodyType -> 
               case (DL.isPrefixOf "[" reqBodyType) of
                 True -> "'" ++ reqBodyType
                 False -> "'[" ++ reqBodyType ++ "]" )
-        pure $ Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType mFormParamType mQueryParamType mFileParamType mHeaderInType finalReqBodyType) methodAcc
+        pure $ Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType mFormParamType mQueryParamType mFileParamType mHeaderInType finalReqBodyType mContentTypes) methodAcc
       Nothing -> pure methodAcc
 
   groupParamTypes :: ([Param], [Param], [Param], [Param], [Param]) -> Referenced Param -> ([Param], [Param], [Param], [Param], [Param])
@@ -246,6 +253,19 @@ readSwaggerJSON petstoreJSONContents= do
                       SwaggerFile -> (formParamList, queryParamList, param:fileParamList, headerInList, bodyParamList) 
                       _ -> (param:formParamList, queryParamList, fileParamList, headerInList, bodyParamList) 
 
+  getContentTypes :: Maybe MimeList -> Bool -> Maybe String
+  getContentTypes mContentList addPlainText = do
+    let plainTextList = if addPlainText then ["PlainText"] else []
+    case mContentList of 
+      Just contentList -> 
+        case getMimeList contentList of
+          [] -> Nothing
+          mimeList -> Just $ '\'':DL.filter (/= '"') (show $ plainTextList ++ flip fmap mimeList (\mimeType -> case mimeType of
+            "application/xml" -> "XML"
+            "application/json" -> "JSON" ) )
+      Nothing -> Nothing
+  
+  -- constructContentTypesList :: [String]
 
   getApiType :: String -> InsOrdHashMap HttpStatusCode (Referenced Response)  -> StateT [CreateNewType] IO (Maybe String, Maybe String)
   getApiType newTypeName responsesHM = foldlWithKey' (\stateConfigWrappedTypes currentCode currentResponse -> do
@@ -497,6 +517,7 @@ data ApiTypeDetails = ApiTypeDetails
   , fileParam :: Maybe String
   , headerIn :: Maybe String
   , requestBody :: Maybe String
+  , contentTypes :: Maybe String
   -- TODO: cookie in/out and header out need to be added when we encounter them
   } deriving (Eq, Show)
 
@@ -564,7 +585,8 @@ generateContractBody contractName contractDetails =
         fileParamType = fileParam apiDetails
         headerParamType = headerIn apiDetails
         requestBodyType = requestBody apiDetails
-        instanceVectorList = catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeName, tInfo] ) typeInfo) $ DL.zip (respType:errType:formParamType:queryParamType:fileParamType:headerParamType:requestBodyType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam", "FileParam", "HeaderIn", "RequestBody"]
+        contentType = contentTypes apiDetails
+        instanceVectorList = catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeName, tInfo] ) typeInfo) $ DL.zip (respType:errType:formParamType:queryParamType:fileParamType:headerParamType:requestBodyType:contentType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam", "FileParam", "HeaderIn", "RequestBody", "ContentTypes"]
     in (topLevelVector, instanceVectorList):accValue
   fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
 
@@ -625,7 +647,7 @@ constructorDeclaration constructorName innerRecords =
 
 
 stringLiteral :: String -> Exp SrcSpanInfo
-stringLiteral str = (Lit noSrcSpan (Language.Haskell.Exts.String noSrcSpan str str))
+stringLiteral str = (Lit noSrcSpan (LHE.String noSrcSpan str str))
 
 variableName :: String -> Exp SrcSpanInfo
 variableName name = (Var noSrcSpan (UnQual noSrcSpan (nameDecl name) ) )
@@ -898,6 +920,8 @@ jsonInstances dataTypeName = [jsonInstance "ToJSON", jsonInstance "FromJSON"]
         )
       ) Nothing
 
+
+
 queryParamInstanceIRule :: String -> String -> InstRule SrcSpanInfo
 queryParamInstanceIRule paramDirection sumTypeName = 
   IRule noSrcSpan Nothing Nothing 
@@ -952,7 +976,7 @@ encodeCaseStatementOption (caseMatchOn, caseResult) =
 decodeCaseStatementOption :: (String, String) -> Alt SrcSpanInfo
 decodeCaseStatementOption (caseMatchOnStr, resultOfCaseMatch) = 
   Alt noSrcSpan 
-    (PLit noSrcSpan (Signless noSrcSpan) (Language.Haskell.Exts.String noSrcSpan caseMatchOnStr caseMatchOnStr ) ) 
+    (PLit noSrcSpan (Signless noSrcSpan) (LHE.String noSrcSpan caseMatchOnStr caseMatchOnStr ) ) 
     (UnGuardedRhs noSrcSpan (App noSrcSpan (dataConstructor "Just") (dataConstructor resultOfCaseMatch) )) 
     Nothing
 
@@ -1172,6 +1196,72 @@ defaultToParamInstance dataTypeName paramType =
         (typeConstructor dataTypeName) )) 
     Nothing
 
+defaultToSchemaInstance :: String -> Decl SrcSpanInfo
+defaultToSchemaInstance dataTypeName =
+  InstDecl noSrcSpan Nothing 
+    (IRule noSrcSpan Nothing Nothing 
+      (IHApp noSrcSpan 
+        (instanceHead "ToSchema") 
+        (typeConstructor dataTypeName)
+      )
+    ) Nothing
+
+toSchemaInstanceForSumType :: String -> [(String, String)] -> Decl SrcSpanInfo
+toSchemaInstanceForSumType typeName constructorValues = 
+  InstDecl noSrcSpan Nothing 
+    (IRule noSrcSpan Nothing Nothing 
+      (IHApp noSrcSpan 
+        (instanceHead "ToSchema") 
+        (typeConstructor typeName)
+      )
+    ) 
+  (Just [InsDecl noSrcSpan 
+  (PatBind noSrcSpan 
+    (PVar noSrcSpan 
+      (nameDecl "declareNamedSchema")
+    ) 
+    (UnGuardedRhs noSrcSpan 
+      (App noSrcSpan 
+        (Var noSrcSpan (UnQual noSrcSpan (nameDecl "genericDeclareNamedSchema"))) 
+        (Paren noSrcSpan 
+          (App noSrcSpan 
+            (App noSrcSpan 
+              (App noSrcSpan 
+                (App noSrcSpan 
+                  (App noSrcSpan 
+                    (dataConstructor "SchemaOptions")
+                    (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "Prelude") (nameDecl "id")))) 
+                    (Paren noSrcSpan 
+                      (Lambda noSrcSpan [PVar noSrcSpan (nameDecl "inputConst")] 
+                        (Case noSrcSpan 
+                          (Var noSrcSpan (UnQual noSrcSpan (nameDecl "inputConst"))) 
+                          (fmap caseMatchStatement constructorValues)
+                        )
+                      )
+                    )
+                ) 
+                (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "Prelude") (nameDecl "id")))
+              ) 
+              (dataConstructor "True")
+          ) 
+          (dataConstructor "False")
+        )
+      )
+    )
+  ) 
+  Nothing)])
+ where
+  caseMatchStatement (lowerCaseCons, typeConstructor) = 
+    (Alt noSrcSpan 
+      (PLit noSrcSpan (Signless noSrcSpan) (LHE.String noSrcSpan typeConstructor typeConstructor)) 
+      (UnGuardedRhs noSrcSpan (stringLiteral lowerCaseCons) ) Nothing)
+    -- Alt noSrcSpan 
+    --   (PLit noSrcSpan (Signless noSrcSpan) (LHE.String noSrcSpan "Pending" "Pending")) 
+    --   (UnGuardedRhs noSrcSpan (stringLiteral "pending") ) Nothing,
+    -- Alt noSrcSpan 
+    --   (PLit noSrcSpan (Signless noSrcSpan) (LHE.String noSrcSpan "Sold" "Sold")) 
+    --   (UnGuardedRhs noSrcSpan (stringLiteral "sold") ) Nothing
+    -- ]
 ---------------------------------------------------------------------------------------
 -- Support multiple versions of GHC (Use ifndef )
 -- for LTS 9.0 -> 1.18.2
