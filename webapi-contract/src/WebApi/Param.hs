@@ -36,6 +36,8 @@ Deserialization works analogously, 'FromParam' and 'DecodeParam' are counterpart
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
 {-# LANGUAGE UndecidableInstances  #-}
+{-# LANGUAGE CPP                   #-}
+
 module WebApi.Param
        ( -- * Serialization
          ToParam (..)
@@ -141,7 +143,9 @@ import           WebApi.Contract
 import           Data.Set                           (Set)
 import qualified Data.Set                           as Set
 import qualified Data.MultiSet                      as MultiSet
+#if MIN_VERSION_vector(0,12,0)
 import           Data.Semigroup                     (Semigroup)
+#endif
 
 -- | A type for holding a file.
 data FileInfo = FileInfo
@@ -180,7 +184,12 @@ instance FromJSON a => FromJSON (JsonOf a) where
   parseJSON jval = JsonOf `fmap` parseJSON jval
 
 newtype DelimitedCollection (delim :: Symbol) (t :: *) = DelimitedCollection {getCollection :: Vector t}
+#if MIN_VERSION_vector(0,12,0)
                                                          deriving (Show, Read, Eq, Ord, FromJSON, ToJSON, Monad, Applicative, Functor, Foldable, Alternative, Monoid, Semigroup)
+#else
+                                                         deriving (Show, Read, Eq, Ord, FromJSON, ToJSON, Monad, Applicative, Functor, Foldable, Alternative, Monoid)
+#endif
+
 
 
 instance GHC.IsList (DelimitedCollection s a) where
