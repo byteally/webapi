@@ -56,7 +56,7 @@ library
   -- ghc-options: -Wall -Werror
   ghc-options: -Wall
 
-executable webapi-swagger-exe
+executable init-swagger-project
   main-is: Main.hs
   other-modules:
       Paths_webapi_swagger
