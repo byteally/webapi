@@ -53,7 +53,8 @@ runCodeGen swaggerJsonInputFilePath contractOutputFolderPath = do
  where
   createNewTypes typeList = do
     let hTypes = DL.foldl' createType ([]::[Decl SrcSpanInfo]) typeList
-    appendFile (contractOutputFolderPath ++ "Types.hs") $ DL.unlines $ fmap prettyPrint hTypes
+    appendFile (contractOutputFolderPath ++ "Types.hs") $ 
+      DL.unlines $ fmap prettyPrint (hTypes)
       
   createType accValue typeInfo = 
     case typeInfo of
@@ -65,13 +66,20 @@ runCodeGen swaggerJsonInputFilePath contractOutputFolderPath = do
                   case (DL.isInfixOf "FormParam" $ mName newData) of
                     True -> [defaultToParamInstance (mName newData) "FormParam"]
                     False -> []
-        accValue ++ [dataDeclaration (DataType noSrcSpan) (mName newData) (mRecordTypes newData) ["Eq", "Show", "Generic"] ] ++ (jsonInstances (mName newData) ) ++ toParamInstances ++ [defaultToSchemaInstance (mName newData)]
+        let (modifiedRecords, dataDecl) = dataDeclaration (DataType noSrcSpan) (mName newData) (mRecordTypes newData) ["Eq", "Show", "Generic"] 
+        let jsonInsts = jsonInstances (mName newData) modifiedRecords
+        accValue ++ [dataDecl] ++ jsonInsts ++ toParamInstances ++ [defaultToSchemaInstance (mName newData)]
       SumType tName tConstructors -> do
         let toParamEncodeParamQueryParamInstance = [toParamQueryParamInstance tName] ++ [encodeParamSumTypeInstance tName (DL.zip tConstructors ( (fmap . fmap) Char.toLower tConstructors) ) ]
         let fromParamDecodeParamQueryParamInstance = [fromParamQueryParamInstance tName] ++ [decodeParamSumTypeInstance tName (DL.zip ((fmap . fmap) Char.toLower tConstructors) tConstructors ) ]
-        let toSchemaInstance = [toSchemaInstanceForSumType tName (DL.zip ((fmap . fmap) Char.toLower tConstructors) tConstructors ) ]
-        accValue ++ ([sumTypeDeclaration tName tConstructors ["Eq", "Generic", "Ord"] ] ++ (instanceDeclForShow tName) ++ (instanceDeclForJSONForSumType tName) ++ toParamEncodeParamQueryParamInstance ++ fromParamDecodeParamQueryParamInstance ++ toSchemaInstance)
-
+        let toSchemaInstances = toSchemaInstanceForSumType tName (DL.zip ((fmap . fmap) Char.toLower tConstructors) tConstructors ) 
+        accValue ++ 
+          ([sumTypeDeclaration tName tConstructors ["Eq", "Generic", "Ord"] ] 
+            ++ (instanceDeclForShow tName) 
+            ++ (instanceDeclForJSONForSumType tName) 
+            ++ toParamEncodeParamQueryParamInstance 
+            ++ fromParamDecodeParamQueryParamInstance 
+            ++ toSchemaInstances)
 
 
 type StateConfig = StateT [CreateNewType] IO ()
@@ -89,22 +97,43 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
             Module noSrcSpan 
               (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
               (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
-              (fmap (\modName -> moduleImport (modName,(False, Nothing)) ) [ "WebApi.Contract", "WebApi.Param", "Types", "Data.Int", "Data.Text"]) -- CommonTypes
+              (fmap (\modName -> moduleImport (modName,(False, Nothing)) ) 
+                    [ "WebApi.Contract", "WebApi.Param", "Types", "Data.Int", "Data.Text", "WebApi.XML"]) -- CommonTypes
               (generateContractBody "Petstore" contractDetailsFromPetstore)
       liftIO $ writeFile (contractOutputFolderPath ++ "Contract.hs") $ prettyPrint hContractModule
-      let qualifiedImportsForTypes = [("Data.ByteString.Char8", (True, Just $ ModuleName noSrcSpan "ASCII"))]
+      let qualifiedImportsForTypes = 
+            [("Data.ByteString.Char8", (True, Just $ ModuleName noSrcSpan "ASCII")), 
+            ("Data.HashMap.Lazy", (True, Just $ ModuleName noSrcSpan "HM") ),
+            ("Data.Swagger", (True, Just $ ModuleName noSrcSpan "SW") ) ]
       let hTypesModule = 
             Module noSrcSpan 
                 (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
                 (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances", "DuplicateRecordFields", "OverloadedStrings"])
-                (fmap (moduleImport) ( (DL.zip ["Data.Text","Data.Int","Data.Time.Clock", "GHC.Generics", "Data.Aeson", "WebApi.Param", "Data.Text.Encoding", "Data.Swagger.Schema"] (cycle [(False, Nothing)]) ) ++ qualifiedImportsForTypes ) ) --"GHC.Generics", "Data.Time.Calendar"
+                (fmap (moduleImport) 
+                  ( (DL.zip ["Data.Text",
+                            "Data.Int",
+                            "Data.Time.Clock", 
+                            "GHC.Generics", 
+                            "Data.Aeson", 
+                            "WebApi.Param", 
+                            "Data.Text.Encoding", 
+                            "Data.Swagger.Schema", 
+                            "CommonTypes",
+                            "Control.Lens",
+                            "Data.Swagger.Internal.Schema",
+                            "Data.Swagger.ParamSchema",
+                            -- TODO : This is kind of a hack!
+                            "Data.Swagger.Internal hiding (Tag)"
+                            ] (cycle [(False, Nothing)]) ) ++ qualifiedImportsForTypes ) ) --"GHC.Generics", "Data.Time.Calendar"
                 (createDataDeclarations newData)
       liftIO $ writeFile (contractOutputFolderPath ++ "Types.hs") $ prettyPrint hTypesModule ++ "\n\n"
     
  where 
   createDataDeclarations :: [NewData] -> [Decl SrcSpanInfo]
   createDataDeclarations newDataList = DL.foldl' (\accValue newDataInfo -> 
-      accValue ++ [(dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show", "Generic"])] ++ jsonInstances (mName newDataInfo) ++ [defaultToSchemaInstance (mName newDataInfo)] ) [] newDataList
+      let (modifiedRecords, dataDecl) = dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show", "Generic"]
+          jsonInsts = jsonInstances (mName newDataInfo) modifiedRecords
+      in accValue ++ [dataDecl] ++ jsonInsts ++ [defaultToSchemaInstance (mName newDataInfo)] ) [] newDataList
  
 -- TODO: This function assumes SwaggerObject to be the type and directly reads from schemaProperties. We need to also take additionalProperties into consideration.
 generateSwaggerDefinitionData :: InsOrdHashMap Text Schema -> StateT [CreateNewType] IO [NewData]
@@ -395,6 +424,7 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
             case _paramSchemaEnum paramSchema of
               Nothing -> pure "Text"
               Just valueEnumList -> do
+                -- TODO : Store OG enum vals for proper instances. Extend SumType with an extra constructor.
                 let enumVals = fmap (\(Data.Aeson.String enumVal) -> toS $ T.toTitle enumVal ) valueEnumList
                 let innerRecordTypeName = fromJustNote ("Expected a Param Name but got Nothing. Need Param Name to set the name for the new type we need to create. Debug Info: " ++ show paramSchema) mParamNameOrRecordName
                 let haskellNewTypeInfo = SumType innerRecordTypeName enumVals
@@ -615,35 +645,45 @@ generateContractBody contractName contractDetails =
 
 type InnerRecords = [(String, String)]
 type DerivingClass = String  
-
+                      -- old name, new name
+type ModifiedRecords = [(String, String)]
 
 #if MIN_VERSION_haskell_src_exts(1,20,0)
-dataDeclaration :: (DataOrNew SrcSpanInfo) -> String -> InnerRecords -> [DerivingClass] -> Decl SrcSpanInfo
+dataDeclaration :: (DataOrNew SrcSpanInfo) -> String -> InnerRecords -> [DerivingClass] -> (ModifiedRecords, Decl SrcSpanInfo)
 dataDeclaration dataOrNew dataName innerRecords derivingList = 
-    DataDecl noSrcSpan  
-      dataOrNew 
-      Nothing 
-      (declarationHead dataName)
-      (constructorDeclaration dataName innerRecords)
-      [derivingDecl  derivingList]
+  let (modRecords, constructorDecl) = constructorDeclaration dataName innerRecords
+      decl =
+        DataDecl noSrcSpan  
+          dataOrNew 
+          Nothing 
+          (declarationHead dataName)
+          constructorDecl
+          [derivingDecl  derivingList]
+  in (modRecords, decl)
 #else
-dataDeclaration :: (DataOrNew SrcSpanInfo) -> String -> InnerRecords -> [DerivingClass] -> Decl SrcSpanInfo
+dataDeclaration :: (DataOrNew SrcSpanInfo) -> String -> InnerRecords -> [DerivingClass] -> (ModifiedRecords, Decl SrcSpanInfo)
 dataDeclaration dataOrNew dataName innerRecords derivingList = 
-  DataDecl noSrcSpan  
-    dataOrNew 
-    Nothing 
-    (declarationHead dataName)
-    (constructorDeclaration dataName innerRecords)
-    (Just $ derivingDecl  derivingList)
+  let (modRecords, constructorDecl) = constructorDeclaration dataName innerRecords
+      decl =
+        DataDecl noSrcSpan  
+          dataOrNew 
+          Nothing 
+          (declarationHead dataName)
+          constructorDecl
+          (Just $ derivingDecl  derivingList)
+  in (modRecords, decl)
 #endif
 
 
 declarationHead :: String -> DeclHead SrcSpanInfo
 declarationHead declHeadName = (DHead noSrcSpan (Ident noSrcSpan declHeadName) )
 
-constructorDeclaration :: String -> InnerRecords -> [QualConDecl SrcSpanInfo]
+constructorDeclaration :: String -> InnerRecords -> (ModifiedRecords, [QualConDecl SrcSpanInfo])
 constructorDeclaration constructorName innerRecords = 
-  [QualConDecl noSrcSpan Nothing Nothing (RecDecl noSrcSpan (nameDecl constructorName) (fmap fieldDecl innerRecords) )] 
+  let (mModRecords, fieldDecls) = DL.unzip (fmap fieldDecl innerRecords)
+      modRecords = catMaybes mModRecords
+      qualConDecl = [QualConDecl noSrcSpan Nothing Nothing (RecDecl noSrcSpan (nameDecl constructorName) fieldDecls )]
+  in (modRecords, qualConDecl)
 
 
 stringLiteral :: String -> Exp SrcSpanInfo
@@ -655,9 +695,56 @@ variableName name = (Var noSrcSpan (UnQual noSrcSpan (nameDecl name) ) )
 nameDecl :: String -> Name SrcSpanInfo
 nameDecl = Ident noSrcSpan 
 
-fieldDecl :: (String, String) -> FieldDecl SrcSpanInfo
-fieldDecl (fieldName, fieldType) = 
-  FieldDecl noSrcSpan [nameDecl fieldName] (TyCon noSrcSpan (UnQual noSrcSpan (nameDecl fieldType)))
+fieldDecl :: (String, String) -> (Maybe (String, String), FieldDecl SrcSpanInfo)
+fieldDecl (fieldName, fieldType) = do
+  let (isChanged, fName) = setValidFieldName fieldName
+  let mModRecord = 
+        case isChanged of
+          True -> Just (fieldName, fName)
+          False -> Nothing
+  let fieldDecl = FieldDecl noSrcSpan [nameDecl fName] (TyCon noSrcSpan (UnQual noSrcSpan (nameDecl fieldType)))
+  (mModRecord, fieldDecl)
+
+
+setValidFieldName :: String -> (Bool, String)
+setValidFieldName fldName = do
+  case (isHsKeyword fldName, not $ isValidId fldName ) of
+    (False, False) -> (False, fldName)
+    (False, True) -> 
+      let newFldName = fixInvalidId fldName
+      in (True, newFldName)
+    (True, False) -> 
+      let newFldName = fldName ++ "_"
+      in (True, newFldName)
+    (True, True) -> -- TODO : Is this case possible? 
+      (True, fixInvalidId fldName)
+
+ where
+  isHsKeyword :: String -> Bool
+  isHsKeyword str = DL.elem str haskellKeywords
+
+  isValidId :: String -> Bool
+  isValidId str
+  -- Needs to start with a lowercase letter or _ but not just _ 
+  -- cannot contain : 
+    | DL.null str = error "Found empty name for record field name!"
+    | DL.elem ':' str = False
+    | DL.elem ' ' str = False
+    | str == "_" = False
+    -- TODO : check for any other cases
+
+    -- check if first char is NOT lowercase or _ = False
+    | (Char.isAlpha (DL.head str) && Char.isLower (DL.head str) ) ||  (DL.head str == '_') = True
+
+fixInvalidId :: String -> String
+fixInvalidId idVal
+    | DL.elem ':' idVal = replace ':' '_' idVal
+    | DL.elem ' ' idVal = replace ' ' '_' idVal
+    | idVal == "_" = "holeName" -- ?? TODO : Is this allowed? Discuss
+
+ where
+  replace :: Eq a => a -> a -> [a] -> [a]
+  replace a b = fmap $ \c -> if c == a then b else c
 
 derivingDecl :: [String] -> Deriving SrcSpanInfo
 #if MIN_VERSION_haskell_src_exts(1,20,0)
@@ -908,19 +995,60 @@ instanceDeclForJSONForSumType dataTypeName = [toJsonInstance, fromJsonInstance]
                       )))) (variableName"jsonVal") )) Nothing])])
 
 
-jsonInstances :: String -> [Decl SrcSpanInfo]
-jsonInstances dataTypeName = [jsonInstance "ToJSON", jsonInstance "FromJSON"]
+data JsonDirection = ToJson | FromJson deriving (Eq)
+
+instance Show JsonDirection where
+  show ToJson = "ToJSON"
+  show FromJson = "FromJSON" 
+
+jsonInstances :: String -> ModifiedRecords -> [Decl SrcSpanInfo]
+jsonInstances dataTypeName modRecords = [jsonInstance ToJson, jsonInstance FromJson]
  where
+  jsonInstance :: JsonDirection -> Decl SrcSpanInfo
   jsonInstance jsonDirection = 
-    InstDecl noSrcSpan Nothing 
-      (IRule noSrcSpan Nothing Nothing 
-        (IHApp noSrcSpan 
-          (instanceHead jsonDirection) 
-          (typeConstructor dataTypeName)
-        )
-      ) Nothing
-
-
+    case modRecords of
+      [] -> 
+        InstDecl noSrcSpan Nothing 
+          (IRule noSrcSpan Nothing Nothing 
+            (IHApp noSrcSpan 
+              (instanceHead $ show jsonDirection) 
+              (typeConstructor dataTypeName)
+            )
+          ) Nothing
+      modRecList -> do
+        let (outerFn, genericFn) = getEncodingFnStr jsonDirection
+        InstDecl noSrcSpan Nothing 
+          (IRule noSrcSpan Nothing Nothing 
+            (IHApp noSrcSpan 
+              (instanceHead $ show jsonDirection) 
+              (typeConstructor dataTypeName)
+            )
+          ) 
+          (Just [
+            InsDecl noSrcSpan 
+              (PatBind noSrcSpan 
+                (PVar noSrcSpan (nameDecl outerFn)) 
+                  (UnGuardedRhs noSrcSpan (
+                    InfixApp noSrcSpan (variableName genericFn)
+                    (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan "$"))) 
+                    (RecUpdate noSrcSpan (variableName "defaultOptions")
+                        [FieldUpdate noSrcSpan (UnQual noSrcSpan (Ident noSrcSpan "fieldLabelModifier")) 
+                        (InfixApp noSrcSpan (variableName "keyMapping")
+                            (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan "$"))) 
+                            (App noSrcSpan (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "HM") (nameDecl "fromList"))) 
+                                (List noSrcSpan (fmap changedFieldModsHM modRecList))
+                            )
+                        ) ] ) ) ) Nothing) 
+                ] )
+  changedFieldModsHM :: (String, String) -> Exp SrcSpanInfo
+  changedFieldModsHM (modFieldName, ogFieldName) = 
+    Tuple noSrcSpan Boxed [stringLiteral ogFieldName, stringLiteral modFieldName]
+  
+  getEncodingFnStr :: JsonDirection -> (String, String)
+  getEncodingFnStr jsonDir = 
+    case jsonDir of
+      ToJson -> ("toEncoding", "genericToEncoding")
+      FromJson -> ("parseJSON", "genericParseJSON")
 
 queryParamInstanceIRule :: String -> String -> InstRule SrcSpanInfo
 queryParamInstanceIRule paramDirection sumTypeName = 
@@ -1206,62 +1334,228 @@ defaultToSchemaInstance dataTypeName =
       )
     ) Nothing
 
-toSchemaInstanceForSumType :: String -> [(String, String)] -> Decl SrcSpanInfo
+toSchemaInstanceForSumType :: String -> [(String, String)] -> [Decl SrcSpanInfo]
 toSchemaInstanceForSumType typeName constructorValues = 
-  InstDecl noSrcSpan Nothing 
-    (IRule noSrcSpan Nothing Nothing 
-      (IHApp noSrcSpan 
-        (instanceHead "ToSchema") 
-        (typeConstructor typeName)
-      )
-    ) 
-  (Just [InsDecl noSrcSpan 
-  (PatBind noSrcSpan 
-    (PVar noSrcSpan 
-      (nameDecl "declareNamedSchema")
-    ) 
-    (UnGuardedRhs noSrcSpan 
-      (App noSrcSpan 
-        (Var noSrcSpan (UnQual noSrcSpan (nameDecl "genericDeclareNamedSchema"))) 
-        (Paren noSrcSpan 
-          (App noSrcSpan 
+  toSchemaInst:multiSetToSchemaInst:multiSetToParamSchemaInst:[]
+ where
+
+  toSchemaInst :: Decl SrcSpanInfo
+  toSchemaInst =
+    InstDecl noSrcSpan Nothing 
+      (IRule noSrcSpan Nothing Nothing 
+        (IHApp noSrcSpan 
+          (instanceHead "ToSchema") 
+          (typeConstructor typeName)
+        )
+      ) 
+    (Just [InsDecl noSrcSpan 
+    (PatBind noSrcSpan 
+      (PVar noSrcSpan 
+        (nameDecl "declareNamedSchema")
+      ) 
+      (UnGuardedRhs noSrcSpan 
+        (App noSrcSpan 
+          (Var noSrcSpan (UnQual noSrcSpan (nameDecl "genericDeclareNamedSchema"))) 
+          (Paren noSrcSpan 
             (App noSrcSpan 
               (App noSrcSpan 
                 (App noSrcSpan 
                   (App noSrcSpan 
-                    (dataConstructor "SchemaOptions")
-                    (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "Prelude") (nameDecl "id")))) 
-                    (Paren noSrcSpan 
-                      (Lambda noSrcSpan [PVar noSrcSpan (nameDecl "inputConst")] 
-                        (Case noSrcSpan 
-                          (Var noSrcSpan (UnQual noSrcSpan (nameDecl "inputConst"))) 
-                          (fmap caseMatchStatement constructorValues)
+                    (App noSrcSpan 
+                      (dataConstructor "SchemaOptions")
+                      (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "Prelude") (nameDecl "id")))) 
+                      (Paren noSrcSpan 
+                        (Lambda noSrcSpan [PVar noSrcSpan (nameDecl "inputConst")] 
+                          (Case noSrcSpan 
+                            (Var noSrcSpan (UnQual noSrcSpan (nameDecl "inputConst"))) 
+                            (fmap caseMatchStatement constructorValues)
+                          )
                         )
                       )
-                    )
+                  ) 
+                  (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "Prelude") (nameDecl "id")))
                 ) 
-                (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "Prelude") (nameDecl "id")))
-              ) 
-              (dataConstructor "True")
-          ) 
-          (dataConstructor "False")
+                (dataConstructor "True")
+            ) 
+            (dataConstructor "False")
+          )
         )
       )
-    )
-  ) 
-  Nothing)])
- where
+    ) 
+    Nothing)])
+
+  caseMatchStatement :: (String, String) -> Alt SrcSpanInfo  
   caseMatchStatement (lowerCaseCons, typeConstructor) = 
     (Alt noSrcSpan 
       (PLit noSrcSpan (Signless noSrcSpan) (LHE.String noSrcSpan typeConstructor typeConstructor)) 
       (UnGuardedRhs noSrcSpan (stringLiteral lowerCaseCons) ) Nothing)
-    -- Alt noSrcSpan 
-    --   (PLit noSrcSpan (Signless noSrcSpan) (LHE.String noSrcSpan "Pending" "Pending")) 
-    --   (UnGuardedRhs noSrcSpan (stringLiteral "pending") ) Nothing,
-    -- Alt noSrcSpan 
-    --   (PLit noSrcSpan (Signless noSrcSpan) (LHE.String noSrcSpan "Sold" "Sold")) 
-    --   (UnGuardedRhs noSrcSpan (stringLiteral "sold") ) Nothing
-    -- ]
+
+
+  multiSetToSchemaInst :: Decl SrcSpanInfo
+  multiSetToSchemaInst = 
+    (InstDecl noSrcSpan Nothing 
+      (IRule noSrcSpan Nothing Nothing 
+        (IHApp noSrcSpan 
+          (instanceHead "ToSchema") 
+          (TyParen noSrcSpan 
+            (TyApp noSrcSpan 
+              (typeConstructor "MultiSet") 
+              (typeConstructor typeName)
+            )
+          )
+        )
+      ) 
+      (Just 
+        [InsDecl noSrcSpan 
+          (PatBind noSrcSpan 
+            (PVar noSrcSpan (Ident noSrcSpan "declareNamedSchema")) 
+            (UnGuardedRhs noSrcSpan 
+              (InfixApp noSrcSpan 
+                (Var noSrcSpan (UnQual noSrcSpan (Ident noSrcSpan "plain"))) 
+                (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan "."))) 
+                (Var noSrcSpan (UnQual noSrcSpan (Ident noSrcSpan "paramSchemaToSchema")))
+              )
+            ) Nothing ) ] ) )
+
+  multiSetToParamSchemaInst :: Decl SrcSpanInfo
+  multiSetToParamSchemaInst = 
+    (InstDecl noSrcSpan Nothing 
+      (IRule noSrcSpan Nothing Nothing 
+        (IHApp noSrcSpan 
+          (instanceHead "ToParamSchema")
+          (TyParen noSrcSpan 
+            (TyApp noSrcSpan 
+              (typeConstructor "MultiSet") 
+              (typeConstructor typeName)
+            )
+          )
+        )
+      )  
+    (Just 
+      [InsDecl noSrcSpan 
+        (FunBind noSrcSpan 
+          [Match noSrcSpan 
+            (Ident noSrcSpan "toParamSchema") 
+            [PWildCard noSrcSpan] 
+            (UnGuardedRhs noSrcSpan 
+              (InfixApp noSrcSpan 
+                (InfixApp noSrcSpan 
+                  (InfixApp noSrcSpan 
+                    (InfixApp noSrcSpan 
+                      (Var noSrcSpan (UnQual noSrcSpan (Ident noSrcSpan "mempty"))) 
+                      (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan "&"))) 
+                      (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "SW") (Ident noSrcSpan "type_")))
+                    ) 
+                    (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan ".~"))) 
+                    (Con noSrcSpan (UnQual noSrcSpan (Ident noSrcSpan "SwaggerArray")))
+                  ) 
+                  (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan "&"))) 
+                  (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "SW") (Ident noSrcSpan "items")))
+                ) 
+                (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan "?~"))) 
+                (App noSrcSpan 
+                  (App noSrcSpan 
+                    (Con noSrcSpan 
+                      (UnQual noSrcSpan (Ident noSrcSpan "SwaggerItemsPrimitive"))) 
+                    (Con noSrcSpan (UnQual noSrcSpan (Ident noSrcSpan "Nothing")))
+                  ) 
+                  (Paren noSrcSpan 
+                    (InfixApp noSrcSpan 
+                      (InfixApp noSrcSpan 
+                        (InfixApp noSrcSpan 
+                          (InfixApp noSrcSpan 
+                            (Var noSrcSpan (UnQual noSrcSpan (Ident noSrcSpan "mempty"))) 
+                            (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan "&"))) 
+                            (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "SW") (Ident noSrcSpan "type_")))
+                          ) 
+                          (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan ".~"))) 
+                          (Con noSrcSpan (UnQual noSrcSpan (Ident noSrcSpan "SwaggerString")))
+                        ) 
+                        (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan "&"))) 
+                        (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "SW") (Ident noSrcSpan "enum_")))
+                      ) 
+                      (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan "?~"))) 
+                      (List noSrcSpan 
+                        (fmap enumConstructor constructorValues)
+                      )
+                    )
+                  )))) Nothing])]))
+
+  enumConstructor :: (String, String) -> Exp SrcSpanInfo
+  enumConstructor (ogCons, _) = 
+    App noSrcSpan 
+            (dataConstructor "String") 
+            (stringLiteral ogCons)
+
+haskellKeywords :: [String]
+haskellKeywords = 
+  ["!"
+  ,"'"
+  ,"\'\'"
+  ,"-"
+  ,"--"
+  ,"-<"
+  ,"-<<"
+  ,"->"
+  ,"::"
+  ,";"
+  ,"<-"
+  ,","
+  ,"="
+  ,"=>"
+  ,">"
+  ,"?"
+  ,"#"
+  ,"*"
+  ,"@"
+  ,"[|"
+  ,"|]"
+  ,"\\"
+  ,"_"
+  ,"`"
+  ,"{"
+  ,"}"
+  ,"{-"
+  ,"-}"
+  ,"|"
+  ,"~"
+  ,"as"
+  ,"case"
+  ,"of"
+  ,"class"
+  ,"data"
+  ,"data family"
+  ,"data instance"
+  ,"default"
+  ,"deriving"
+  ,"deriving instance"
+  ,"do"
+  ,"forall"
+  ,"foreign"
+  ,"hiding"
+  ,"if"
+  ,"then"
+  ,"else"
+  ,"import"
+  ,"infix"
+  ,"infixl"
+  ,"infixr"
+  ,"instance"
+  ,"let"
+  ,"in"
+  ,"mdo"
+  ,"module"
+  ,"newtype"
+  ,"proc"
+  ,"qualified"
+  ,"rec"
+  ,"type"
+  ,"type family"
+  ,"type instance"
+  ,"where"]
+
+
+
 ---------------------------------------------------------------------------------------
 -- Support multiple versions of GHC (Use ifndef )
 -- for LTS 9.0 -> 1.18.2
