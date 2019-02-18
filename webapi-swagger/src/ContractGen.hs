@@ -5,6 +5,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE QuasiQuotes #-}
 
 
 
@@ -34,6 +35,7 @@ import Control.Monad
 import Control.Monad.Trans.State.Strict
 import Control.Monad.IO.Class
 
+import Data.String.Interpolate
 import Data.Swagger hiding (get)
 import Data.Swagger.Declare
 -- import Data.Swagger.Lens
@@ -43,19 +45,22 @@ import Debug.Trace as DT
 
 
 runDefaultPathCodeGen :: IO ()
-runDefaultPathCodeGen = runCodeGen "webapi-swagger/sampleFiles/swagger-petstore-ex.json" "webapi-swagger/src/"
+runDefaultPathCodeGen = runCodeGen "sampleFiles/swagger-petstore-ex.json" "/Users/kahlil/projects/ByteAlly/tmp/swagger-gen/src/"
 
 
 runCodeGen :: FilePath -> FilePath -> IO () 
 runCodeGen swaggerJsonInputFilePath contractOutputFolderPath = do
   newTypeCreationList <- execStateT (readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath)  [] 
   createNewTypes newTypeCreationList
+  writeFile (contractOutputFolderPath ++ "CommonTypes.hs") commonTypesModuleContent
  where
+  createNewTypes ::[CreateNewType] -> IO ()
   createNewTypes typeList = do
     let hTypes = DL.foldl' createType ([]::[Decl SrcSpanInfo]) typeList
     appendFile (contractOutputFolderPath ++ "Types.hs") $ 
       DL.unlines $ fmap prettyPrint (hTypes)
       
+  createType :: [Decl SrcSpanInfo] -> CreateNewType -> [Decl SrcSpanInfo]
   createType accValue typeInfo = 
     case typeInfo of
       ProductType newData -> do
@@ -81,6 +86,113 @@ runCodeGen swaggerJsonInputFilePath contractOutputFolderPath = do
             ++ fromParamDecodeParamQueryParamInstance 
             ++ toSchemaInstances)
 
+  commonTypesModuleContent :: String
+  commonTypesModuleContent = [i|
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances #-}
+
+module CommonTypes where
+
+import Data.ByteString as BS
+import qualified Data.ByteString.Char8 as ASCII
+import qualified Data.HashMap.Lazy as HM
+import WebApi.Param
+import qualified Data.Vector as V
+
+import qualified Data.Swagger as SW
+import Data.Swagger.Internal.Schema as SW
+import Data.Swagger.ParamSchema
+import Control.Lens hiding (List)
+import Data.Swagger.Internal hiding (Tag, CollectionFormat)
+
+import Data.Text
+
+data CollectionFormat = CSV | SSV | TSV | Pipes 
+
+--change name to CollectionFormat
+-- remove all qualifiers (WebApi.)
+newtype Collection (format :: CollectionFormat) (t :: *)  = Collection { getCollection :: V.Vector t}
+    deriving (Eq, Show)
+-- write ToParam instance for Collection
+
+
+instance (EncodeParam (Collection format t) ) => ToParam 'QueryParam (Collection format t) where
+  toParam _ pfx val = [(pfx, Just $ encodeParam val)]
+
+instance (EncodeParam t) => EncodeParam (Collection 'CSV t) where
+  encodeParam (Collection innerVector) =  BS.intercalate "," $ fmap (\\singleVal -> encodeParam singleVal ) (V.toList innerVector)
+
+
+instance (EncodeParam t) => EncodeParam (Collection 'SSV t) where
+  encodeParam (Collection innerVector) =  BS.intercalate " " $ fmap (\\singleVal -> encodeParam singleVal ) (V.toList innerVector)
+
+instance (EncodeParam t) => EncodeParam (Collection 'TSV t) where
+  encodeParam (Collection innerVector) =  BS.intercalate "\\t" $ fmap (\\singleVal -> encodeParam singleVal ) (V.toList innerVector)
+
+instance (EncodeParam t) => EncodeParam (Collection 'Pipes t) where
+  encodeParam (Collection innerVector) =  BS.intercalate "|" $ fmap (\\singleVal -> encodeParam singleVal ) (V.toList innerVector)
+
+
+instance (DecodeParam (Collection format t) ) => FromParam 'QueryParam (Collection format t) where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+    Just (Just par) -> case decodeParam par of
+          Just v -> Validation $ Right v
+          _      -> Validation $ Left [ParseErr key "Unable to cast to Collection"]
+    _ ->  Validation $ Left [NotFound key]
+
+
+instance (DecodeParam t) => DecodeParam (Collection 'CSV t) where
+  decodeParam str = 
+    case sequenceA $ fmap decodeParam (ASCII.split ',' str) of
+      Just parsedList -> Just $ Collection $ V.fromList $ parsedList
+      Nothing -> Nothing
+    
+
+instance (DecodeParam t) => DecodeParam (Collection 'SSV t) where
+  decodeParam str = 
+    case sequenceA $ fmap decodeParam (ASCII.split ' ' str) of
+      Just parsedList -> Just $ Collection $ V.fromList $ parsedList
+      Nothing -> Nothing
+
+    
+instance (DecodeParam t) => DecodeParam (Collection 'TSV t) where
+  decodeParam str = 
+    case sequenceA $ fmap decodeParam (ASCII.split '\\t' str) of
+      Just parsedList -> Just $ Collection $ V.fromList $ parsedList
+      Nothing -> Nothing
+
+
+instance (DecodeParam t) => DecodeParam (Collection 'Pipes t) where
+  decodeParam str = 
+    case sequenceA $ fmap decodeParam (ASCII.split '|' str) of
+      Just parsedList -> Just $ Collection $ V.fromList $ parsedList
+      Nothing -> Nothing
+
+
+keyMapping :: HM.HashMap String String -> String -> String
+keyMapping hMap k = 
+  case HM.lookup k hMap of
+    Just foundVal -> foundVal
+    Nothing -> k
+
+
+instance ToSchema (MultiSet Text) where
+  declareNamedSchema = plain . paramSchemaToSchema
+
+
+instance ToParamSchema (MultiSet Text) where
+  toParamSchema _ = mempty
+      & SW.type_ .~ SwaggerArray
+      & SW.items ?~ SwaggerItemsPrimitive Nothing (mempty & SW.type_ .~ SwaggerString)  |]
 
 type StateConfig = StateT [CreateNewType] IO ()
 
@@ -708,43 +820,48 @@ fieldDecl (fieldName, fieldType) = do
 
 setValidFieldName :: String -> (Bool, String)
 setValidFieldName fldName = do
-  case (isHsKeyword fldName, not $ isValidId fldName ) of
-    (False, False) -> (False, fldName)
-    (False, True) -> 
-      let newFldName = fixInvalidId fldName
-      in (True, newFldName)
-    (True, False) -> 
-      let newFldName = fldName ++ "_"
-      in (True, newFldName)
-    (True, True) -> -- TODO : Is this case possible? 
-      (True, fixInvalidId fldName)
+  -- Replace invalidId Chars, check if hs keyword and modify else return
+  let (isChanged, invalidsFixed) = fixInvalidId fldName
+  case isHsKeyword invalidsFixed of 
+    True -> (True, invalidsFixed ++ "_")
+    False -> (isChanged, invalidsFixed)
 
  where
   isHsKeyword :: String -> Bool
   isHsKeyword str = DL.elem str haskellKeywords
 
-  isValidId :: String -> Bool
-  isValidId str
-  -- Needs to start with a lowercase letter or _ but not just _ 
-  -- cannot contain : 
-    | DL.null str = error "Found empty name for record field name!"
-    | DL.elem ':' str = False
-    | DL.elem ' ' str = False
-    | str == "_" = False
-    -- TODO : check for any other cases
 
-    -- check if first char is NOT lowercase or _ = False
-    | (Char.isAlpha (DL.head str) && Char.isLower (DL.head str) ) ||  (DL.head str == '_') = True
-
-fixInvalidId :: String -> String
+fixInvalidId :: String -> (Bool, String)
 fixInvalidId idVal
-    | DL.elem ':' idVal = replace ':' '_' idVal
-    | DL.elem ' ' idVal = replace ' ' '_' idVal
-    | idVal == "_" = "holeName" -- ?? TODO : Is this allowed? Discuss
+    | idVal == "" = error "Encountered potential empty Haskell Identifier! Please check the Swagger JSON!" 
+    | idVal == "_" = (True, "holeName") -- ?? TODO : Is this allowed? Discuss
+    | idVal == "\'" = (True, "singleQuoteId") -- TODO : Is this allowed?
+    | DL.length idVal == 1 && isValidHsIdChar (DL.head idVal) = (False, fmap Char.toLower idVal)
+    | otherwise = do
+      let newVal = replaceInvalidChars ("",DL.tail idVal) (DL.head idVal) 
+      let lCaseNewVal = (Char.toLower $ DL.head newVal):(DL.tail newVal)
+      case lCaseNewVal == idVal of
+        True -> (False, lCaseNewVal)
+        False -> (True, lCaseNewVal)
 
  where
-  replace :: Eq a => a -> a -> [a] -> [a]
-  replace a b = fmap $ \c -> if c == a then b else c
+
+  replaceInvalidChars :: (String, String) -> Char -> String
+  replaceInvalidChars (prev, next) currentChar = 
+    if isValidHsIdChar currentChar && (not $ DL.null next) 
+    then replaceInvalidChars (prev ++ [currentChar], DL.tail next) (DL.head next)
+    else if isValidHsIdChar currentChar
+         then prev ++ [currentChar]
+         -- check for a prefix of invalid chars and return the rest of the next chars
+         else do
+          let newNext = snd $ DL.break isValidHsIdChar next
+          case DL.null newNext of
+            True -> prev ++ "_"
+            False -> replaceInvalidChars (prev ++ "_", DL.tail newNext ) (DL.head newNext)
+
+  isValidHsIdChar :: Char -> Bool 
+  isValidHsIdChar x = (Char.isAlphaNum x) || x == '_' || x == '\''
+
 
 derivingDecl :: [String] -> Deriving SrcSpanInfo
 #if MIN_VERSION_haskell_src_exts(1,20,0)
@@ -1489,37 +1606,7 @@ toSchemaInstanceForSumType typeName constructorValues =
 
 haskellKeywords :: [String]
 haskellKeywords = 
-  ["!"
-  ,"'"
-  ,"\'\'"
-  ,"-"
-  ,"--"
-  ,"-<"
-  ,"-<<"
-  ,"->"
-  ,"::"
-  ,";"
-  ,"<-"
-  ,","
-  ,"="
-  ,"=>"
-  ,">"
-  ,"?"
-  ,"#"
-  ,"*"
-  ,"@"
-  ,"[|"
-  ,"|]"
-  ,"\\"
-  ,"_"
-  ,"`"
-  ,"{"
-  ,"}"
-  ,"{-"
-  ,"-}"
-  ,"|"
-  ,"~"
-  ,"as"
+  ["as"
   ,"case"
   ,"of"
   ,"class"
