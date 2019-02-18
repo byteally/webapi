@@ -198,9 +198,9 @@ type StateConfig = StateT [CreateNewType] IO ()
 
 readSwaggerGenerateDefnModels :: FilePath -> FilePath -> StateConfig
 readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath = do 
-  petstoreJSONContents <- liftIO $ BSL.readFile swaggerJsonInputFilePath
-  contractDetailsFromPetstore <- readSwaggerJSON petstoreJSONContents
-  let decodedVal = eitherDecode petstoreJSONContents 
+  swaggerJSONContents <- liftIO $ BSL.readFile swaggerJsonInputFilePath
+  (apiNameHs, contractDetails) <- readSwaggerJSON swaggerJSONContents
+  let decodedVal = eitherDecode swaggerJSONContents 
   case decodedVal of
     Left errMsg -> liftIO $ putStrLn errMsg
     Right (swaggerData :: Swagger) -> do
@@ -211,7 +211,7 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
               (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
               (fmap (\modName -> moduleImport (modName,(False, Nothing)) ) 
                     [ "WebApi.Contract", "WebApi.Param", "Types", "Data.Int", "Data.Text", "WebApi.XML"]) -- CommonTypes
-              (generateContractBody "Petstore" contractDetailsFromPetstore)
+              (generateContractBody apiNameHs contractDetails)
       liftIO $ writeFile (contractOutputFolderPath ++ "Contract.hs") $ prettyPrint hContractModule
       let qualifiedImportsForTypes = 
             [("Data.ByteString.Char8", (True, Just $ ModuleName noSrcSpan "ASCII")), 
@@ -271,12 +271,16 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (
     pure $ (NewData (toS modelName) recordNamesAndTypes):accValue
 
 
-readSwaggerJSON :: BSL.ByteString -> StateT [CreateNewType] IO [ContractDetails]
+readSwaggerJSON :: BSL.ByteString -> StateT [CreateNewType] IO (String, [ContractDetails])
 readSwaggerJSON petstoreJSONContents= do
   let decodedVal = eitherDecode petstoreJSONContents
   case decodedVal of
     Left errMsg -> error errMsg
-    Right (swaggerData :: Swagger) -> HMSIns.foldlWithKey' (parseSwaggerPaths (_swaggerDefinitions swaggerData) ) (pure []) (_swaggerPaths swaggerData)
+    Right (swaggerData :: Swagger) -> do
+      let apiNameFromSwagger = (_infoTitle . _swaggerInfo) swaggerData 
+      let validHsApiName = setValidConstructorId (T.unpack apiNameFromSwagger)
+      contractDetailList <- HMSIns.foldlWithKey' (parseSwaggerPaths (_swaggerDefinitions swaggerData) ) (pure []) (_swaggerPaths swaggerData)
+      pure (validHsApiName, contractDetailList)
  where
   parseSwaggerPaths :: Definitions Schema -> StateT [CreateNewType] IO [ContractDetails] -> FilePath -> PathItem -> StateT [CreateNewType] IO [ContractDetails]
   parseSwaggerPaths (swaggerSchema:: InsOrdHashMap Text Schema) contractDetailsList swFilePath swPathDetails = do
@@ -817,6 +821,11 @@ fieldDecl (fieldName, fieldType) = do
   let fieldDecl = FieldDecl noSrcSpan [nameDecl fName] (TyCon noSrcSpan (UnQual noSrcSpan (nameDecl fieldType)))
   (mModRecord, fieldDecl)
 
+
+setValidConstructorId :: String -> String
+setValidConstructorId str = 
+  let (_, validName) = setValidFieldName str 
+  in (Char.toUpper $ DL.head validName):(DL.tail validName)
 
 setValidFieldName :: String -> (Bool, String)
 setValidFieldName fldName = do
