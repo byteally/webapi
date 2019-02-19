@@ -12,18 +12,14 @@
 
 module ContractGen where
 
-import Control.Lens hiding (List)
 import Data.Aeson 
-import Data.Proxy
 import Data.Text as T
-import GHC.Generics
 import qualified Data.ByteString.Lazy as BSL
 import Data.HashMap.Strict.InsOrd as HMSIns
 import Language.Haskell.Exts as LHE hiding (OPTIONS)
 import Data.Vector.Sized as SV hiding ((++), foldM, forM, mapM)
 import Safe
 import Data.Finite.Internal
-import qualified Data.HashMap.Lazy as HML
 import Network.HTTP.Types.Method
 import Data.Maybe
 import Data.List.Split as DLS (splitOn)
@@ -36,12 +32,8 @@ import Control.Monad.Trans.State.Strict
 import Control.Monad.IO.Class
 import System.Directory
 import Data.String.Interpolate
-import Data.Swagger hiding (get)
-import Data.Swagger.Declare
--- import Data.Swagger.Lens
-import Data.Swagger.Operation
+import Data.Swagger hiding (get, paramSchema)
 
-import Debug.Trace as DT
 
 
 runDefaultPathCodeGen :: IO ()
@@ -230,7 +222,7 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
             Module noSrcSpan 
                 (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
                 (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances", "DuplicateRecordFields", "OverloadedStrings"])
-                (fmap (moduleImport) 
+                (fmap moduleImport 
                   ( (DL.zip ["Data.Text",
                             "Data.Int",
                             "Data.Time.Clock", 
@@ -302,11 +294,12 @@ readSwaggerJSON petstoreJSONContents= do
       pure (validHsApiName, contractDetailList)
  where
   parseSwaggerPaths :: Definitions Schema -> StateT [CreateNewType] IO [ContractDetails] -> FilePath -> PathItem -> StateT [CreateNewType] IO [ContractDetails]
-  parseSwaggerPaths (swaggerSchema:: InsOrdHashMap Text Schema) contractDetailsList swFilePath swPathDetails = do
+  parseSwaggerPaths (_:: InsOrdHashMap Text Schema) contractDetailsList swFilePath swPathDetails = do
     cDetailsList <- contractDetailsList
-    let currentRouteId = case cDetailsList of 
-          [] -> 1
-          xs -> (routeId $ Prelude.head cDetailsList) + 1 -- TODO: Not being used anymore. Should be removed
+    let currentRouteId = 
+          case cDetailsList of 
+              [] -> 1
+              _ -> (routeId $ Prelude.head cDetailsList) + 1 -- TODO: Not being used anymore. Should be removed
         splitRoutePath = DLS.splitOn "/" $ removeLeadingSlash swFilePath
         mainRouteName = (DL.concat $ prettifyRouteName splitRoutePath) ++ "R"
 
@@ -318,7 +311,8 @@ readSwaggerJSON petstoreJSONContents= do
             (mParamNameList::[Maybe String]) <- mapM (getPathParamTypeFromOperation pathParamName) (getListOfPathOperations swPathDetails::[Maybe Operation])
             case (DL.nub . catMaybes) mParamNameList of
               singleParamType:[] -> pure (PathParamType singleParamType)
-              otherVal -> error $ "Expected only a single Param Type to be present in all Methods of this path. Instead got : " ++ show otherVal ++ " Path : " ++ swFilePath
+              otherVal -> error $ "Expected only a single Param Type to be present in all Methods of this path."
+                ++ "Instead got : " ++ show otherVal ++ " Path : " ++ swFilePath
           False -> pure (PathComp pathComponent)
           )
          
@@ -340,7 +334,7 @@ readSwaggerJSON petstoreJSONContents= do
       let paramList = _operationParameters operation
       mParamType <- foldM (\existingParamType refParam -> 
         case refParam of
-          Ref referencedParam -> pure existingParamType
+          Ref _ -> pure existingParamType
           Inline param -> case (_paramName param == toS paramPathName) of
             True -> 
               case (_paramSchema param) of
@@ -389,18 +383,19 @@ readSwaggerJSON petstoreJSONContents= do
         mFileParamType <- getParamTypes (currentRouteName ++ show stdMethod) fileParamList FileParam
         mHeaderInType <- getParamTypes (currentRouteName ++ show stdMethod) headerInList HeaderParam
         mReqBodyType <- getParamTypes (currentRouteName ++ show stdMethod) bodyParamList BodyParam
-        let (mContentTypes, hasXML) = getContentTypes (_operationProduces operationData) addPlainText
+        let (mContentTypes, xmlPresent) = getContentTypes (_operationProduces operationData) addPlainText
         let finalReqBodyType = flip fmap mReqBodyType (\reqBodyType -> 
               case (DL.isPrefixOf "[" reqBodyType) of
                 True -> "'" ++ reqBodyType
                 False -> "'[" ++ reqBodyType ++ "]" )
-        pure $ Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType mFormParamType mQueryParamType mFileParamType mHeaderInType finalReqBodyType mContentTypes hasXML) methodAcc
+        pure $ Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType mFormParamType mQueryParamType mFileParamType mHeaderInType finalReqBodyType mContentTypes xmlPresent) methodAcc
       Nothing -> pure methodAcc
 
   groupParamTypes :: ([Param], [Param], [Param], [Param], [Param]) -> Referenced Param -> ([Param], [Param], [Param], [Param], [Param])
   groupParamTypes (formParamList, queryParamList, fileParamList, headerInList, bodyParamList) refParam = 
     case refParam of
-      Ref someRef -> error $ "Encountered a Referenced type at the first level of a reference param! Not sure what the use case of this is or how to process it! Debug Info : " ++ show refParam
+      Ref _ -> error $ "Encountered a Referenced type at the first level of a reference param!" 
+        ++ "Not sure what the use case of this is or how to process it! \nDebug Info : " ++ show refParam
       Inline param -> 
         case _paramSchema param of
           ParamBody _ -> (formParamList, queryParamList, fileParamList, headerInList, param:bodyParamList)
@@ -416,10 +411,11 @@ readSwaggerJSON petstoreJSONContents= do
                     case (_paramSchemaType $ _paramOtherSchemaParamSchema pSchema) of
                       SwaggerFile -> (formParamList, queryParamList, param:fileParamList, headerInList, bodyParamList) 
                       _ -> (param:formParamList, queryParamList, fileParamList, headerInList, bodyParamList) 
+                  otherParamSchema -> error $ "Expected ParamOther but encountered : " ++ (show otherParamSchema)
 
   getContentTypes :: Maybe MimeList -> Bool -> (Maybe String, Bool)
   getContentTypes mContentList addPlainText = do
-    let plainTextList = if addPlainText then ["PlainText"] else []
+    let plainTextList::[String] = if addPlainText then ["PlainText"] else []
     case mContentList of 
       Just contentList -> 
         case getMimeList contentList of
@@ -500,19 +496,21 @@ readSwaggerJSON petstoreJSONContents= do
             case finalHaskellTypes of
               [] -> pure Nothing
               x:[] -> pure $ Just x
-              x:xs -> error "Handle case of multiple Header Params!"
+              _ -> error $ "Encountered multiple Header Params! This is not yet handled!"
+                ++ "\nDebug Info : " ++ (show paramList)
           FileParam -> do
             typeList <- forM paramList (\param -> getParamTypeParam param (Just $ toS ( _paramName param) ) Nothing )
             case typeList of
               [] -> pure Nothing
               x:[] -> pure $ Just x
-              x:xs -> error "Handle case of list of FileParam"
+              _ -> error $ "Encountered list of FileParam. This is not yet handled! "
+                ++ "\nDebug Info: " ++ (show paramList)
           BodyParam -> do
             listOfTypes <- forM paramList (\param -> getParamTypeParam param (Just $ toS (_paramName param)) Nothing  )
             case listOfTypes of
               [] -> error $ "Tried to Get Body Param type but got an empty list/string! Debug Info: " ++ show paramList
               x:[] -> pure $ Just x
-              x:xs -> error $ "Encountered a list of Body Params. WebApi does not support this currently! Debug Info: " ++ show paramList
+              _ -> error $ "Encountered a list of Body Params. WebApi does not support this currently! Debug Info: " ++ show paramList
   getParamTypeParam inputParam mParamName mOuterSchema =
     case _paramSchema inputParam of
       ParamBody refSchema -> 
@@ -527,8 +525,8 @@ readSwaggerJSON petstoreJSONContents= do
       Just True -> True
       _ -> False
   addMaybeToType :: Bool -> String -> String
-  addMaybeToType isMandatory haskellType = 
-    case isMandatory of
+  addMaybeToType isNotNull haskellType = 
+    case isNotNull of
       True -> haskellType
       False -> "Maybe " ++ haskellType 
 
@@ -565,7 +563,10 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
               Just valueEnumList -> do
                 -- TODO : Store OG enum vals for proper instances. Extend SumType with an extra constructor.
                 let enumVals = fmap (\(Data.Aeson.String enumVal) -> toS $ T.toTitle enumVal ) valueEnumList
-                let innerRecordTypeName = fromJustNote ("Expected a Param Name but got Nothing. Need Param Name to set the name for the new type we need to create. Debug Info: " ++ show paramSchema) mParamNameOrRecordName
+                let innerRecordTypeName = 
+                      fromJustNote ("Expected a Param Name but got Nothing. "
+                        ++ "Need Param Name to set the name for the new type we need to create."
+                        ++ "\nDebug Info: " ++ show paramSchema) mParamNameOrRecordName
                 let haskellNewTypeInfo = SumType innerRecordTypeName enumVals
                 currentState <- get
                 let onlySumTypes = DL.filter (\newTypeObj -> 
@@ -712,7 +713,7 @@ parseHaskellSrcContract pathToFile = do
   case parseResult of
     ParseOk hModule -> 
       case hModule of
-        Module srcLoc (Just _) langPragmas imports declarations -> putStrLn $ show declarations
+        Module _ (Just _) _ _ declarations -> putStrLn $ show declarations
         _ -> error "Module is not in the correct format?!"
     ParseFailed srcLoc errMsg -> putStrLn $ (show srcLoc) ++ " : " ++ errMsg
 
@@ -742,12 +743,12 @@ generateContractBody contractName contractDetails =
     
  where
   constructVectorForRoute :: String -> ContractDetails -> [(Vector 4 String, [Vector 4 String])] 
-  constructVectorForRoute contractName ctrDetails = 
+  constructVectorForRoute ctrtName ctrDetails = 
     let currentRouteName = routeName ctrDetails
-    in Map.foldlWithKey' (routeDetailToVector contractName currentRouteName) [] (methodData ctrDetails)
+    in Map.foldlWithKey' (routeDetailToVector ctrtName currentRouteName) [] (methodData ctrDetails)
   routeDetailToVector :: String -> String -> [(Vector 4 String, [Vector 4 String])] -> StdMethod -> ApiTypeDetails -> [(Vector 4 String, [Vector 4 String])]
-  routeDetailToVector contractName routeName accValue currentMethod apiDetails = 
-    let topLevelVector = fromMaybeSV $ SV.fromList ["ApiContract", contractName, (show currentMethod), routeName]
+  routeDetailToVector ctrtName routeNameStr accValue currentMethod apiDetails = 
+    let topLevelVector = fromMaybeSV $ SV.fromList ["ApiContract", ctrtName, (show currentMethod), routeNameStr]
         respType = Just $ apiOut apiDetails
         errType = apiErr apiDetails
         formParamType = formParam apiDetails
@@ -756,7 +757,7 @@ generateContractBody contractName contractDetails =
         headerParamType = headerIn apiDetails
         requestBodyType = requestBody apiDetails
         contentType = contentTypes apiDetails
-        instanceVectorList = catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeName, tInfo] ) typeInfo) $ DL.zip (respType:errType:formParamType:queryParamType:fileParamType:headerParamType:requestBodyType:contentType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam", "FileParam", "HeaderIn", "RequestBody", "ContentTypes"]
+        instanceVectorList = catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeNameStr, tInfo] ) typeInfo) $ DL.zip (respType:errType:formParamType:queryParamType:fileParamType:headerParamType:requestBodyType:contentType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam", "FileParam", "HeaderIn", "RequestBody", "ContentTypes"]
     in (topLevelVector, instanceVectorList):accValue
   fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
 
@@ -830,7 +831,7 @@ stringLiteral :: String -> Exp SrcSpanInfo
 stringLiteral str = (Lit noSrcSpan (LHE.String noSrcSpan str str))
 
 variableName :: String -> Exp SrcSpanInfo
-variableName name = (Var noSrcSpan (UnQual noSrcSpan (nameDecl name) ) )
+variableName nameStr = (Var noSrcSpan (UnQual noSrcSpan (nameDecl nameStr) ) )
 
 nameDecl :: String -> Name SrcSpanInfo
 nameDecl = Ident noSrcSpan 
@@ -842,8 +843,8 @@ fieldDecl (fieldName, fieldType) = do
         case isChanged of
           True -> Just (fieldName, fName)
           False -> Nothing
-  let fieldDecl = FieldDecl noSrcSpan [nameDecl fName] (TyCon noSrcSpan (UnQual noSrcSpan (nameDecl fieldType)))
-  (mModRecord, fieldDecl)
+  let fDecl = FieldDecl noSrcSpan [nameDecl fName] (TyCon noSrcSpan (UnQual noSrcSpan (nameDecl fieldType)))
+  (mModRecord, fDecl)
 
 
 setValidConstructorId :: String -> String
@@ -942,10 +943,10 @@ languageExtension langExtName = LanguagePragma noSrcSpan [nameDecl langExtName]
 
 -- Modules imported as *NOT qualified* by default for now
 moduleImport :: (String, (Bool, Maybe (ModuleName SrcSpanInfo)) )-> ImportDecl SrcSpanInfo
-moduleImport (moduleName, (isQualified, qualifiedName) ) = 
+moduleImport (moduleNameStr, (isQualified, qualifiedName) ) = 
   ImportDecl {
               importAnn = noSrcSpan, 
-              importModule = ModuleName noSrcSpan moduleName,
+              importModule = ModuleName noSrcSpan moduleNameStr,
               importQualified = isQualified,
               importSrc = False,
               importSafe = False,
@@ -1412,17 +1413,17 @@ fromParamQueryParamInstance sumTypeName =
 
 
 routeDeclaration :: String -> [PathComponent] -> Decl SrcSpanInfo
-routeDeclaration routeName routePathComponents = 
+routeDeclaration routeNameStr routePathComponents = 
   case routePathComponents of
-    (PathComp pathElem):[] -> 
+    (PathComp _):[] -> 
       TypeDecl noSrcSpan
-        (declarationHead routeName)
+        (declarationHead routeNameStr)
         (TyApp noSrcSpan
           (typeConstructor "Static")
           (recursiveTypeForRoute routePathComponents) )
     _ -> 
       TypeDecl noSrcSpan  
-        (declarationHead routeName)
+        (declarationHead routeNameStr)
         (recursiveTypeForRoute routePathComponents)
 
 
@@ -1535,9 +1536,9 @@ toSchemaInstanceForSumType typeName constructorValues =
     Nothing)])
 
   caseMatchStatement :: (String, String) -> Alt SrcSpanInfo  
-  caseMatchStatement (lowerCaseCons, typeConstructor) = 
+  caseMatchStatement (lowerCaseCons, typeCons) = 
     (Alt noSrcSpan 
-      (PLit noSrcSpan (Signless noSrcSpan) (LHE.String noSrcSpan typeConstructor typeConstructor)) 
+      (PLit noSrcSpan (Signless noSrcSpan) (LHE.String noSrcSpan typeCons typeCons)) 
       (UnGuardedRhs noSrcSpan (stringLiteral lowerCaseCons) ) Nothing)
 
 
