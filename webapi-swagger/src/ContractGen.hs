@@ -34,7 +34,7 @@ import qualified Data.Char as Char
 import Control.Monad
 import Control.Monad.Trans.State.Strict
 import Control.Monad.IO.Class
-
+import System.Directory
 import Data.String.Interpolate
 import Data.Swagger hiding (get)
 import Data.Swagger.Declare
@@ -45,19 +45,22 @@ import Debug.Trace as DT
 
 
 runDefaultPathCodeGen :: IO ()
-runDefaultPathCodeGen = runCodeGen "sampleFiles/swagger-petstore-ex.json" "/Users/kahlil/projects/ByteAlly/tmp/swagger-gen/src/"
+runDefaultPathCodeGen = runCodeGen "sampleFiles/swagger-petstore-noXml.json" "/Users/kahlil/projects/ByteAlly/tmp/" "swagger-gen-proj"
 
 
-runCodeGen :: FilePath -> FilePath -> IO () 
-runCodeGen swaggerJsonInputFilePath contractOutputFolderPath = do
-  newTypeCreationList <- execStateT (readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath)  [] 
-  createNewTypes newTypeCreationList
-  writeFile (contractOutputFolderPath ++ "CommonTypes.hs") commonTypesModuleContent
+runCodeGen :: FilePath -> FilePath -> String -> IO () 
+runCodeGen swaggerJsonInputFilePath outputPath projectName = do
+  let projectFolderGenPath = outputPath ++ projectName ++ "/"
+  createDirectoryIfMissing True (projectFolderGenPath ++ "src/")
+  newTypeCreationList <- execStateT (readSwaggerGenerateDefnModels swaggerJsonInputFilePath projectFolderGenPath projectName)  [] 
+  createNewTypes newTypeCreationList projectFolderGenPath
+  writeFile (projectFolderGenPath ++ "src/CommonTypes.hs") commonTypesModuleContent
+  
  where
-  createNewTypes ::[CreateNewType] -> IO ()
-  createNewTypes typeList = do
+  createNewTypes ::[CreateNewType] -> FilePath -> IO ()
+  createNewTypes typeList genPath = do
     let hTypes = DL.foldl' createType ([]::[Decl SrcSpanInfo]) typeList
-    appendFile (contractOutputFolderPath ++ "Types.hs") $ 
+    appendFile (genPath ++ "src/Types.hs") $ 
       DL.unlines $ fmap prettyPrint (hTypes)
       
   createType :: [Decl SrcSpanInfo] -> CreateNewType -> [Decl SrcSpanInfo]
@@ -196,23 +199,29 @@ instance ToParamSchema (MultiSet Text) where
 
 type StateConfig = StateT [CreateNewType] IO ()
 
-readSwaggerGenerateDefnModels :: FilePath -> FilePath -> StateConfig
-readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath = do 
+readSwaggerGenerateDefnModels :: FilePath -> FilePath -> String -> StateConfig
+readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath projectName = do 
   swaggerJSONContents <- liftIO $ BSL.readFile swaggerJsonInputFilePath
   (apiNameHs, contractDetails) <- readSwaggerJSON swaggerJSONContents
+  let xmlImport = needsXmlImport contractDetails
   let decodedVal = eitherDecode swaggerJSONContents 
   case decodedVal of
     Left errMsg -> liftIO $ putStrLn errMsg
     Right (swaggerData :: Swagger) -> do
       newData <- generateSwaggerDefinitionData (_swaggerDefinitions swaggerData) 
+      let langExts = ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"]
+      let contractImports = [ "WebApi.Contract", "WebApi.Param", "Types", "Data.Int", "Data.Text"]
+      let withConditionalImpts =
+            if xmlImport
+            then contractImports ++ ["WebApi.XML"]
+            else contractImports
       let hContractModule = 
             Module noSrcSpan 
               (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
-              (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
-              (fmap (\modName -> moduleImport (modName,(False, Nothing)) ) 
-                    [ "WebApi.Contract", "WebApi.Param", "Types", "Data.Int", "Data.Text", "WebApi.XML"]) -- CommonTypes
+              (fmap languageExtension langExts)
+              (fmap (\modName -> moduleImport (modName,(False, Nothing)) ) withConditionalImpts) -- CommonTypes
               (generateContractBody apiNameHs contractDetails)
-      liftIO $ writeFile (contractOutputFolderPath ++ "Contract.hs") $ prettyPrint hContractModule
+      liftIO $ writeFile (contractOutputFolderPath ++ "src/Contract.hs") $ prettyPrint hContractModule
       let qualifiedImportsForTypes = 
             [("Data.ByteString.Char8", (True, Just $ ModuleName noSrcSpan "ASCII")), 
             ("Data.HashMap.Lazy", (True, Just $ ModuleName noSrcSpan "HM") ),
@@ -238,7 +247,9 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
                             "Data.Swagger.Internal hiding (Tag)"
                             ] (cycle [(False, Nothing)]) ) ++ qualifiedImportsForTypes ) ) --"GHC.Generics", "Data.Time.Calendar"
                 (createDataDeclarations newData)
-      liftIO $ writeFile (contractOutputFolderPath ++ "Types.hs") $ prettyPrint hTypesModule ++ "\n\n"
+      liftIO $ do
+        writeFile (contractOutputFolderPath ++ "src/Types.hs") $ prettyPrint hTypesModule ++ "\n\n"
+        writeCabalAndProjectFiles contractOutputFolderPath projectName xmlImport
     
  where 
   createDataDeclarations :: [NewData] -> [Decl SrcSpanInfo]
@@ -246,6 +257,14 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
       let (modifiedRecords, dataDecl) = dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show", "Generic"]
           jsonInsts = jsonInstances (mName newDataInfo) modifiedRecords
       in accValue ++ [dataDecl] ++ jsonInsts ++ [defaultToSchemaInstance (mName newDataInfo)] ) [] newDataList
+
+  needsXmlImport :: [ContractDetails] -> Bool
+  needsXmlImport = flip DL.foldl' False (\accBool cDetail -> 
+              case accBool of
+                True -> True
+                False ->
+                  let methodMap = methodData cDetail
+                  in Map.foldl' (\innerAcc apiDetails -> hasXML apiDetails || innerAcc) accBool methodMap )
  
 -- TODO: This function assumes SwaggerObject to be the type and directly reads from schemaProperties. We need to also take additionalProperties into consideration.
 generateSwaggerDefinitionData :: InsOrdHashMap Text Schema -> StateT [CreateNewType] IO [NewData]
@@ -370,12 +389,12 @@ readSwaggerJSON petstoreJSONContents= do
         mFileParamType <- getParamTypes (currentRouteName ++ show stdMethod) fileParamList FileParam
         mHeaderInType <- getParamTypes (currentRouteName ++ show stdMethod) headerInList HeaderParam
         mReqBodyType <- getParamTypes (currentRouteName ++ show stdMethod) bodyParamList BodyParam
-        let mContentTypes = getContentTypes (_operationProduces operationData) addPlainText
+        let (mContentTypes, hasXML) = getContentTypes (_operationProduces operationData) addPlainText
         let finalReqBodyType = flip fmap mReqBodyType (\reqBodyType -> 
               case (DL.isPrefixOf "[" reqBodyType) of
                 True -> "'" ++ reqBodyType
                 False -> "'[" ++ reqBodyType ++ "]" )
-        pure $ Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType mFormParamType mQueryParamType mFileParamType mHeaderInType finalReqBodyType mContentTypes) methodAcc
+        pure $ Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType mFormParamType mQueryParamType mFileParamType mHeaderInType finalReqBodyType mContentTypes hasXML) methodAcc
       Nothing -> pure methodAcc
 
   groupParamTypes :: ([Param], [Param], [Param], [Param], [Param]) -> Referenced Param -> ([Param], [Param], [Param], [Param], [Param])
@@ -398,19 +417,23 @@ readSwaggerJSON petstoreJSONContents= do
                       SwaggerFile -> (formParamList, queryParamList, param:fileParamList, headerInList, bodyParamList) 
                       _ -> (param:formParamList, queryParamList, fileParamList, headerInList, bodyParamList) 
 
-  getContentTypes :: Maybe MimeList -> Bool -> Maybe String
+  getContentTypes :: Maybe MimeList -> Bool -> (Maybe String, Bool)
   getContentTypes mContentList addPlainText = do
     let plainTextList = if addPlainText then ["PlainText"] else []
     case mContentList of 
       Just contentList -> 
         case getMimeList contentList of
-          [] -> Nothing
-          mimeList -> Just $ '\'':DL.filter (/= '"') (show $ plainTextList ++ flip fmap mimeList (\mimeType -> case mimeType of
-            "application/xml" -> "XML"
-            "application/json" -> "JSON" ) )
-      Nothing -> Nothing
+          [] -> (Nothing, False)
+          mimeList ->
+            let mimeTypes = '\'':DL.filter (/= '"') (show $ plainTextList ++ flip fmap mimeList 
+                      (\mimeType -> case mimeType of
+                          "application/xml" -> "XML"
+                          "application/json" -> "JSON"
+                          otherMime -> error $ "Encountered unknown MIME type. Please report this as a bug!"
+                            ++ "\nMIME Type encountered is : " ++ (show otherMime) ) )
+            in (Just mimeTypes, DL.isInfixOf "XML" mimeTypes)
+      Nothing -> (Nothing, False)
   
-  -- constructContentTypesList :: [String]
 
   getApiType :: String -> InsOrdHashMap HttpStatusCode (Referenced Response)  -> StateT [CreateNewType] IO (Maybe String, Maybe String)
   getApiType newTypeName responsesHM = foldlWithKey' (\stateConfigWrappedTypes currentCode currentResponse -> do
@@ -664,6 +687,7 @@ data ApiTypeDetails = ApiTypeDetails
   , headerIn :: Maybe String
   , requestBody :: Maybe String
   , contentTypes :: Maybe String
+  , hasXML :: Bool
   -- TODO: cookie in/out and header out need to be added when we encounter them
   } deriving (Eq, Show)
 
@@ -1649,6 +1673,114 @@ haskellKeywords =
   ,"type family"
   ,"type instance"
   ,"where"]
+
+
+writeCabalAndProjectFiles :: FilePath -> String -> Bool -> IO ()
+writeCabalAndProjectFiles generationPath projectName needsWebapiXml = do
+  writeFile (generationPath ++ projectName ++ ".cabal") (cabalFileContents needsWebapiXml)
+  writeFile (generationPath ++ "LICENSE") licenseFileContents
+  -- TODO : Once webapi-xml is pushed to GitHub, it needs to be added to the cabal.project file
+  writeFile (generationPath ++ "cabal.project") cabalProjectFileContents
+
+
+ where
+  cabalFileContents :: Bool -> String
+  cabalFileContents webapiXmlNeeded = [i|
+name:           #{projectName}
+version:        0.1.0.0
+description:    Generated project with a contract accoriding to the provided Swagger doc.
+homepage:       http://byteally.github.io/webapi/
+bug-reports:    https://github.com/byteally/webapi/issues
+author:         Magesh B
+maintainer:     magesh85@gmail.com
+copyright:      2018 Byteally
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+cabal-version:  >= 1.10
+
+library
+  exposed-modules:
+      Contract
+  other-modules:
+      Types 
+      CommonTypes
+  hs-source-dirs:
+      src
+  build-depends:
+      base >=4.7 && <5
+    , text
+    , swagger2
+    , lens
+    , aeson
+    , bytestring
+    , webapi
+    , unordered-containers
+    , webapi-contract
+    , vector
+    , time
+    , multiset
+    #{if webapiXmlNeeded then ", webapi-xml" else ""::String}
+  default-language: Haskell2010
+  ghc-options: -Wall
+  |]
+
+  cabalProjectFileContents :: String 
+  cabalProjectFileContents = [i|
+compiler : ghc
+packages : .
+source-repository-package
+    type: git
+    location: https://github.com/byteally/webapi
+    tag: 9a64ab2d2eea87e50c1d0c99a9efda92cf1c88bc
+    subdir: webapi-contract
+
+source-repository-package
+    type: git
+    location: https://github.com/byteally/webapi
+    tag: 9a64ab2d2eea87e50c1d0c99a9efda92cf1c88bc
+    subdir: webapi
+
+source-repository-package
+    type: git
+    location: https://github.com/capital-match/bytestring-trie.git
+    tag: 47526b2ec810239fe824c03c13cf1d81f0741b5c
+|]
+
+
+  licenseFileContents :: String
+  licenseFileContents = [i|
+Copyright Author name here (c) 2018
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+
+    * Redistributions in binary form must reproduce the above
+      copyright notice, this list of conditions and the following
+      disclaimer in the documentation and/or other materials provided
+      with the distribution.
+
+    * Neither the name of Author name here nor the names of other
+      contributors may be used to endorse or promote products derived
+      from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+|]
 
 
 
