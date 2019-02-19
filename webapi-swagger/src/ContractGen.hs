@@ -1529,7 +1529,7 @@ toSchemaInstanceForSumType typeName constructorValues =
                         (Lambda noSrcSpan [PVar noSrcSpan (nameDecl "inputConst")] 
                           (Case noSrcSpan 
                             (Var noSrcSpan (UnQual noSrcSpan (nameDecl "inputConst"))) 
-                            (fmap caseMatchStatement constructorValues)
+                            (fmap caseMatchStatement constructorValues ++ errorCaseMatch)
                           )
                         )
                       )
@@ -1550,7 +1550,14 @@ toSchemaInstanceForSumType typeName constructorValues =
     (Alt noSrcSpan 
       (PLit noSrcSpan (Signless noSrcSpan) (LHE.String noSrcSpan typeCons typeCons)) 
       (UnGuardedRhs noSrcSpan (stringLiteral lowerCaseCons) ) Nothing)
-
+  
+  errorCaseMatch :: [Alt SrcSpanInfo]
+  errorCaseMatch = 
+    [Alt noSrcSpan 
+      (PWildCard noSrcSpan) 
+        (UnGuardedRhs noSrcSpan 
+          (App noSrcSpan (variableName "error") (stringLiteral "Encountered invalid constructor value for sum type!"))
+        ) Nothing]
 
   multiSetToSchemaInst :: Decl SrcSpanInfo
   multiSetToSchemaInst = 
