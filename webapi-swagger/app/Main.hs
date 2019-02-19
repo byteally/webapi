@@ -7,5 +7,5 @@ main :: IO ()
 main = do
   args <- getArgs
   case args of
-    [jsonp, outp] -> runCodeGen jsonp outp
-    _             -> putStrLn "Invalid usage. init-swagger-project <json-path> <output-path>"
+    [jsonp, outp, projName] -> runCodeGen jsonp outp projName
+    _             -> putStrLn "Invalid usage. init-swagger-project <json-path> <output-path> <project-name>"
