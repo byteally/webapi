@@ -573,7 +573,7 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                           case newTypeObj of 
                             SumType _ _-> True
                             _ -> False ) currentState
-                let (createNewType, newOrExistingName) = DL.foldl' (checkIfSumTypeExists haskellNewTypeInfo) (False, innerRecordTypeName) onlySumTypes
+                let (createNewType, newOrExistingName) = DL.foldl' (checkIfSumTypeExists haskellNewTypeInfo) (True, innerRecordTypeName) onlySumTypes
                 case createNewType of
                   True -> do
                     modify' (\existingState -> haskellNewTypeInfo:existingState)
@@ -652,13 +652,23 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
     case DL.nub stringList of
       sameElem:[] -> pure $ "[" ++ sameElem ++ "]"
       x -> error $ "Got different types in the same list. Not sure how to proceed! Please check the swagger doc! " ++ show x
-  checkIfSumTypeExists (SumType newTypeName newTypeVals) (createType, newOrExistingTypeName) (SumType typeName tVals) = 
-    case (newTypeVals == tVals) of 
-      True -> (False, typeName)
-      False -> 
-        case (newTypeVals `DL.intersect` tVals) of
-          [] -> (True, newTypeName)
-          _ -> error $ "A new sum type would be created with elements already existing in other sum types! This needs to be handled! Debug Info: Type1 -> " ++ show (SumType newTypeName newTypeVals) ++ " Type2 (added to state first) -> " ++ show (SumType typeName tVals)
+  checkIfSumTypeExists :: CreateNewType -> (Bool, String) -> CreateNewType -> (Bool, String)
+  checkIfSumTypeExists (SumType newTypeName newTypeVals) (newTypeNeeded, newOrExistingTypeName) (SumType typeName tVals) = 
+    case newTypeNeeded of
+      False -> (newTypeNeeded, newOrExistingTypeName)
+      True -> 
+        case (newTypeVals == tVals) of 
+          True -> (False, typeName)
+          False -> 
+            case (newTypeVals `DL.intersect` tVals) of
+              [] -> (True, newTypeName)
+              _ -> error $ "A new sum type would be created with elements already existing in other sum types!"
+                ++ "This needs to be handled! \nDebug Info: Type1 -> " ++ show (SumType newTypeName newTypeVals) 
+                ++ "\nType2 (added to state first) -> " ++ show (SumType typeName tVals)
+  checkIfSumTypeExists newType _ existingType =
+    error $ "PANIC : We already filtered for only Sum Types but encountered non-sum type constructor!"
+      ++ "\nDebugInfo : New Type to be created is : " ++ (show newType)
+      ++ "\nExisting type is : " ++ (show existingType)
 
 
 
