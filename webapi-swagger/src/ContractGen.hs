@@ -320,14 +320,25 @@ readSwaggerJSON petstoreJSONContents= do
     currentMethodData <- Control.Monad.foldM (processPathItem mainRouteName swPathDetails) (Map.empty) methodList
     let currentContractDetails = ContractDetails currentRouteId mainRouteName currentRoutePath currentMethodData
     pure (currentContractDetails:cDetailsList)
+    
+  removeLeadingSlash :: String -> String 
   removeLeadingSlash inputRoute = fromMaybe inputRoute (DL.stripPrefix "/" inputRoute)
+  
+  prettifyRouteName :: [String] -> [String]
   prettifyRouteName routeList = case routeList of
     [] -> error "Expected atleast one element in the route! Got an empty list!"
     rList -> fmap (\(firstChar:remainingChar) -> (Char.toUpper firstChar):remainingChar ) $ fmap (DL.filter (\x -> not (x == '{' || x == '}') ) ) rList
   
-  isParam (pathComponent::String) = (DL.isPrefixOf "{" pathComponent) && (DL.isSuffixOf "}" pathComponent)
+  isParam :: String -> Bool
+  isParam pathComponent = (DL.isPrefixOf "{" pathComponent) && (DL.isSuffixOf "}" pathComponent)
+
+  removeCurlyBraces :: String -> String 
   removeCurlyBraces = DL.filter (\x -> not (x == '{' || x == '}') )
+
+  getListOfPathOperations :: PathItem -> [Maybe Operation]
   getListOfPathOperations pathItem = [_pathItemGet pathItem, _pathItemPut pathItem, _pathItemPost pathItem, _pathItemDelete pathItem, _pathItemOptions pathItem, _pathItemHead pathItem, _pathItemPatch pathItem]
+  
+  getPathParamTypeFromOperation :: String -> Maybe Operation -> StateT [CreateNewType] IO (Maybe String)
   getPathParamTypeFromOperation paramPathName mOperation = case mOperation of
     Just operation -> do 
       let paramList = _operationParameters operation
@@ -646,6 +657,7 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
       SwaggerNull -> pure "()"
       -- x -> ("Got Unexpected Primitive Value : " ++ show x)
  where 
+  checkIfArray :: StateT [CreateNewType] IO [String] -> StateT [CreateNewType] IO String
   checkIfArray scStringList = do
     stringList <- scStringList 
     case DL.nub stringList of
@@ -738,6 +750,7 @@ instanceTypeVec = [
                   , ( fromMaybeSV $ SV.fromList ["QueryParam", "POST", "EdiToJsonR", "Maybe CharacterSet"]) 
                   ]
  where 
+  fromMaybeSV :: Maybe a -> a
   fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
 
 fromParamVec :: Vector 3 String
@@ -769,27 +782,6 @@ generateContractBody contractName contractDetails =
         instanceVectorList = catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeNameStr, tInfo] ) typeInfo) $ DL.zip (respType:errType:formParamType:queryParamType:fileParamType:headerParamType:requestBodyType:contentType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam", "FileParam", "HeaderIn", "RequestBody", "ContentTypes"]
     in (topLevelVector, instanceVectorList):accValue
   fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
-
-
--- printHaskellModule :: IO()
--- printHaskellModule = 
---   let hModule = Module noSrcSpan (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
---         (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"])
---         (fmap (moduleImport (False, "")) [ "WebApi",  "Data.Aeson",  "Data.ByteString",  "Data.Text as T",  "GHC.Generics"])
---         [
---         emptyDataDeclaration "EDITranslatorApi",
---         dataDeclaration (NewType noSrcSpan) "EdiStr" [("ediStr", "ByteString")] ["Show", "Generic"],
---         dataDeclaration (NewType noSrcSpan) "CharacterSet" [("characterSet", "ByteString")] ["Show", "Generic"],
---         dataDeclaration (DataType noSrcSpan) "EdiJsonWithDelims" [("ediJson", "ByteString"), ("segmentDelimiter", "Char"), ("elementDelimiter", "Char")] ["Show", "Generic"],
---         routeDeclaration "EdiToJsonR" ["convert", "toJson"],
---         routeDeclaration "EdiFromJsonR" ["convert", "fromJson"],
---         routeDeclaration "PathAfterThat" ["convert", "fromJson", "nextPath", "pathAfterThat"],
---         routeDeclaration "YaPath" ["convert", "fromJson", "somePath", "anotherPath", "yaPathHere"],
---         apiInstanceDeclaration instanceTopVec instanceTypeVec, 
---         fromParamInstanceDecl fromParamVec,
---         webApiInstance "EDITranslatorApi" [("EdiToJsonR", ["POST", "PUT", "GET"]), ("EdiFromJsonR", ["GET", "POST"])]
---         ]
---   in writeFile "webapi-swagger/sampleFiles/codeGen.hs" $ prettyPrint hModule
 
 
 
@@ -913,6 +905,7 @@ derivingDecl derivingList = Deriving noSrcSpan Nothing $ fmap iRule derivingList
 derivingDecl derivingList = Deriving noSrcSpan $ fmap iRule derivingList
 #endif
  where 
+  iRule :: String -> InstRule SrcSpanInfo
   iRule tClass = IRule noSrcSpan Nothing Nothing (IHCon noSrcSpan (UnQual noSrcSpan (nameDecl tClass)))
 
 emptyDataDeclaration :: String -> Decl SrcSpanInfo
@@ -941,6 +934,7 @@ sumTypeDeclaration dataName listOfComponents derivingList =
     (Just $ derivingDecl derivingList)
 #endif
  where 
+  sumTypeConstructor :: [String] -> [QualConDecl SrcSpanInfo]
   sumTypeConstructor = 
     fmap (\construcorVal -> QualConDecl noSrcSpan Nothing Nothing 
       (ConDecl noSrcSpan 
@@ -1041,6 +1035,7 @@ recursiveTypeForRoute routeComponents =
         (recursiveTypeForRoute remainingRoute)
       )   
  where 
+  processPathComponent :: PathComponent -> Type SrcSpanInfo
   processPathComponent pathComp = 
     case pathComp of
       PathComp pComp -> promotedType pComp
