@@ -201,16 +201,20 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
     Right (swaggerData :: Swagger) -> do
       newData <- generateSwaggerDefinitionData (_swaggerDefinitions swaggerData) 
       let langExts = ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"]
-      let contractImports = [ "WebApi.Contract", "WebApi.Param", "Types", "Data.Int", "Data.Text"]
+      let contractImports = ["Types", "Data.Int", "Data.Text"]
       let withConditionalImpts =
             if xmlImport
             then contractImports ++ ["WebApi.XML"]
             else contractImports
+      let qualifiedImportsForContract = 
+            [("WebApi.Contract", (True, Just $ ModuleName noSrcSpan "W")),
+            ("WebApi.Param", (True, Just $ ModuleName noSrcSpan "W"))]
       let hContractModule = 
             Module noSrcSpan 
               (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
               (fmap languageExtension langExts)
-              (fmap (\modName -> moduleImport (modName,(False, Nothing)) ) withConditionalImpts) -- CommonTypes
+              ((fmap (\modName -> moduleImport (modName,(False, Nothing)) ) withConditionalImpts) -- CommonTypes
+                ++ fmap moduleImport qualifiedImportsForContract)
               (generateContractBody apiNameHs contractDetails)
       liftIO $ writeFile (contractOutputFolderPath ++ "src/Contract.hs") $ prettyPrint hContractModule
       let qualifiedImportsForTypes = 
@@ -425,7 +429,7 @@ readSwaggerJSON petstoreJSONContents= do
 
   getContentTypes :: Maybe MimeList -> Bool -> (Maybe String, Bool)
   getContentTypes mContentList addPlainText = do
-    let plainTextList::[String] = if addPlainText then ["PlainText"] else []
+    let plainTextList::[String] = if addPlainText then ["W.PlainText"] else []
     case mContentList of 
       Just contentList -> 
         case getMimeList contentList of
@@ -433,8 +437,8 @@ readSwaggerJSON petstoreJSONContents= do
           mimeList ->
             let mimeTypes = '\'':DL.filter (/= '"') (show $ plainTextList ++ flip fmap mimeList 
                       (\mimeType -> case mimeType of
-                          "application/xml" -> "XML"
-                          "application/json" -> "JSON"
+                          "application/xml" -> "W.XML"
+                          "application/json" -> "W.JSON"
                           otherMime -> error $ "Encountered unknown MIME type. Please report this as a bug!"
                             ++ "\nMIME Type encountered is : " ++ (show otherMime) ) )
             in (Just mimeTypes, DL.isInfixOf "XML" mimeTypes)
@@ -654,7 +658,7 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                 modify' (\existingState -> finalProductTypeInfo:existingState)
                 pure "ProductTypeName"
           Nothing -> error $ "Expected outer schema to be present when trying to construct type of SwaggerObject. Debug Info (ParamSchema):  " ++ show paramSchema
-      SwaggerFile -> pure "FileInfo" -- TODO 
+      SwaggerFile -> pure "W.FileInfo" -- TODO 
       SwaggerNull -> pure "()"
       -- x -> ("Got Unexpected Primitive Value : " ++ show x)
  where 
@@ -760,18 +764,20 @@ fromParamVec = fromJustNote "Expected a list with 3 elements for WebApi instance
 generateContractBody :: String -> [ContractDetails] -> [Decl SrcSpanInfo]
 generateContractBody contractName contractDetails = 
   [emptyDataDeclaration contractName] ++ flip fmap contractDetails (\cDetail -> routeDeclaration (routeName cDetail) (routePath cDetail) ) ++ 
-    [webApiInstance contractName (fmap (\ctDetail -> (routeName ctDetail , fmap show (Map.keys $ methodData ctDetail))) contractDetails ) ] ++
-    (fmap (\(topVec, innerVecList) -> apiInstanceDeclaration topVec innerVecList ) $ DL.concat $ fmap (constructVectorForRoute contractName) contractDetails)
-    
-    
+    [webApiInstance contractName (fmap (\ctDetail -> (routeName ctDetail , fmap qualMethod (Map.keys $ methodData ctDetail))) contractDetails ) ] ++
+      (fmap (\(topVec, innerVecList) -> apiInstanceDeclaration topVec innerVecList ) $ DL.concat $ fmap (constructVectorForRoute contractName) contractDetails)
  where
+  qualMethod :: StdMethod -> String
+  qualMethod = ("W." ++) . show
+    
   constructVectorForRoute :: String -> ContractDetails -> [(Vector 4 String, [Vector 4 String])] 
   constructVectorForRoute ctrtName ctrDetails = 
     let currentRouteName = routeName ctrDetails
     in Map.foldlWithKey' (routeDetailToVector ctrtName currentRouteName) [] (methodData ctrDetails)
   routeDetailToVector :: String -> String -> [(Vector 4 String, [Vector 4 String])] -> StdMethod -> ApiTypeDetails -> [(Vector 4 String, [Vector 4 String])]
   routeDetailToVector ctrtName routeNameStr accValue currentMethod apiDetails = 
-    let topLevelVector = fromMaybeSV $ SV.fromList ["ApiContract", ctrtName, (show currentMethod), routeNameStr]
+    let qualMethodName = "W." ++ show currentMethod
+        topLevelVector = fromMaybeSV $ SV.fromList ["W.ApiContract", ctrtName, qualMethodName, routeNameStr]
         respType = Just $ apiOut apiDetails
         errType = apiErr apiDetails
         formParamType = formParam apiDetails
@@ -780,7 +786,10 @@ generateContractBody contractName contractDetails =
         headerParamType = headerIn apiDetails
         requestBodyType = requestBody apiDetails
         contentType = contentTypes apiDetails
-        instanceVectorList = catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, show currentMethod, routeNameStr, tInfo] ) typeInfo) $ DL.zip (respType:errType:formParamType:queryParamType:fileParamType:headerParamType:requestBodyType:contentType:[]) ["ApiOut", "ApiErr","FormParam", "QueryParam", "FileParam", "HeaderIn", "RequestBody", "ContentTypes"]
+        instanceVectorList = 
+          catMaybes $ fmap (\(typeInfo, typeLabel) -> fmap (\tInfo -> fromMaybeSV $ SV.fromList [typeLabel, qualMethodName, routeNameStr, tInfo] ) typeInfo) 
+            $ DL.zip (respType:errType:formParamType:queryParamType:fileParamType:headerParamType:requestBodyType:contentType:[]) 
+                ["ApiOut", "ApiErr","FormParam", "QueryParam", "FileParam", "HeaderIn", "RequestBody", "ContentTypes"]
     in (topLevelVector, instanceVectorList):accValue
   fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
 
@@ -945,7 +954,6 @@ languageExtension :: String -> ModulePragma SrcSpanInfo
 languageExtension langExtName = LanguagePragma noSrcSpan [nameDecl langExtName]
 
 
--- Modules imported as *NOT qualified* by default for now
 moduleImport :: (String, (Bool, Maybe (ModuleName SrcSpanInfo)) )-> ImportDecl SrcSpanInfo
 moduleImport (moduleNameStr, (isQualified, qualifiedName) ) = 
   ImportDecl {
@@ -1026,13 +1034,13 @@ recursiveTypeForRoute routeComponents =
     prevElem:lastElem:[] -> 
       (TyInfix noSrcSpan 
         (processPathComponent prevElem)
-        (unPromotedUnQualSymDecl ":/")
+        (unPromotedUnQualSymDecl "W.:/")
         (processPathComponent lastElem)
       )
     currentRoute:remainingRoute -> 
       (TyInfix noSrcSpan 
         (processPathComponent currentRoute)
-        (unPromotedUnQualSymDecl ":/")
+        (unPromotedUnQualSymDecl "W.:/")
         (recursiveTypeForRoute remainingRoute)
       )   
  where 
@@ -1084,12 +1092,12 @@ instanceDeclForShow dataTypeName =
       [InsDecl noSrcSpan 
         (FunBind noSrcSpan 
           [Match noSrcSpan (Ident noSrcSpan "show") 
-            [PVar noSrcSpan (Ident noSrcSpan "st")] 
+            [PVar noSrcSpan (Ident noSrcSpan "st'")] 
             (UnGuardedRhs noSrcSpan (InfixApp noSrcSpan (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "ASCII") (nameDecl "unpack"))) 
               (QVarOp noSrcSpan (unQualSymDecl "$") ) 
               (App noSrcSpan 
                 (variableName "encodeParam")
-                (variableName "st")
+                (variableName "st'")
               ))) Nothing])]) ]
 
 -- Instances for ToJSON and FromJSON For Sum Types
@@ -1218,30 +1226,31 @@ queryParamInstanceIRule paramDirection sumTypeName =
 -- The ToParam 'QueryParam instance for Sum Type
 toParamQueryParamInstance :: String -> Decl SrcSpanInfo
 toParamQueryParamInstance sumTypeName = 
-  InstDecl noSrcSpan Nothing
-  (queryParamInstanceIRule "ToParam" sumTypeName)
-  ( Just [InsDecl noSrcSpan 
-          (FunBind noSrcSpan 
-            [Match noSrcSpan 
-              (nameDecl "toParam") 
-              [PWildCard noSrcSpan , PVar noSrcSpan (nameDecl "pfx"),PVar noSrcSpan (nameDecl (fmap Char.toLower sumTypeName) )] 
-              (UnGuardedRhs noSrcSpan 
-                (List noSrcSpan 
-                  [Tuple noSrcSpan 
-                    Boxed 
-                    [Var noSrcSpan 
-                      (UnQual noSrcSpan 
-                        (nameDecl "pfx")
-                      ),
-                    InfixApp noSrcSpan 
-                      (dataConstructor "Just")
-                      (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan "$"))) 
-                      (App noSrcSpan 
-                        (variableName "encodeParam")
-                        (variableName (fmap Char.toLower sumTypeName) )
-                      )
-                    ]])) 
-              Nothing ])])
+  let sumTypeVarName = (fmap Char.toLower sumTypeName) ++ "'"
+  in InstDecl noSrcSpan Nothing
+      (queryParamInstanceIRule "ToParam" sumTypeName)
+      ( Just [InsDecl noSrcSpan 
+              (FunBind noSrcSpan 
+                [Match noSrcSpan 
+                  (nameDecl "toParam") 
+                  [PWildCard noSrcSpan , PVar noSrcSpan (nameDecl "pfx'"),PVar noSrcSpan (nameDecl sumTypeVarName)] 
+                  (UnGuardedRhs noSrcSpan 
+                    (List noSrcSpan 
+                      [Tuple noSrcSpan 
+                        Boxed 
+                        [Var noSrcSpan 
+                          (UnQual noSrcSpan 
+                            (nameDecl "pfx'")
+                          ),
+                        InfixApp noSrcSpan 
+                          (dataConstructor "Just")
+                          (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan "$"))) 
+                          (App noSrcSpan 
+                            (variableName "encodeParam")
+                            (variableName sumTypeVarName )
+                          )
+                        ]])) 
+                  Nothing ])])
 
 
 encodeCaseStatementOption :: (String, String) -> Alt SrcSpanInfo
@@ -1267,36 +1276,38 @@ decodeCaseStatementOption (caseMatchOnStr, resultOfCaseMatch) =
 -- the EncodeParam instance for Sum Type
 encodeParamSumTypeInstance :: String -> [(String, String)] -> Decl SrcSpanInfo
 encodeParamSumTypeInstance sumTypeName caseOptions =
-  InstDecl noSrcSpan Nothing
-  (IRule noSrcSpan Nothing Nothing (IHApp noSrcSpan (instanceHead "EncodeParam") (typeConstructor sumTypeName) ))
-   (Just [InsDecl noSrcSpan 
-    (FunBind noSrcSpan 
-      [Match noSrcSpan 
-        (nameDecl "encodeParam") 
-        [PVar noSrcSpan (nameDecl (fmap Char.toLower sumTypeName) )] 
-        (UnGuardedRhs noSrcSpan 
-          (Case noSrcSpan 
-            (variableName (fmap Char.toLower sumTypeName) )
-            (fmap encodeCaseStatementOption caseOptions) )) 
-        Nothing
-      ])])
+  let sumTypeVarName = (fmap Char.toLower sumTypeName) ++ "'"
+  in InstDecl noSrcSpan Nothing
+      (IRule noSrcSpan Nothing Nothing (IHApp noSrcSpan (instanceHead "EncodeParam") (typeConstructor sumTypeName) ))
+      (Just [InsDecl noSrcSpan 
+        (FunBind noSrcSpan 
+          [Match noSrcSpan 
+            (nameDecl "encodeParam") 
+            [PVar noSrcSpan (nameDecl sumTypeVarName)] 
+            (UnGuardedRhs noSrcSpan 
+              (Case noSrcSpan 
+                (variableName sumTypeVarName)
+                (fmap encodeCaseStatementOption caseOptions) )) 
+            Nothing
+          ])])
 
 
 -- The DecodeParam Instance for Sum Type
 decodeParamSumTypeInstance :: String -> [(String, String)] -> Decl SrcSpanInfo
 decodeParamSumTypeInstance sumTypeName caseOptions = 
-  InstDecl noSrcSpan Nothing
-    (IRule noSrcSpan Nothing Nothing (IHApp noSrcSpan (instanceHead "DecodeParam") (typeConstructor sumTypeName) ))
-    (Just [InsDecl noSrcSpan 
-      (FunBind noSrcSpan 
-        [Match noSrcSpan (nameDecl "decodeParam") 
-          [PVar noSrcSpan (nameDecl (fmap Char.toLower sumTypeName) )] 
-          (UnGuardedRhs noSrcSpan 
-            (Case noSrcSpan 
-              (variableName  (fmap Char.toLower sumTypeName)) 
-              ((fmap decodeCaseStatementOption caseOptions) ++ [Alt noSrcSpan (PWildCard noSrcSpan) (UnGuardedRhs noSrcSpan (dataConstructor "Nothing") ) Nothing] ) )) 
-          Nothing
-        ])])
+  let sumTypeVarName = (fmap Char.toLower sumTypeName) ++ "'"
+  in InstDecl noSrcSpan Nothing
+      (IRule noSrcSpan Nothing Nothing (IHApp noSrcSpan (instanceHead "DecodeParam") (typeConstructor sumTypeName) ))
+      (Just [InsDecl noSrcSpan 
+        (FunBind noSrcSpan 
+          [Match noSrcSpan (nameDecl "decodeParam") 
+            [PVar noSrcSpan (nameDecl sumTypeVarName)] 
+            (UnGuardedRhs noSrcSpan 
+              (Case noSrcSpan 
+                (variableName sumTypeVarName) 
+                ((fmap decodeCaseStatementOption caseOptions) ++ [Alt noSrcSpan (PWildCard noSrcSpan) (UnGuardedRhs noSrcSpan (dataConstructor "Nothing") ) Nothing] ) )) 
+            Nothing
+          ])])
 
 -- The FromParam 'QueryParam instance for Sum Type
 fromParamQueryParamInstance :: String -> Decl SrcSpanInfo
@@ -1308,16 +1319,16 @@ fromParamQueryParamInstance sumTypeName =
       (FunBind noSrcSpan 
         [Match noSrcSpan 
           (nameDecl "fromParam") 
-          (fmap patternVariable ["pt","key","kvs"])
+          (fmap patternVariable ["pt'","key'","kvs'"])
           (UnGuardedRhs noSrcSpan 
             (Case noSrcSpan 
               (App noSrcSpan 
                 (App noSrcSpan 
                   (App noSrcSpan 
                     (variableName "lookupParam")                    
-                    (variableName "pt") ) 
-                  (variableName "key") )
-                (variableName"kvs")
+                    (variableName "pt'") ) 
+                  (variableName "key'") )
+                (variableName"kvs'")
               ) 
               [Alt noSrcSpan 
                 (PApp noSrcSpan 
@@ -1328,7 +1339,7 @@ fromParamQueryParamInstance sumTypeName =
                     (PApp noSrcSpan 
                       (UnQual noSrcSpan 
                         (nameDecl "Just")
-                      ) [patternVariable "par"]
+                      ) [patternVariable "par'"]
                     )
                   ]
                 ) 
@@ -1338,7 +1349,7 @@ fromParamQueryParamInstance sumTypeName =
                       (Case noSrcSpan 
                         (App noSrcSpan 
                           (variableName "decodeParam")
-                          (variableName "par")
+                          (variableName "par'")
                         ) 
                         [Alt noSrcSpan 
                           (PApp noSrcSpan 
@@ -1372,7 +1383,7 @@ fromParamQueryParamInstance sumTypeName =
                                   [App noSrcSpan 
                                     (App noSrcSpan 
                                       (dataConstructor "ParseErr")
-                                      (variableName "key")
+                                      (variableName "key'")
                                     ) 
                                     (stringLiteral ("Unable to cast to " ++ sumTypeName) )
                                   ]
@@ -1400,7 +1411,7 @@ fromParamQueryParamInstance sumTypeName =
                         (List noSrcSpan 
                           [App noSrcSpan 
                             (dataConstructor "NotFound")
-                            (variableName "key")
+                            (variableName "key'")
                           ]
                         )
                       )
@@ -1424,7 +1435,7 @@ routeDeclaration routeNameStr routePathComponents =
       TypeDecl noSrcSpan
         (declarationHead routeNameStr)
         (TyApp noSrcSpan
-          (typeConstructor "Static")
+          (typeConstructor "W.Static")
           (recursiveTypeForRoute routePathComponents) )
     _ -> 
       TypeDecl noSrcSpan  
@@ -1437,7 +1448,7 @@ webApiInstance mainTypeName routeAndMethods =
   InstDecl noSrcSpan Nothing 
     (IRule noSrcSpan Nothing Nothing 
       (IHApp noSrcSpan 
-        (instanceHead "WebApi")
+        (instanceHead "W.WebApi")
         (typeConstructor mainTypeName) 
       )
     ) 
@@ -1459,7 +1470,7 @@ webApiInstance mainTypeName routeAndMethods =
   innerRouteInstance (rName, listOfMethods) =
       TyApp noSrcSpan 
         (TyApp noSrcSpan 
-          (typeConstructor "Route") 
+          (typeConstructor "W.Route") 
           (TyPromoted noSrcSpan 
             (PromotedList noSrcSpan True 
               (fmap typeConstructor listOfMethods)               
