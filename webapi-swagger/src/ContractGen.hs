@@ -327,7 +327,7 @@ readSwaggerJSON swaggerDocContents = do
               [] -> 1
               _ -> (routeId $ Prelude.head cDetailsList) + 1 -- TODO: Not being used anymore. Should be removed
         swaggerPath ::[SwPathComponent] = fmap constructSwPathComps $ DLS.splitOn "/" $ removeLeadingSlash swFilePath
-        mainRouteName = (prettifyRouteName swaggerPath) ++ "R"
+        mainRouteName = setValidConstructorId $ (prettifyRouteName swaggerPath) ++ "R"
 
     -- TODO: Add a `Static` Type component at the start if the list has just one element of type PathComp
     finalPathWithParamTypes::[PathComponent] <- forM swaggerPath (\pathComponent -> 
@@ -564,7 +564,7 @@ readSwaggerJSON swaggerDocContents = do
               pure (isMandatory param, hType) )
             let finalHaskellTypes = fmap (\(isMandatoryType, hType) -> (addMaybeToType isMandatoryType hType) ) hTypesWithIsMandatory
             let recordTypesInfo = DL.zip paramNames finalHaskellTypes
-            let newDataTypeName = newTypeName ++ "FormParam"
+            let newDataTypeName = setValidConstructorId $ newTypeName ++ "FormParam"
             let formParamDataInfo = ProductType (NewData newDataTypeName recordTypesInfo)
 
             modify' (\existingState -> formParamDataInfo:existingState) 
@@ -576,7 +576,7 @@ readSwaggerJSON swaggerDocContents = do
               pure (isMandatory param, hType) )
             let finalHaskellTypes = fmap (\(isMandatoryType, hType) -> (addMaybeToType isMandatoryType hType) ) hTypesWithIsMandatory
             let recordTypesInfo = DL.zip paramNames finalHaskellTypes
-            let newDataTypeName = newTypeName ++ "QueryParam"
+            let newDataTypeName = setValidConstructorId $ newTypeName ++ "QueryParam"
             let queryParamDataInfo = ProductType (NewData newDataTypeName recordTypesInfo)
             modify' (\existingState -> queryParamDataInfo:existingState) 
             pure $ Just newDataTypeName
