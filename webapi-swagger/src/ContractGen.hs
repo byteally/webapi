@@ -186,7 +186,21 @@ instance ToSchema (MultiSet Text) where
 instance ToParamSchema (MultiSet Text) where
   toParamSchema _ = mempty
       & SW.type_ .~ SwaggerArray
-      & SW.items ?~ SwaggerItemsPrimitive Nothing (mempty & SW.type_ .~ SwaggerString)  |]
+      & SW.items ?~ SwaggerItemsPrimitive Nothing (mempty & SW.type_ .~ SwaggerString)  
+      
+
+data SwaggerNumber = IntegerFormat Integer | DoubleFormat Double
+
+instance DecodeParam SwaggerNumber where
+  decodeParam bs =
+    case decodeParam bs :: Maybe Integer of 
+      Just x -> Just $ IntegerFormat x
+      Nothing -> 
+        case decodeParam bs :: Maybe Double of
+          Just y -> Just $ DoubleFormat y
+          Nothing -> error $ "Expected SwaggerNumber to coerce into either Integer or Double!"
+            ++ "\\nInput param is : " ++ (show bs)
+      |]
 
 type StateConfig = StateT [CreateNewType] IO ()
 
@@ -593,12 +607,12 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                     modify' (\existingState -> haskellNewTypeInfo:existingState)
                     pure innerRecordTypeName
                   False -> pure newOrExistingName
-          _ -> error $ "Encountered SwaggerString with unknown Format! Debug Info: " ++ show paramSchema
+          _ -> pure "Text" -- error $ "Encountered SwaggerString with unknown Format! Debug Info: " ++ show paramSchema
       SwaggerNumber -> 
         case _paramSchemaFormat paramSchema of
           Just "float" -> pure "Float"
           Just "double" -> pure "Double"
-          _ -> error $ "Encountered SwaggerNumber without format specification (Double or Float) . Debug Info: " ++ show paramSchema
+          _ -> pure "SwaggerNumber"
       SwaggerInteger -> 
         case _paramSchemaFormat paramSchema of
           Just "int32" -> pure "Int32"
