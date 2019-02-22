@@ -680,6 +680,7 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
               Just valueEnumList -> do
                 let (enumVals, ogVals) = DL.unzip $ fmap (\(Data.Aeson.String enumVal) -> (T.unpack $ T.toTitle enumVal, T.unpack enumVal) ) valueEnumList
                 let innerRecordTypeName = 
+                      setValidConstructorId $ 
                       fromJustNote ("Expected a Param Name but got Nothing. "
                         ++ "Need Param Name to set the name for the new type we need to create."
                         ++ "\nDebug Info: " ++ show paramSchema) mParamNameOrRecordName
