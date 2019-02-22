@@ -548,7 +548,7 @@ readSwaggerJSON swaggerDocContents = do
           Nothing -> pure "Text"
       Inline responseSchema -> 
         case (_responseSchema responseSchema) of
-          Just (Ref refText) -> pure $ trace ("Referenced Response in Inline Schema: " ++ (show refText) ) $ T.unpack $ getReference refText
+          Just (Ref refText) -> pure $ T.unpack $ getReference refText
           Just (Inline respSchema) -> ((getTypeFromSwaggerType Nothing (Just respSchema) ) . _schemaParamSchema) respSchema
           Nothing -> pure "Text"
   getParamTypes :: String -> [Param] -> ParamType -> StateT [CreateNewType] IO (Maybe String)
