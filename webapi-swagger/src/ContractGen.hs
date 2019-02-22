@@ -515,24 +515,27 @@ readSwaggerJSON swaggerDocContents = do
   getApiType :: String -> InsOrdHashMap HttpStatusCode (Referenced Response) -> Swagger -> StateT [CreateNewType] IO (Maybe String, Maybe String)
   getApiType newTypeName responsesHM swaggerData = foldlWithKey' (\stateConfigWrappedTypes currentCode currentResponse -> do
         (apiOutType, apiErrType) <- stateConfigWrappedTypes
-        currentResponseType <- parseResponseContentGetType currentResponse swaggerData
         case (currentCode >= 200 && currentCode <= 208) of
           True -> do
             finalOutType <- do
-                fOutType <- checkIfNewType apiOutType currentResponseType (newTypeName ++ "ApiOut") swaggerData
+                let newTypeNameConstructor = (newTypeName ++ "ApiOut")
+                currentResponseType <- parseResponseContentGetType currentResponse swaggerData newTypeNameConstructor
+                fOutType <- checkIfNewType apiOutType currentResponseType newTypeNameConstructor swaggerData
                 pure $ Just fOutType
             pure (finalOutType, apiErrType)
           False -> do
             case (currentCode >= 400 && currentCode <= 431 || currentCode >= 500 && currentCode <= 511) of
               True -> do
                 finalErrType <- do
-                      fErrType <- checkIfNewType apiErrType currentResponseType (newTypeName ++ "ApiErr") swaggerData
+                      let newTypeNameConstructor = (newTypeName ++ "ApiErr")
+                      currentResponseType <- parseResponseContentGetType currentResponse swaggerData newTypeNameConstructor
+                      fErrType <- checkIfNewType apiErrType currentResponseType newTypeNameConstructor swaggerData
                       pure $ Just fErrType
                 pure (apiOutType, finalErrType)
               False -> error $ "Response code not matched! Response code received is: " ++ show currentCode
     ) (pure (Nothing, Nothing)) responsesHM  
-  parseResponseContentGetType :: Referenced Response -> Swagger -> StateT [CreateNewType] IO String
-  parseResponseContentGetType referencedResp swaggerData = do
+  parseResponseContentGetType :: Referenced Response -> Swagger -> String -> StateT [CreateNewType] IO String
+  parseResponseContentGetType referencedResp swaggerData newTypeConsName = do
     let swResponses :: InsOrdHashMap Text Response = _swaggerResponses swaggerData
     -- let swDataDefns :: InsOrdHashMap Text Schema = _swaggerDefinitions swaggerData
 
@@ -542,14 +545,14 @@ readSwaggerJSON swaggerDocContents = do
           Just refResponse -> 
             case _responseSchema refResponse of
               Just (Ref (Reference refSchema) ) -> pure $ T.unpack refSchema 
-              Just (Inline inSchema) -> ( (getTypeFromSwaggerType Nothing (Just inSchema) ) . _schemaParamSchema) inSchema
+              Just (Inline inSchema) -> ( (getTypeFromSwaggerType (Just newTypeConsName) (Just inSchema) ) . _schemaParamSchema) inSchema
               Nothing -> pure "Text"
             -- TODO : Should we error out here or inform the user that Referenced Response not found in Responses HM? 
           Nothing -> pure "Text"
       Inline responseSchema -> 
         case (_responseSchema responseSchema) of
           Just (Ref refText) -> pure $ T.unpack $ getReference refText
-          Just (Inline respSchema) -> ((getTypeFromSwaggerType Nothing (Just respSchema) ) . _schemaParamSchema) respSchema
+          Just (Inline respSchema) -> ((getTypeFromSwaggerType (Just newTypeConsName) (Just respSchema) ) . _schemaParamSchema) respSchema
           Nothing -> pure "Text"
   getParamTypes :: String -> [Param] -> ParamType -> StateT [CreateNewType] IO (Maybe String)
   getParamTypes newTypeName paramList paramType = 
@@ -608,7 +611,7 @@ readSwaggerJSON swaggerDocContents = do
       ParamBody refSchema -> 
         case refSchema of 
           Ref refType -> pure $ T.unpack (getReference refType)
-          Inline rSchema -> getTypeFromSwaggerType Nothing (Just rSchema) (_schemaParamSchema rSchema)
+          Inline rSchema -> getTypeFromSwaggerType mParamName (Just rSchema) (_schemaParamSchema rSchema)
       ParamOther pSchema -> getTypeFromSwaggerType mParamName mOuterSchema $ _paramOtherSchemaParamSchema pSchema
 
   isMandatory :: Param -> Bool
@@ -627,7 +630,6 @@ readSwaggerJSON swaggerDocContents = do
 
 
 checkIfNewType :: Maybe String -> String -> String -> Swagger -> (StateT [CreateNewType] IO String)
-checkIfNewType existingType currentType newTypeName = 
 checkIfNewType existingType currentType newTypeName swaggerData = 
   case existingType of 
     Just eType ->
@@ -714,12 +716,12 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                           case obj of
                             Ref reference -> pure $ "[" ++ (T.unpack $ getReference reference) ++ "]"
                             Inline recursiveSchema -> do
-                              hType <- ( ( (getTypeFromSwaggerType Nothing (Just recursiveSchema) ) . _schemaParamSchema) recursiveSchema)
+                              hType <- ( ( (getTypeFromSwaggerType mParamNameOrRecordName (Just recursiveSchema) ) . _schemaParamSchema) recursiveSchema)
                               pure $ "[" ++ hType ++ "]"
                         Just (SwaggerItemsArray innerArray) -> checkIfArray $ flip Control.Monad.mapM innerArray (\singleElem -> do
                           case singleElem of
                             Ref ref -> pure $ T.unpack $ getReference ref
-                            Inline innerSchema -> ((getTypeFromSwaggerType Nothing (Just innerSchema) ) . _schemaParamSchema) innerSchema) 
+                            Inline innerSchema -> ((getTypeFromSwaggerType mParamNameOrRecordName (Just innerSchema) ) . _schemaParamSchema) innerSchema) 
                         Just (SwaggerItemsPrimitive mCollectionFormat innerParamSchema) -> do
                           typeName <- do
                                 let paramName = fromJustNote ("Expected a Param Name but got Nothing. Need Param Name to set the name for the new type we need to create. Debug Info: " ++ show paramSchema) mParamNameOrRecordName
@@ -740,7 +742,12 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                             -- Since CSV is the default, the below case takes care of (Just CSV) as well as Nothing
                             _ -> pure $ "DelimitedCollection \",\" " ++ typeName
                         Nothing -> error "Expected a SwaggerItems type due to SwaggerArray ParamSchema Type. But it did not find any! Please check the swagger spec!"
-      SwaggerObject -> 
+      SwaggerObject -> do
+        let recordTypeName = 
+              setValidConstructorId $ 
+              fromJustNote ("Expected a Param Name but got Nothing. "
+                ++ "Need Param Name to set the name for the new type we need to create."
+                ++ "\nDebug Info: " ++ show paramSchema) mParamNameOrRecordName
         case mOuterSchema of
           Just outerSchema -> 
             case (HMSIns.toList $ _schemaProperties outerSchema) of
@@ -748,8 +755,8 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                 case (_schemaAdditionalProperties outerSchema) of
                   Just additionalProps -> 
                     case additionalProps of
-                      Ref ref -> pure $ "(HM.HashMap Text) " ++ (T.unpack $ getReference ref)
-                      Inline internalSchema -> ((getTypeFromSwaggerType Nothing (Just internalSchema)) . _schemaParamSchema) internalSchema
+                      Ref ref -> pure $ "(HM.HashMap Text " ++ (T.unpack $ getReference ref) ++ ")"
+                      Inline internalSchema -> ((getTypeFromSwaggerType (Just recordTypeName) (Just internalSchema)) . _schemaParamSchema) internalSchema
                   Nothing -> 
                     case (_paramSchemaType . _schemaParamSchema) outerSchema of
                       SwaggerObject -> pure $ "(HM.HashMap Text Text)"
@@ -760,11 +767,11 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                 innerRecordsInfo <- forM propertyList (\(recordName, iRefSchema) -> do
                       innerRecordType <- case iRefSchema of
                           Ref refName -> pure $ T.unpack $ getReference refName
-                          Inline irSchema -> ((getTypeFromSwaggerType Nothing (Just irSchema)) . _schemaParamSchema) irSchema 
+                          Inline irSchema -> ((getTypeFromSwaggerType (Just recordTypeName) (Just irSchema)) . _schemaParamSchema) irSchema 
                       pure (T.unpack recordName, innerRecordType) )
-                let finalProductTypeInfo = ProductType $ NewData "ProductTypeName" innerRecordsInfo
+                let finalProductTypeInfo = ProductType $ NewData recordTypeName innerRecordsInfo
                 modify' (\existingState -> finalProductTypeInfo:existingState)
-                pure "ProductTypeName"
+                pure recordTypeName
           Nothing -> error $ "Expected outer schema to be present when trying to construct type of SwaggerObject. Debug Info (ParamSchema):  " ++ show paramSchema
       SwaggerFile -> pure "W.FileInfo" -- TODO 
       SwaggerNull -> pure "()"
