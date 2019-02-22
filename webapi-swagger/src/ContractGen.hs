@@ -109,6 +109,8 @@ import Control.Lens hiding (List)
 import Data.Swagger.Internal hiding (Tag, CollectionFormat)
 
 import Data.Text
+import Data.Aeson
+import GHC.Generics
 
 data CollectionFormat = CSV | SSV | TSV | Pipes 
 
@@ -190,6 +192,12 @@ instance ToParamSchema (MultiSet Text) where
       
 
 data SwaggerNumber = IntegerFormat Integer | DoubleFormat Double
+  deriving (Eq, Show, Generic)
+
+instance ToJSON SwaggerNumber
+instance FromJSON SwaggerNumber
+instance ToSchema SwaggerNumber
+instance ToParam 'QueryParam SwaggerNumber
 
 instance DecodeParam SwaggerNumber where
   decodeParam bs =
