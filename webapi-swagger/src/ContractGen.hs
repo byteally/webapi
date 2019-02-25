@@ -269,12 +269,16 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
         writeCabalAndProjectFiles contractOutputFolderPath projectName xmlImport
     
  where 
-  createDataDeclarations :: [NewData] -> [Decl SrcSpanInfo]
-  createDataDeclarations newDataList = DL.foldl' (\accValue newDataInfo -> 
-      let (modifiedRecords, dataDecl) = dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show", "Generic"]
-          jsonInsts = jsonInstances (mName newDataInfo) modifiedRecords
-      in accValue ++ [dataDecl] ++ jsonInsts ++ [defaultToSchemaInstance (mName newDataInfo)] ) [] newDataList
-
+  createDataDeclarations :: [CreateNewType] -> [Decl SrcSpanInfo]
+  createDataDeclarations newDataList = DL.foldl' (\accValue cNewTy -> 
+    case cNewTy of
+      ProductType newDataInfo -> 
+        let (modifiedRecords, dataDecl) = dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show", "Generic"]
+            jsonInsts = jsonInstances (mName newDataInfo) modifiedRecords
+        in accValue ++ [dataDecl] ++ jsonInsts ++ [defaultToSchemaInstance (mName newDataInfo)] 
+      TypeAlias name alias-> (typeAliasForDecl name alias):accValue ) [] newDataList
+      
+  
   needsXmlImport :: [ContractDetails] -> Bool
   needsXmlImport = flip DL.foldl' False (\accBool cDetail -> 
               case accBool of
@@ -284,27 +288,39 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
                   in Map.foldl' (\innerAcc apiDetails -> hasXML apiDetails || innerAcc) accBool methodMap )
  
 -- TODO: This function assumes SwaggerObject to be the type and directly reads from schemaProperties. We need to also take additionalProperties into consideration.
-generateSwaggerDefinitionData :: InsOrdHashMap Text Schema -> StateT [CreateNewType] IO [NewData]
+generateSwaggerDefinitionData :: InsOrdHashMap Text Schema -> StateT [CreateNewType] IO [CreateNewType]
 generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (pure []) defDataHM
  where 
-  parseSwaggerDefinition :: StateT [CreateNewType] IO [NewData] -> Text -> Schema -> StateT [CreateNewType] IO [NewData]
-  parseSwaggerDefinition scAccValue modelName modelSchema = do
-    accValue <- scAccValue
+  parseSwaggerDefinition :: StateT [CreateNewType] IO [CreateNewType] -> Text -> Schema -> StateT [CreateNewType] IO [CreateNewType]
+  parseSwaggerDefinition scAccValue modelName modelSchema = do 
+    accValue <- scAccValue 
     let (schemaProperties::InsOrdHashMap Text (Referenced Schema) ) = _schemaProperties modelSchema
-    let mandatoryFields = fmap T.unpack (_schemaRequired modelSchema)
-    recordNamesAndTypes <- foldlWithKey' (\scAccList innerRecord iRefSchema -> do 
-            accList <- scAccList
-            let innerRecordName = T.unpack innerRecord
-            let innerRecordTypeName = T.unpack $ T.append (T.toTitle modelName) (T.toTitle innerRecord)
-            innerRecordType <- case iRefSchema of
-                    Ref referenceName -> pure $ T.unpack $ getReference referenceName
-                    Inline irSchema -> ((getTypeFromSwaggerType (Just innerRecordTypeName) (Just irSchema)) . _schemaParamSchema) irSchema
-            let recordTypeWithMaybe = 
-                  case (innerRecordName `DL.elem` mandatoryFields) of 
-                    True -> innerRecordType
-                    False -> "Maybe " ++ innerRecordType
-            pure $ (innerRecordName, recordTypeWithMaybe):accList ) (pure []) schemaProperties
-    pure $ (NewData (T.unpack modelName) recordNamesAndTypes):accValue
+    case HMSIns.null schemaProperties of
+      True -> do
+        hsType <- getTypeFromSwaggerType (Just $ T.unpack modelName) (Just modelSchema) (_schemaParamSchema modelSchema)
+        if hsType == (T.unpack modelName)
+          -- If the name of the type returned is the same, it would mean that it's a sum type. 
+          -- An alias is not necessary here as the sum type details would be stored in the State
+          -- And the type will be generated later when the State value is read.
+        then pure accValue
+        else pure $ TypeAlias (T.unpack modelName) hsType:accValue
+      False -> do
+        let mandatoryFields = fmap T.unpack (_schemaRequired modelSchema)
+        recordNamesAndTypes <- foldlWithKey' (\scAccList innerRecord iRefSchema -> do 
+                accList <- scAccList
+                let innerRecordName = T.unpack innerRecord
+                let innerRecordTypeName = T.unpack $ T.append (T.toTitle modelName) (T.toTitle innerRecord)
+                innerRecordType <- case iRefSchema of
+                        Ref referenceName -> pure $ T.unpack $ getReference referenceName
+                        Inline irSchema -> ((getTypeFromSwaggerType (Just innerRecordTypeName) (Just irSchema)) . _schemaParamSchema) irSchema
+                let recordTypeWithMaybe = 
+                      case (innerRecordName `DL.elem` mandatoryFields) of 
+                        True -> innerRecordType
+                        False -> "Maybe " ++ innerRecordType
+                pure $ (innerRecordName, recordTypeWithMaybe):accList ) (pure []) schemaProperties
+        let prodType = (ProductType $ NewData (T.unpack modelName) recordNamesAndTypes  )
+        pure $ prodType:accValue
+
 
 
 readSwaggerJSON :: BSL.ByteString -> StateT [CreateNewType] IO (String, [ContractDetails])
@@ -839,7 +855,7 @@ data NewData = NewData
   , mRecordTypes :: InnerRecords
   } deriving (Eq, Show)
 --                                   hsNames  ogNames
-data CreateNewType = SumType String [String] [String] | ProductType NewData 
+data CreateNewType = SumType String [String] [String] | ProductType NewData | TypeAlias String String
   deriving (Eq, Show)
 
 data PathComponent = PathComp String | PathParamType String
@@ -915,6 +931,11 @@ type InnerRecords = [(String, String)]
 type DerivingClass = String  
                       -- old name, new name
 type ModifiedRecords = [(String, String)]
+
+
+typeAliasForDecl :: String -> String -> Decl SrcSpanInfo
+typeAliasForDecl typeNameStr typeAliasStr =
+  TypeDecl noSrcSpan (DHead noSrcSpan (nameDecl typeNameStr)) (typeConstructor typeAliasStr)
 
 #if MIN_VERSION_haskell_src_exts(1,20,0)
 dataDeclaration :: (DataOrNew SrcSpanInfo) -> String -> InnerRecords -> [DerivingClass] -> (ModifiedRecords, Decl SrcSpanInfo)
