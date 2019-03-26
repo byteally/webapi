@@ -52,7 +52,6 @@ runCodeGen swaggerJsonInputFilePath outputPath projectName = do
   createNewTypes typeList genPath = do
     let hTypes = DL.foldl' createType ([]::[Decl SrcSpanInfo]) typeList
     appendFile (genPath ++ "src/Types.hs") $ 
-      DL.unlines $ fmap prettyPrint (hTypes)
       (DL.unlines $ fmap prettyPrint hTypes )
       
   createType :: [Decl SrcSpanInfo] -> CreateNewType -> [Decl SrcSpanInfo]
