@@ -53,6 +53,7 @@ runCodeGen swaggerJsonInputFilePath outputPath projectName = do
     let hTypes = DL.foldl' createType ([]::[Decl SrcSpanInfo]) typeList
     appendFile (genPath ++ "src/Types.hs") $ 
       DL.unlines $ fmap prettyPrint (hTypes)
+      (DL.unlines $ fmap prettyPrint hTypes )
       
   createType :: [Decl SrcSpanInfo] -> CreateNewType -> [Decl SrcSpanInfo]
   createType accValue typeInfo = 
@@ -79,6 +80,9 @@ runCodeGen swaggerJsonInputFilePath outputPath projectName = do
             ++ toParamEncodeParamQueryParamInstance 
             ++ fromParamDecodeParamQueryParamInstance 
             ++ toSchemaInstances)
+      TypeAlias _ _ -> error $ "Encountered TypeAlias in State contents (while generating new data types). "
+        ++ "\nThis may not be an error. We need to verify if it's a valid case for State to contain type aliases."
+        ++ "\nThe type to be created is  : " ++ (show typeInfo)
 
   commonTypesModuleContent :: String
   commonTypesModuleContent = [i|
@@ -276,7 +280,9 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
         let (modifiedRecords, dataDecl) = dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show", "Generic"]
             jsonInsts = jsonInstances (mName newDataInfo) modifiedRecords
         in accValue ++ [dataDecl] ++ jsonInsts ++ [defaultToSchemaInstance (mName newDataInfo)] 
-      TypeAlias name alias-> (typeAliasForDecl name alias):accValue ) [] newDataList
+      TypeAlias tName alias -> (typeAliasForDecl tName alias):accValue 
+      SumType _ _ _ -> error $ "Encountered a Sum Type creation while constructing initial types for Types.hs "
+        ++ "\n The value is : " ++ (show cNewTy)   ) [] newDataList
       
   
   needsXmlImport :: [ContractDetails] -> Bool
@@ -646,7 +652,7 @@ readSwaggerJSON swaggerDocContents = do
 
 
 checkIfNewType :: Maybe String -> String -> String -> Swagger -> (StateT [CreateNewType] IO String)
-checkIfNewType existingType currentType newTypeName swaggerData = 
+checkIfNewType existingType currentType newTypeName _ = 
   case existingType of 
     Just eType ->
       if (eType == currentType)
@@ -669,6 +675,7 @@ checkIfNewType existingType currentType newTypeName swaggerData =
     case cnType of
       SumType consName _ _ -> consName
       ProductType (NewData consName _) -> consName
+      TypeAlias consName _ -> consName
 
   addToStateSumType :: String -> String -> ([CreateNewType], Bool) -> CreateNewType -> ([CreateNewType], Bool)
   addToStateSumType newSumTypeName currentTypeStr (accList, isChanged) currentStType =
@@ -679,6 +686,7 @@ checkIfNewType existingType currentType newTypeName swaggerData =
             let modSumType = SumType consName (currentTypeStr:hsCons) (currentTypeStr:ogCons)
             (modSumType:accList, True)
           ProductType _ -> (currentStType:accList, isChanged)
+          TypeAlias _ _ -> (currentStType:accList, isChanged)
       False -> (currentStType:accList, isChanged)
 
 
