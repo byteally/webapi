@@ -372,7 +372,7 @@ readSwaggerJSON swaggerDocContents = do
     else PathPiece routeComponent
 
   removeLeadingSlash :: String -> String 
-  removeLeadingSlash !inputRoute = fromMaybe inputRoute (DL.stripPrefix "/" inputRoute)
+  removeLeadingSlash inputRoute = fromMaybe inputRoute (DL.stripPrefix "/" inputRoute)
   
   prettifyRouteName :: [SwPathComponent] -> String
   prettifyRouteName swSinglePathComps = case swSinglePathComps of
