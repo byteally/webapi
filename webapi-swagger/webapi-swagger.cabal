@@ -32,11 +32,9 @@ library
     , lens
     , aeson
     , bytestring
-    , yaml
     , insert-ordered-containers
     , haskell-src-exts
     , directory
-    , filepath
     , webapi
     , vector-sized
     , safe
@@ -51,6 +49,7 @@ library
     , time
     , containers
     , multiset
+    , interpolate
   default-language: Haskell2010
   -- ghc-options: -Wall -Werror
   ghc-options: -Wall
