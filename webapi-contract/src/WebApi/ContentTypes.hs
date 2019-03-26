@@ -81,9 +81,6 @@ data MultipartFormData
 -- | Type representing content type of @application/x-www-form-urlencoded@.
 data UrlEncoded
 
--- | Type representing content type of @application/xml@.
-data XML
-
 -- | Encodings of type for all content types `ctypes`.
 class Encodings (ctypes :: [*]) a where
   encodings :: Proxy ctypes -> a -> [(MediaType, Builder)]
@@ -131,9 +128,6 @@ instance Accept MultipartFormData where
 
 instance Accept UrlEncoded where
   contentType _ = "application" // "x-www-form-urlencoded"
-
-instance Accept XML where
-  contentType _ = "application" // "xml"
 
 -- | Encode a type into a specific content type.
 class (Accept a) => Encode a c where

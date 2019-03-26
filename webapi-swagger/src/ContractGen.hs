@@ -227,18 +227,20 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
       newData <- generateSwaggerDefinitionData (_swaggerDefinitions swaggerData) 
       let langExts = ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"]
       let contractImports = ["Types", "Data.Int", "Data.Text"]
-      let withConditionalImpts =
-            if xmlImport
-            then contractImports ++ ["WebApi.XML"]
-            else contractImports
-      let qualifiedImportsForContract = 
-            [("WebApi.Contract", (True, Just $ ModuleName noSrcSpan "W")),
-            ("WebApi.Param", (True, Just $ ModuleName noSrcSpan "W"))]
+      let qualifiedImportsForContract =
+            let webApiImports = [  ("WebApi.Contract", (True, Just $ ModuleName noSrcSpan "W"))
+                                ,  ("WebApi.Param", (True, Just $ ModuleName noSrcSpan "W"))
+                                ]
+                webApiXmlImp  = ("WebApi.XML", (True, Just $ ModuleName noSrcSpan "W"))
+            in if xmlImport
+               then webApiXmlImp : webApiImports
+               else webApiImports
+                    
       let hContractModule = 
             Module noSrcSpan 
               (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
               (fmap languageExtension langExts)
-              ((fmap (\modName -> moduleImport (modName,(False, Nothing)) ) withConditionalImpts) -- CommonTypes
+              ((fmap (\modName -> moduleImport (modName,(False, Nothing)) ) contractImports) -- CommonTypes
                 ++ fmap moduleImport qualifiedImportsForContract)
               (generateContractBody apiNameHs contractDetails)
       liftIO $ writeFile (contractOutputFolderPath ++ "src/Contract.hs") $ prettyPrint hContractModule
@@ -1900,14 +1902,20 @@ packages : .
 source-repository-package
     type: git
     location: https://github.com/byteally/webapi
-    tag: 9a64ab2d2eea87e50c1d0c99a9efda92cf1c88bc
+    tag: 101e055f7bc1cc9e695fc6fc639aac371173453e
     subdir: webapi-contract
 
 source-repository-package
     type: git
     location: https://github.com/byteally/webapi
-    tag: 9a64ab2d2eea87e50c1d0c99a9efda92cf1c88bc
+    tag: 101e055f7bc1cc9e695fc6fc639aac371173453e
     subdir: webapi
+
+source-repository-package
+    type: git
+    location: https://github.com/byteally/webapi
+    tag: 101e055f7bc1cc9e695fc6fc639aac371173453e
+    subdir: webapi-xml
 
 source-repository-package
     type: git
