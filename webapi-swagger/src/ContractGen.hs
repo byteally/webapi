@@ -32,7 +32,8 @@ import Control.Monad.IO.Class
 import System.Directory
 import Data.String.Interpolate
 import Data.Swagger hiding (get, paramSchema)
-
+import Data.Yaml (decodeEither')
+import Control.Applicative ((<|>))
 
 
 runDefaultPathCodeGen :: IO ()
@@ -218,12 +219,12 @@ type StateConfig = StateT [CreateNewType] IO ()
 readSwaggerGenerateDefnModels :: FilePath -> FilePath -> String -> StateConfig
 readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath projectName = do 
   swaggerJSONContents <- liftIO $ BSL.readFile swaggerJsonInputFilePath
-  (apiNameHs, contractDetails) <- readSwaggerJSON swaggerJSONContents
-  let xmlImport = needsXmlImport contractDetails
-  let decodedVal = eitherDecode swaggerJSONContents 
+  let decodedVal = eitherDecode swaggerJSONContents <|> either (Left . show) Right (decodeEither' (BSL.toStrict swaggerJSONContents))
   case decodedVal of
-    Left errMsg -> liftIO $ putStrLn errMsg
+    Left errMsg -> liftIO $ putStrLn "Panic: not a valid JSON or yaml"
     Right (swaggerData :: Swagger) -> do
+      (apiNameHs, contractDetails) <- readSwaggerJSON swaggerData
+      let xmlImport = needsXmlImport contractDetails      
       newData <- generateSwaggerDefinitionData (_swaggerDefinitions swaggerData) 
       let langExts = ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"]
       let contractImports = ["Types", "Data.Int", "Data.Text"]
@@ -330,16 +331,13 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (
 
 
 
-readSwaggerJSON :: BSL.ByteString -> StateT [CreateNewType] IO (String, [ContractDetails])
-readSwaggerJSON swaggerDocContents = do
-  let decodedVal = eitherDecode swaggerDocContents 
-  case decodedVal of
-    Left errMsg -> error errMsg
-    Right (swaggerData :: Swagger) -> do
-      let apiNameFromSwagger = (_infoTitle . _swaggerInfo) swaggerData 
-      let validHsApiName = setValidConstructorId (T.unpack apiNameFromSwagger)
-      contractDetailList <- HMSIns.foldlWithKey' (parseSwaggerPaths swaggerData) (pure []) (_swaggerPaths swaggerData)
-      pure (validHsApiName, contractDetailList)
+readSwaggerJSON :: Swagger -> StateT [CreateNewType] IO (String, [ContractDetails])
+readSwaggerJSON swaggerData = do
+ let apiNameFromSwagger = (_infoTitle . _swaggerInfo) swaggerData 
+     validHsApiName = setValidConstructorId (T.unpack apiNameFromSwagger)
+ contractDetailList <- HMSIns.foldlWithKey' (parseSwaggerPaths swaggerData) (pure []) (_swaggerPaths swaggerData)
+ pure (validHsApiName, contractDetailList)
+
  where
   parseSwaggerPaths :: Swagger -> StateT [CreateNewType] IO [ContractDetails] -> FilePath -> PathItem -> StateT [CreateNewType] IO [ContractDetails]
   parseSwaggerPaths swaggerData contractDetailsList swFilePath swPathDetails = do
@@ -1902,19 +1900,19 @@ packages : .
 source-repository-package
     type: git
     location: https://github.com/byteally/webapi
-    tag: 101e055f7bc1cc9e695fc6fc639aac371173453e
+    tag: 8346e24255a72130ba4097a40aacd7897e0e70de
     subdir: webapi-contract
 
 source-repository-package
     type: git
     location: https://github.com/byteally/webapi
-    tag: 101e055f7bc1cc9e695fc6fc639aac371173453e
+    tag: 8346e24255a72130ba4097a40aacd7897e0e70de
     subdir: webapi
 
 source-repository-package
     type: git
     location: https://github.com/byteally/webapi
-    tag: 101e055f7bc1cc9e695fc6fc639aac371173453e
+    tag: 8346e24255a72130ba4097a40aacd7897e0e70de
     subdir: webapi-xml
 
 source-repository-package
