@@ -1,0 +1,69 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.31.1.
+--
+-- see: https://github.com/sol/hpack
+--
+-- hash: 937f1fa0b4f36c84dbec042f843190e6420cb28a4b87572ebafe38344f083a0e
+
+name:           webapi-xml
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/githubuser/webapi-xml#readme>
+homepage:       https://github.com/githubuser/webapi-xml#readme
+bug-reports:    https://github.com/githubuser/webapi-xml/issues
+author:         Author name here
+maintainer:     example@example.com
+copyright:      2018 Author name here
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    ChangeLog.md
+
+source-repository head
+  type: git
+  location: https://github.com/githubuser/webapi-xml
+
+library
+  exposed-modules:
+      Lib
+      WebApi.XML
+  other-modules:
+      Paths_webapi_xml
+  hs-source-dirs:
+      src
+  build-depends:
+      base >=4.7 && <5
+    , aeson
+    , text
+    , webapi-contract
+    , http-media
+    , case-insensitive
+    , bytestring
+  default-language: Haskell2010
+
+executable webapi-xml-exe
+  main-is: Main.hs
+  other-modules:
+      Paths_webapi_xml
+  hs-source-dirs:
+      app
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , webapi-xml
+  default-language: Haskell2010
+
+test-suite webapi-xml-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_webapi_xml
+  hs-source-dirs:
+      test
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , webapi-xml
+  default-language: Haskell2010
