@@ -536,7 +536,7 @@ getSwaggerData swaggerData = do
   getApiType :: String -> InsOrdHashMap HttpStatusCode (Referenced Response) -> Swagger -> StateT [CreateNewType] IO (Maybe String, Maybe String)
   getApiType newTypeName responsesHM swaggerData = foldlWithKey' (\stateConfigWrappedTypes currentCode currentResponse -> do
         (apiOutType, apiErrType) <- stateConfigWrappedTypes
-        case (currentCode >= 200 && currentCode <= 208) of
+        case (currentCode >= 200 && currentCode < 300) of
           True -> do
             finalOutType <- do
                 let newTypeNameConstructor = (newTypeName ++ "ApiOut")
@@ -545,15 +545,12 @@ getSwaggerData swaggerData = do
                 pure $ Just fOutType
             pure (finalOutType, apiErrType)
           False -> do
-            case (currentCode >= 400 && currentCode <= 431 || currentCode >= 500 && currentCode <= 511) of
-              True -> do
-                finalErrType <- do
-                      let newTypeNameConstructor = (newTypeName ++ "ApiErr")
-                      currentResponseType <- parseResponseContentGetType currentResponse swaggerData newTypeNameConstructor
-                      fErrType <- checkIfNewType apiErrType currentResponseType newTypeNameConstructor swaggerData
-                      pure $ Just fErrType
-                pure (apiOutType, finalErrType)
-              False -> error $ "Response code not matched! Response code received is: " ++ show currentCode
+            finalErrType <- do
+                  let newTypeNameConstructor = (newTypeName ++ "ApiErr")
+                  currentResponseType <- parseResponseContentGetType currentResponse swaggerData newTypeNameConstructor
+                  fErrType <- checkIfNewType apiErrType currentResponseType newTypeNameConstructor swaggerData
+                  pure $ Just fErrType
+            pure (apiOutType, finalErrType)
     ) (pure (Nothing, Nothing)) responsesHM  
   parseResponseContentGetType :: Referenced Response -> Swagger -> String -> StateT [CreateNewType] IO String
   parseResponseContentGetType referencedResp swaggerData newTypeConsName = do
