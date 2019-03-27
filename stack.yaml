@@ -7,6 +7,11 @@ packages:
     git: https://github.com/capital-match/bytestring-trie.git
     commit: 47526b2ec810239fe824c03c13cf1d81f0741b5c
   extra-dep: true
+- location:
+    git: https://github.com/GetShopTV/swagger2.git
+    commit: 5530096d740c890370bbcf3df711c0b13bc1e486
+  extra-dep: true
+  
 extra-deps:
 - multiset-0.3.4.1
 resolver: lts-12.16

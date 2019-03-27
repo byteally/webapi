@@ -221,9 +221,9 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
   swaggerJSONContents <- liftIO $ BSL.readFile swaggerJsonInputFilePath
   let decodedVal = eitherDecode swaggerJSONContents <|> either (Left . show) Right (decodeEither' (BSL.toStrict swaggerJSONContents))
   case decodedVal of
-    Left errMsg -> liftIO $ putStrLn "Panic: not a valid JSON or yaml"
+    Left errMsg -> error $ errMsg -- "Panic: not a valid JSON or yaml"
     Right (swaggerData :: Swagger) -> do
-      (apiNameHs, contractDetails) <- readSwaggerJSON swaggerData
+      (apiNameHs, contractDetails) <- getSwaggerData swaggerData
       let xmlImport = needsXmlImport contractDetails      
       newData <- generateSwaggerDefinitionData (_swaggerDefinitions swaggerData) 
       let langExts = ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"]
@@ -331,8 +331,8 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (
 
 
 
-readSwaggerJSON :: Swagger -> StateT [CreateNewType] IO (String, [ContractDetails])
-readSwaggerJSON swaggerData = do
+getSwaggerData :: Swagger -> StateT [CreateNewType] IO (String, [ContractDetails])
+getSwaggerData swaggerData = do
  let apiNameFromSwagger = (_infoTitle . _swaggerInfo) swaggerData 
      validHsApiName = setValidConstructorId (T.unpack apiNameFromSwagger)
  contractDetailList <- HMSIns.foldlWithKey' (parseSwaggerPaths swaggerData) (pure []) (_swaggerPaths swaggerData)
@@ -511,7 +511,7 @@ readSwaggerJSON swaggerData = do
             case (_paramSchema param) of
               ParamOther pSchema -> 
                 case (_paramSchemaType $ _paramOtherSchemaParamSchema pSchema) of
-                  SwaggerFile -> (formParamList, queryParamList, param:fileParamList, headerInList, bodyParamList) 
+                  Just SwaggerFile -> (formParamList, queryParamList, param:fileParamList, headerInList, bodyParamList) 
                   _ -> (param:formParamList, queryParamList, fileParamList, headerInList, bodyParamList) 
               otherParamSchema -> error $ "Expected ParamOther but encountered : " ++ (show otherParamSchema)
 
@@ -692,7 +692,7 @@ checkIfNewType existingType currentType newTypeName _ =
 getTypeFromSwaggerType :: Maybe String -> Maybe Schema ->  ParamSchema t -> StateT [CreateNewType] IO String 
 getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema = 
     case (_paramSchemaType paramSchema) of 
-      SwaggerString -> 
+      Just SwaggerString -> 
         case _paramSchemaFormat paramSchema of
           Just "date" -> pure "Day"
           Just "date-time" -> pure "UTCTime"
@@ -722,19 +722,19 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                     pure innerRecordTypeName
                   False -> pure newOrExistingName
           _ -> pure "Text" -- error $ "Encountered SwaggerString with unknown Format! Debug Info: " ++ show paramSchema
-      SwaggerNumber -> 
+      Just SwaggerNumber -> 
         case _paramSchemaFormat paramSchema of
           Just "float" -> pure "Float"
           Just "double" -> pure "Double"
           _ -> pure "SwaggerNumber"
-      SwaggerInteger -> 
+      Just SwaggerInteger -> 
         case _paramSchemaFormat paramSchema of
           Just "int32" -> pure "Int32"
           Just "int64" -> pure "Int64"
           _ -> pure "Int"
-      SwaggerBoolean -> pure "Bool"
+      Just SwaggerBoolean -> pure "Bool"
       -- As per the pattern in `PetStore`, for SwaggerArray, we check the Param Schema Items field and look for a reference Name there.
-      SwaggerArray -> case _paramSchemaItems paramSchema of
+      Just SwaggerArray -> case _paramSchemaItems paramSchema of
                         Just (SwaggerItemsObject obj) -> 
                           case obj of
                             Ref reference -> pure $ "[" ++ (T.unpack $ getReference reference) ++ "]"
@@ -765,7 +765,7 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                             -- Since CSV is the default, the below case takes care of (Just CSV) as well as Nothing
                             _ -> pure $ "DelimitedCollection \",\" " ++ typeName
                         Nothing -> error "Expected a SwaggerItems type due to SwaggerArray ParamSchema Type. But it did not find any! Please check the swagger spec!"
-      SwaggerObject -> do
+      Just SwaggerObject -> do
         let recordTypeName = 
               setValidConstructorId $ 
               fromJustNote ("Expected a Param Name but got Nothing. "
@@ -778,11 +778,13 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                 case (_schemaAdditionalProperties outerSchema) of
                   Just additionalProps -> 
                     case additionalProps of
-                      Ref ref -> pure $ "(HM.HashMap Text " ++ (T.unpack $ getReference ref) ++ ")"
-                      Inline internalSchema -> ((getTypeFromSwaggerType (Just recordTypeName) (Just internalSchema)) . _schemaParamSchema) internalSchema
+                      AdditionalPropertiesSchema (Ref ref) -> pure $ "(HM.HashMap Text " ++ (T.unpack $ getReference ref) ++ ")"
+                      AdditionalPropertiesSchema (Inline internalSchema) -> ((getTypeFromSwaggerType (Just recordTypeName) (Just internalSchema)) . _schemaParamSchema) internalSchema
+                      AdditionalPropertiesAllowed _ -> error "TODO: unhandled case of additional props"
+                      
                   Nothing -> 
                     case (_paramSchemaType . _schemaParamSchema) outerSchema of
-                      SwaggerObject -> pure $ "(HM.HashMap Text Text)"
+                      Just SwaggerObject -> pure $ "(HM.HashMap Text Text)"
                       _ -> error $ "Type SwaggerObject but swaggerProperties and additionalProperties are both absent! "
                         ++ "Also, the paramSchema type in the ParamSchema is not an Object! Please check the JSON! "
                         ++ "Debug Info (Schema): " ++ show outerSchema
@@ -796,8 +798,10 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                 modify' (\existingState -> finalProductTypeInfo:existingState)
                 pure recordTypeName
           Nothing -> error $ "Expected outer schema to be present when trying to construct type of SwaggerObject. Debug Info (ParamSchema):  " ++ show paramSchema
-      SwaggerFile -> pure "W.FileInfo" -- TODO 
-      SwaggerNull -> pure "()"
+      Just SwaggerFile -> pure "W.FileInfo" -- TODO 
+      Just SwaggerNull -> pure "()"
+      -- NOTE: what are types which have no type info?
+      Nothing          -> pure "()"
       -- x -> ("Got Unexpected Primitive Value : " ++ show x)
  where 
   checkIfArray :: StateT [CreateNewType] IO [String] -> StateT [CreateNewType] IO String
@@ -1954,6 +1958,7 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 |]
 
 
