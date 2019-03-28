@@ -69,17 +69,21 @@ runCodeGen swaggerJsonInputFilePath outputPath projectName = do
         let (modifiedRecords, dataDecl) = dataDeclaration (DataType noSrcSpan) (mName newData) (mRecordTypes newData) ["Eq", "Show", "Generic"] 
         let jsonInsts = jsonInstances (mName newData) modifiedRecords
         accValue ++ [dataDecl] ++ jsonInsts ++ toParamInstances ++ [defaultToSchemaInstance (mName newData)]
-      SumType tName tConstructors ogConstructors -> do
+      SumType (BasicEnum tName tConstructors ogConstructors) -> do
         let toParamEncodeParamQueryParamInstance = [toParamQueryParamInstance tName] ++ [encodeParamSumTypeInstance tName (DL.zip tConstructors ogConstructors ) ]
         let fromParamDecodeParamQueryParamInstance = [fromParamQueryParamInstance tName] ++ [decodeParamSumTypeInstance tName (DL.zip ogConstructors tConstructors ) ]
         let toSchemaInstances = toSchemaInstanceForSumType tName (DL.zip ogConstructors tConstructors ) 
         accValue ++ 
-          ([sumTypeDeclaration tName tConstructors ["Eq", "Generic", "Ord"] ] 
+          ([enumTypeDeclaration tName tConstructors ["Eq", "Generic", "Ord"] ] 
             ++ (instanceDeclForShow tName) 
             ++ (instanceDeclForJSONForSumType tName) 
             ++ toParamEncodeParamQueryParamInstance 
             ++ fromParamDecodeParamQueryParamInstance 
             ++ toSchemaInstances)
+      SumType (ComplexSumType tName constructorTypeList ) -> do
+        accValue ++ 
+          ([complexSumTypeDecl tName constructorTypeList ["Eq", "Generic", "Ord", "Show"] ]
+            ++ jsonInstances tName [] )
       TypeAlias _ _ -> error $ "Encountered TypeAlias in State contents (while generating new data types). "
         ++ "\nThis may not be an error. We need to verify if it's a valid case for State to contain type aliases."
         ++ "\nThe type to be created is  : " ++ (show typeInfo)
@@ -286,7 +290,7 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
             jsonInsts = jsonInstances (mName newDataInfo) modifiedRecords
         in accValue ++ [dataDecl] ++ jsonInsts ++ [defaultToSchemaInstance (mName newDataInfo)] 
       TypeAlias tName alias -> (typeAliasForDecl tName alias):accValue 
-      SumType _ _ _ -> error $ "Encountered a Sum Type creation while constructing initial types for Types.hs "
+      SumType _ -> error $ "Encountered a Sum Type creation while constructing initial types for Types.hs "
         ++ "\n The value is : " ++ (show cNewTy)   ) [] newDataList
       
   
@@ -659,7 +663,9 @@ checkIfNewType existingType currentType newTypeName _ =
       else do
         -- The following code handles the cases when there are 2 or more possible types for an ApiOut or ApiErr
         -- It creates/modifies a Sum Type with the possible response Types.
-        let sumTypeInfo = SumType newTypeName [currentType, eType] [currentType, eType] -- Note : OgNames not really applicable here so putting Haskell names
+        let sumTypeConstructors = [(setValidConstructorId $ newTypeName ++ currentType, currentType), 
+                                   (setValidConstructorId $ newTypeName ++ eType,eType)]
+            sumTypeInfo = SumType (ComplexSumType newTypeName sumTypeConstructors) -- [currentType, eType] [currentType, eType] -- Note : OgNames not really applicable here so putting Haskell names
         modify' (\existingState -> do
           let (stateList, isChanged) = DL.foldl' (addToStateSumType newTypeName currentType ) ([], False) existingState
           case isChanged of
@@ -672,7 +678,8 @@ checkIfNewType existingType currentType newTypeName _ =
   getName :: CreateNewType -> String 
   getName cnType =
     case cnType of
-      SumType consName _ _ -> consName
+      SumType (BasicEnum consName _ _) -> consName
+      SumType (ComplexSumType consName _ ) -> consName
       ProductType (NewData consName _) -> consName
       TypeAlias consName _ -> consName
 
@@ -681,9 +688,11 @@ checkIfNewType existingType currentType newTypeName _ =
     case getName currentStType == newSumTypeName of
       True -> 
         case currentStType of
-          SumType consName hsCons ogCons -> do
-            let modSumType = SumType consName (currentTypeStr:hsCons) (currentTypeStr:ogCons)
-            (modSumType:accList, True)
+          SumType (BasicEnum _ _ _) -> (currentStType:accList, isChanged)
+          SumType (ComplexSumType dataName consAndTypes) -> 
+            let consName = setValidConstructorId $ dataName ++ currentTypeStr
+                modSumType = SumType (ComplexSumType dataName ((consName, currentTypeStr):consAndTypes) )
+            in (modSumType:accList, True)
           ProductType _ -> (currentStType:accList, isChanged)
           TypeAlias _ _ -> (currentStType:accList, isChanged)
       False -> (currentStType:accList, isChanged)
@@ -712,16 +721,16 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                       DL.unzip $ 
                         fmap (\(Data.Aeson.String enumVal) -> 
                                   (setValidConstructorId (T.unpack enumVal), T.unpack enumVal) ) valueEnumList
-                let haskellNewTypeInfo = SumType newSumTypeName enumVals ogVals
+                let haskellNewTypeInfo = SumType (BasicEnum newSumTypeName enumVals ogVals )
                 currentState <- get
                 let onlySumTypes = DL.filter (\newTypeObj -> 
                           case newTypeObj of 
-                            SumType _ _ _ -> True
+                            SumType (BasicEnum _ _ _) -> True
                             _ -> False ) currentState
                 let createSumType = DL.foldl' checkIfSumTypeExists (CreateSumType haskellNewTypeInfo) onlySumTypes
                 case createSumType of
-                  CreateSumType (SumType sName sNewVals sOgVals) -> do
-                    modify' (\existingState -> (SumType sName sNewVals sOgVals):existingState)
+                  CreateSumType (SumType (BasicEnum sName sNewVals sOgVals) ) -> do
+                    modify' (\existingState -> (SumType (BasicEnum sName sNewVals sOgVals) ):existingState)
                     pure sName
                   CreateSumType otherTy -> 
                     error $ "Expected only SumTypes here, but got : " ++ (show otherTy)
@@ -759,7 +768,7 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                                   Just enumVals -> do
                                     let (enumValList, ogVals)::([String], [String]) = 
                                           DL.unzip $ fmap (\(Data.Aeson.String val) -> (T.unpack $ T.toTitle val, T.unpack val) ) enumVals
-                                    let haskellNewTypeInfo = SumType titleCaseParamName enumValList ogVals
+                                    let haskellNewTypeInfo = SumType (BasicEnum titleCaseParamName enumValList ogVals)
                                     modify'(\existingState -> haskellNewTypeInfo:existingState)
                                     pure titleCaseParamName
                                   Nothing ->  getTypeFromSwaggerType Nothing Nothing innerParamSchema
@@ -817,18 +826,18 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
       sameElem:[] -> pure $ "[" ++ sameElem ++ "]"
       x -> error $ "Got different types in the same list. Not sure how to proceed! Please check the swagger doc! " ++ show x
   checkIfSumTypeExists :: SumTypeCreation -> CreateNewType -> SumTypeCreation
-  checkIfSumTypeExists sumTypeCreation (SumType typeName tVals _) = 
+  checkIfSumTypeExists sumTypeCreation (SumType (BasicEnum typeName tVals _) ) = 
     case sumTypeCreation of
       ExistingType eTyName -> ExistingType eTyName
-      CreateSumType (SumType newTypeName newTypeVals ogVals) -> do
+      CreateSumType (SumType (BasicEnum newTypeName newTypeVals ogVals ) ) -> do
         case (newTypeVals == tVals) of 
           True -> ExistingType typeName
           False -> 
             case (newTypeVals `DL.intersect` tVals) of
-              [] -> CreateSumType (SumType newTypeName newTypeVals ogVals) 
+              [] -> CreateSumType (SumType (BasicEnum newTypeName newTypeVals ogVals ) )
               _ -> 
                 let modConstructorNames = fmap (\oldCons -> setValidConstructorId $ newTypeName ++ oldCons) newTypeVals
-                in CreateSumType (SumType newTypeName modConstructorNames ogVals)
+                in CreateSumType (SumType (BasicEnum newTypeName modConstructorNames ogVals ) )
 
       CreateSumType xType -> 
         error $ "Expected only SumTypes here but got : " ++ (show xType)
@@ -880,7 +889,11 @@ data NewData = NewData
   , mRecordTypes :: InnerRecords
   } deriving (Eq, Show)
 --                                   hsNames  ogNames
-data CreateNewType = SumType String [String] [String] | ProductType NewData | TypeAlias String String
+data CreateNewType = SumType DualSumType | ProductType NewData | TypeAlias String String
+  deriving (Eq, Show)
+
+--                                                                     constructor, actual type
+data DualSumType = BasicEnum String [String] [String] | ComplexSumType String [(String, String)]
   deriving (Eq, Show)
 
 data PathComponent = PathComp String | PathParamType String
@@ -1103,8 +1116,27 @@ emptyDataDeclaration declName =
 #endif
 
 
-sumTypeDeclaration :: String -> [String] -> [DerivingClass] -> Decl SrcSpanInfo
-sumTypeDeclaration dataName listOfComponents derivingList = 
+
+complexSumTypeDecl :: String -> [(String, String)] -> [DerivingClass] -> Decl SrcSpanInfo
+complexSumTypeDecl dataName constructorsAndTypes derivingList =
+  DataDecl noSrcSpan 
+    (DataType noSrcSpan) Nothing 
+    (declarationHead dataName) 
+    (fmap tConstructors constructorsAndTypes)
+#if MIN_VERSION_haskell_src_exts(1,20,0)
+    [derivingDecl derivingList]
+#else
+    (Just $ derivingDecl derivingList)
+#endif
+ where 
+  tConstructors :: (String, String) -> QualConDecl SrcSpanInfo
+  tConstructors (cName, consType) = 
+    QualConDecl noSrcSpan Nothing Nothing 
+      (ConDecl noSrcSpan (nameDecl cName) [typeConstructor consType])
+
+
+enumTypeDeclaration :: String -> [String] -> [DerivingClass] -> Decl SrcSpanInfo
+enumTypeDeclaration dataName listOfComponents derivingList = 
   DataDecl noSrcSpan  
     (DataType noSrcSpan) Nothing 
     (declarationHead dataName)
