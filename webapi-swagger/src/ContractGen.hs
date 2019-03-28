@@ -248,19 +248,22 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
       let qualifiedImportsForTypes = 
             [("Data.ByteString.Char8", (True, Just $ ModuleName noSrcSpan "ASCII")), 
             ("Data.HashMap.Lazy", (True, Just $ ModuleName noSrcSpan "HM") ),
-            ("Data.Swagger", (True, Just $ ModuleName noSrcSpan "SW") ) ]
+            ("Data.Swagger", (True, Just $ ModuleName noSrcSpan "SW") ), 
+            ("Data.Text", (True, Just $ ModuleName noSrcSpan "P") ),
+            ("Data.Int", (True, Just $ ModuleName noSrcSpan "P") ),
+            ("Data.Time.Clock", (True, Just $ ModuleName noSrcSpan "P") ),
+            ("GHC.Generics", (True, Just $ ModuleName noSrcSpan "P") ),
+            ("Data.Aeson", (True, Just $ ModuleName noSrcSpan "P") ),
+            ("WebApi.Param", (True, Just $ ModuleName noSrcSpan "P") ),
+            ("Data.Text.Encoding", (True, Just $ ModuleName noSrcSpan "P") ),
+            ("Prelude", (True, Just $ ModuleName noSrcSpan "P") )
+            ]
       let hTypesModule = 
             Module noSrcSpan 
                 (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
                 (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances", "DuplicateRecordFields", "OverloadedStrings"])
                 (fmap moduleImport 
-                  ( (DL.zip ["Data.Text",
-                            "Data.Int",
-                            "Data.Time.Clock", 
-                            "GHC.Generics", 
-                            "Data.Aeson", 
-                            "WebApi.Param", 
-                            "Data.Text.Encoding", 
+                  ( (DL.zip ["Prelude ()",
                             "Data.Swagger.Schema", 
                             "CommonTypes",
                             "Control.Lens",
@@ -279,7 +282,7 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
   createDataDeclarations newDataList = DL.foldl' (\accValue cNewTy -> 
     case cNewTy of
       ProductType newDataInfo -> 
-        let (modifiedRecords, dataDecl) = dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["Eq", "Show", "Generic"]
+        let (modifiedRecords, dataDecl) = dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (mRecordTypes newDataInfo) ["P.Eq", "P.Show", "P.Generic"]
             jsonInsts = jsonInstances (mName newDataInfo) modifiedRecords
         in accValue ++ [dataDecl] ++ jsonInsts ++ [defaultToSchemaInstance (mName newDataInfo)] 
       TypeAlias tName alias -> (typeAliasForDecl tName alias):accValue 
@@ -323,8 +326,8 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (
                         Inline irSchema -> ((getTypeFromSwaggerType (Just innerRecordTypeName) (Just irSchema)) . _schemaParamSchema) irSchema
                 let recordTypeWithMaybe = 
                       case (innerRecordName `DL.elem` mandatoryFields) of 
-                        True -> innerRecordType
-                        False -> "Maybe " ++ innerRecordType
+                        True -> setValidConstructorId innerRecordType
+                        False -> "P.Maybe " ++ (setValidConstructorId innerRecordType)
                 pure $ (innerRecordName, recordTypeWithMaybe):accList ) (pure []) schemaProperties
         let prodType = (ProductType $ NewData (T.unpack modelName) recordNamesAndTypes  )
         pure $ prodType:accValue
@@ -691,14 +694,14 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
     case (_paramSchemaType paramSchema) of 
       Just SwaggerString -> 
         case _paramSchemaFormat paramSchema of
-          Just "date" -> pure "Day"
-          Just "date-time" -> pure "UTCTime"
+          Just "date" -> pure "P.Day"
+          Just "date-time" -> pure "P.UTCTime"
           Just "password" -> error $ "Encountered SwaggerString with Format as `password`. This needs to be handled! Debug Info : " ++ show paramSchema
-          Just "byte" -> pure "ByteString"
+          Just "byte" -> pure "P.ByteString"
           Just "binary" -> error $ "Encountered SwaggerString with Format as `binary`. This needs to be handled! Debug Info: " ++ show paramSchema
           Nothing -> 
             case _paramSchemaEnum paramSchema of
-              Nothing -> pure "Text"
+              Nothing -> pure "P.Text"
               Just valueEnumList -> do
                 let newSumTypeName = 
                       setValidConstructorId $ 
@@ -724,18 +727,18 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                     error $ "Expected only SumTypes here, but got : " ++ (show otherTy)
                       ++ "\nSince we have already filtered for only SumTypes, this should not be possible!"
                   ExistingType existingTyName -> pure existingTyName
-          _ -> pure "Text" -- error $ "Encountered SwaggerString with unknown Format! Debug Info: " ++ show paramSchema
+          _ -> pure "P.Text" -- error $ "Encountered SwaggerString with unknown Format! Debug Info: " ++ show paramSchema
       Just SwaggerNumber -> 
         case _paramSchemaFormat paramSchema of
-          Just "float" -> pure "Float"
-          Just "double" -> pure "Double"
+          Just "float" -> pure "P.Float"
+          Just "double" -> pure "P.Double"
           _ -> pure "SwaggerNumber"
       Just SwaggerInteger -> 
         case _paramSchemaFormat paramSchema of
-          Just "int32" -> pure "Int32"
-          Just "int64" -> pure "Int64"
-          _ -> pure "Int"
-      Just SwaggerBoolean -> pure "Bool"
+          Just "int32" -> pure "P.Int32"
+          Just "int64" -> pure "P.Int64"
+          _ -> pure "P.Int"
+      Just SwaggerBoolean -> pure "P.Bool"
       -- As per the pattern in `PetStore`, for SwaggerArray, we check the Param Schema Items field and look for a reference Name there.
       Just SwaggerArray -> case _paramSchemaItems paramSchema of
                         Just (SwaggerItemsObject obj) -> 
@@ -746,7 +749,7 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                               pure $ "[" ++ hType ++ "]"
                         Just (SwaggerItemsArray innerArray) -> checkIfArray $ flip Control.Monad.mapM innerArray (\singleElem -> do
                           case singleElem of
-                            Ref ref -> pure $ T.unpack $ getReference ref
+                            Ref ref -> pure $ setValidConstructorId $ T.unpack $ getReference ref
                             Inline innerSchema -> ((getTypeFromSwaggerType mParamNameOrRecordName (Just innerSchema) ) . _schemaParamSchema) innerSchema) 
                         Just (SwaggerItemsPrimitive mCollectionFormat innerParamSchema) -> do
                           typeName <- do
@@ -781,20 +784,20 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                 case (_schemaAdditionalProperties outerSchema) of
                   Just additionalProps -> 
                     case additionalProps of
-                      AdditionalPropertiesSchema (Ref ref) -> pure $ "(HM.HashMap Text " ++ (T.unpack $ getReference ref) ++ ")"
+                      AdditionalPropertiesSchema (Ref ref) -> pure $ "(HM.HashMap P.Text " ++ (setValidConstructorId $ T.unpack $ getReference ref) ++ ")"
                       AdditionalPropertiesSchema (Inline internalSchema) -> ((getTypeFromSwaggerType (Just recordTypeName) (Just internalSchema)) . _schemaParamSchema) internalSchema
                       AdditionalPropertiesAllowed _ -> error "TODO: unhandled case of additional props"
                       
                   Nothing -> 
                     case (_paramSchemaType . _schemaParamSchema) outerSchema of
-                      Just SwaggerObject -> pure $ "(HM.HashMap Text Text)"
+                      Just SwaggerObject -> pure $ "(HM.HashMap P.Text P.Text)"
                       _ -> error $ "Type SwaggerObject but swaggerProperties and additionalProperties are both absent! "
                         ++ "Also, the paramSchema type in the ParamSchema is not an Object! Please check the JSON! "
                         ++ "Debug Info (Schema): " ++ show outerSchema
               propertyList -> do -- TODO: This needs to be changed when we encounter _schemaProperties in some swagger doc/schema.
                 innerRecordsInfo <- forM propertyList (\(recordName, iRefSchema) -> do
                       innerRecordType <- case iRefSchema of
-                          Ref refName -> pure $ T.unpack $ getReference refName
+                          Ref refName -> pure $ setValidConstructorId $ T.unpack $ getReference refName
                           Inline irSchema -> ((getTypeFromSwaggerType (Just recordTypeName) (Just irSchema)) . _schemaParamSchema) irSchema 
                       pure (T.unpack recordName, innerRecordType) )
                 let finalProductTypeInfo = ProductType $ NewData recordTypeName innerRecordsInfo
@@ -1043,7 +1046,7 @@ fixInvalidId idVal
     | DL.length idVal == 1 && isValidHsIdChar (DL.head idVal) = (False, fmap Char.toLower idVal)
     | otherwise = do
       let newVal = replaceInvalidChars ("",DL.tail idVal) (DL.head idVal) 
-      let lCaseNewVal = (Char.toLower $ DL.head newVal):(DL.tail newVal)
+      let lCaseNewVal = makeFirstCharAlpha $ (Char.toLower $ DL.head newVal):(DL.tail newVal)
       case lCaseNewVal == idVal of
         True -> (False, lCaseNewVal)
         False -> (True, lCaseNewVal)
@@ -1065,6 +1068,15 @@ fixInvalidId idVal
 
   isValidHsIdChar :: Char -> Bool 
   isValidHsIdChar x = (Char.isAlphaNum x) || x == '_' || x == '\''
+  
+  makeFirstCharAlpha :: String -> String
+  makeFirstCharAlpha inpString = 
+    case inpString of
+      [] -> error "Encountered potential empty Haskell Identifier! Please check the Swagger JSON!"
+      firstChar:_ -> 
+        case Char.isAlpha firstChar of
+          True -> inpString
+          False -> 'h':inpString 
 
 
 derivingDecl :: [String] -> Deriving SrcSpanInfo
@@ -1243,7 +1255,7 @@ instanceDeclForShow dataTypeName =
   [InstDecl noSrcSpan Nothing 
     (IRule noSrcSpan Nothing Nothing 
       (IHApp noSrcSpan 
-        (instanceHead "Show") 
+        (instanceHead "P.Show") 
         (typeConstructor dataTypeName)
       )
     )
@@ -1267,7 +1279,7 @@ instanceDeclForJSONForSumType dataTypeName = [toJsonInstance, fromJsonInstance]
     InstDecl noSrcSpan Nothing 
       (IRule noSrcSpan Nothing Nothing 
         (IHApp noSrcSpan 
-          (instanceHead "ToJSON") 
+          (instanceHead "P.ToJSON") 
           (typeConstructor dataTypeName)
         )
       )
@@ -1291,7 +1303,7 @@ instanceDeclForJSONForSumType dataTypeName = [toJsonInstance, fromJsonInstance]
     InstDecl noSrcSpan Nothing 
       (IRule noSrcSpan Nothing Nothing 
         (IHApp noSrcSpan 
-          (instanceHead "FromJSON") 
+          (instanceHead "P.FromJSON") 
           (typeConstructor dataTypeName)
         )
       ) 
@@ -1321,8 +1333,8 @@ instanceDeclForJSONForSumType dataTypeName = [toJsonInstance, fromJsonInstance]
 data JsonDirection = ToJson | FromJson deriving (Eq)
 
 instance Show JsonDirection where
-  show ToJson = "ToJSON"
-  show FromJson = "FromJSON" 
+  show ToJson = "P.ToJSON"
+  show FromJson = "P.FromJSON" 
 
 jsonInstances :: String -> ModifiedRecords -> [Decl SrcSpanInfo]
 jsonInstances dataTypeName modRecords = [jsonInstance ToJson, jsonInstance FromJson]
@@ -1353,11 +1365,11 @@ jsonInstances dataTypeName modRecords = [jsonInstance ToJson, jsonInstance FromJ
                 (PVar noSrcSpan (nameDecl outerFn)) 
                   (UnGuardedRhs noSrcSpan (
                     InfixApp noSrcSpan (variableName genericFn)
-                    (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan "$"))) 
+                    (QVarOp noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "P") (Symbol noSrcSpan "$"))) 
                     (RecUpdate noSrcSpan (variableName "defaultOptions")
-                        [FieldUpdate noSrcSpan (UnQual noSrcSpan (Ident noSrcSpan "fieldLabelModifier")) 
+                        [FieldUpdate noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "P") (Ident noSrcSpan "fieldLabelModifier")) 
                         (InfixApp noSrcSpan (variableName "keyMapping")
-                            (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan "$"))) 
+                            (QVarOp noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "P") (Symbol noSrcSpan "$"))) 
                             (App noSrcSpan (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "HM") (nameDecl "fromList"))) 
                                 (List noSrcSpan (fmap changedFieldModsHM modRecList))
                             )
@@ -1387,7 +1399,7 @@ toParamQueryParamInstance :: String -> Decl SrcSpanInfo
 toParamQueryParamInstance sumTypeName = 
   let sumTypeVarName = (fmap Char.toLower sumTypeName) ++ "'"
   in InstDecl noSrcSpan Nothing
-      (queryParamInstanceIRule "ToParam" sumTypeName)
+      (queryParamInstanceIRule "P.ToParam" sumTypeName)
       ( Just [InsDecl noSrcSpan 
               (FunBind noSrcSpan 
                 [Match noSrcSpan 
@@ -1402,8 +1414,8 @@ toParamQueryParamInstance sumTypeName =
                             (nameDecl "pfx'")
                           ),
                         InfixApp noSrcSpan 
-                          (dataConstructor "Just")
-                          (QVarOp noSrcSpan (UnQual noSrcSpan (Symbol noSrcSpan "$"))) 
+                          (dataConstructor "P.Just")
+                          (QVarOp noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "P") (Symbol noSrcSpan "$"))) 
                           (App noSrcSpan 
                             (variableName "encodeParam")
                             (variableName sumTypeVarName )
@@ -1429,7 +1441,7 @@ decodeCaseStatementOption :: (String, String) -> Alt SrcSpanInfo
 decodeCaseStatementOption (caseMatchOnStr, resultOfCaseMatch) = 
   Alt noSrcSpan 
     (PLit noSrcSpan (Signless noSrcSpan) (LHE.String noSrcSpan caseMatchOnStr caseMatchOnStr ) ) 
-    (UnGuardedRhs noSrcSpan (App noSrcSpan (dataConstructor "Just") (dataConstructor resultOfCaseMatch) )) 
+    (UnGuardedRhs noSrcSpan (App noSrcSpan (dataConstructor "P.Just") (dataConstructor resultOfCaseMatch) )) 
     Nothing
 
 -- the EncodeParam instance for Sum Type
@@ -1437,7 +1449,7 @@ encodeParamSumTypeInstance :: String -> [(String, String)] -> Decl SrcSpanInfo
 encodeParamSumTypeInstance sumTypeName caseOptions =
   let sumTypeVarName = (fmap Char.toLower sumTypeName) ++ "'"
   in InstDecl noSrcSpan Nothing
-      (IRule noSrcSpan Nothing Nothing (IHApp noSrcSpan (instanceHead "EncodeParam") (typeConstructor sumTypeName) ))
+      (IRule noSrcSpan Nothing Nothing (IHApp noSrcSpan (instanceHead "P.EncodeParam") (typeConstructor sumTypeName) ))
       (Just [InsDecl noSrcSpan 
         (FunBind noSrcSpan 
           [Match noSrcSpan 
@@ -1456,7 +1468,7 @@ decodeParamSumTypeInstance :: String -> [(String, String)] -> Decl SrcSpanInfo
 decodeParamSumTypeInstance sumTypeName caseOptions = 
   let sumTypeVarName = (fmap Char.toLower sumTypeName) ++ "'"
   in InstDecl noSrcSpan Nothing
-      (IRule noSrcSpan Nothing Nothing (IHApp noSrcSpan (instanceHead "DecodeParam") (typeConstructor sumTypeName) ))
+      (IRule noSrcSpan Nothing Nothing (IHApp noSrcSpan (instanceHead "P.DecodeParam") (typeConstructor sumTypeName) ))
       (Just [InsDecl noSrcSpan 
         (FunBind noSrcSpan 
           [Match noSrcSpan (nameDecl "decodeParam") 
@@ -1464,7 +1476,7 @@ decodeParamSumTypeInstance sumTypeName caseOptions =
             (UnGuardedRhs noSrcSpan 
               (Case noSrcSpan 
                 (variableName sumTypeVarName) 
-                ((fmap decodeCaseStatementOption caseOptions) ++ [Alt noSrcSpan (PWildCard noSrcSpan) (UnGuardedRhs noSrcSpan (dataConstructor "Nothing") ) Nothing] ) )) 
+                ((fmap decodeCaseStatementOption caseOptions) ++ [Alt noSrcSpan (PWildCard noSrcSpan) (UnGuardedRhs noSrcSpan (dataConstructor "P.Nothing") ) Nothing] ) )) 
             Nothing
           ])])
 
@@ -1472,7 +1484,7 @@ decodeParamSumTypeInstance sumTypeName caseOptions =
 fromParamQueryParamInstance :: String -> Decl SrcSpanInfo
 fromParamQueryParamInstance sumTypeName = 
   InstDecl noSrcSpan Nothing
-  (queryParamInstanceIRule "FromParam" sumTypeName)
+  (queryParamInstanceIRule "P.FromParam" sumTypeName)
   (Just 
     [InsDecl noSrcSpan 
       (FunBind noSrcSpan 
@@ -1491,12 +1503,12 @@ fromParamQueryParamInstance sumTypeName =
               ) 
               [Alt noSrcSpan 
                 (PApp noSrcSpan 
-                  (UnQual noSrcSpan 
+                  (Qual noSrcSpan (ModuleName noSrcSpan "P") 
                     (nameDecl "Just")
                   ) 
                   [PParen noSrcSpan 
                     (PApp noSrcSpan 
-                      (UnQual noSrcSpan 
+                      (Qual noSrcSpan (ModuleName noSrcSpan "P") 
                         (nameDecl "Just")
                       ) [patternVariable "par'"]
                     )
@@ -1512,7 +1524,7 @@ fromParamQueryParamInstance sumTypeName =
                         ) 
                         [Alt noSrcSpan 
                           (PApp noSrcSpan 
-                            (UnQual noSrcSpan (nameDecl "Just")) 
+                            (Qual noSrcSpan (ModuleName noSrcSpan "P") (nameDecl "Just")) 
                             [patternVariable "v"]
                           ) 
                           (UnGuardedRhs noSrcSpan 
@@ -1645,7 +1657,7 @@ defaultToParamInstance dataTypeName paramType =
     (IRule noSrcSpan Nothing Nothing 
       (IHApp noSrcSpan 
         (IHApp noSrcSpan 
-          (instanceHead "ToParam") 
+          (instanceHead "P.ToParam") 
           (TyPromoted noSrcSpan (PromotedCon noSrcSpan True (UnQual noSrcSpan (nameDecl paramType))))) 
         (typeConstructor dataTypeName) )) 
     Nothing
@@ -1689,7 +1701,7 @@ toSchemaInstanceForSumType typeName constructorValues =
                   (App noSrcSpan 
                     (App noSrcSpan 
                       (dataConstructor "SchemaOptions")
-                      (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "Prelude") (nameDecl "id")))) 
+                      (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "P") (nameDecl "id")))) 
                       (Paren noSrcSpan 
                         (Lambda noSrcSpan [PVar noSrcSpan (nameDecl "inputConst")] 
                           (Case noSrcSpan 
@@ -1699,7 +1711,7 @@ toSchemaInstanceForSumType typeName constructorValues =
                         )
                       )
                   ) 
-                  (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "Prelude") (nameDecl "id")))
+                  (Var noSrcSpan (Qual noSrcSpan (ModuleName noSrcSpan "P") (nameDecl "id")))
                 ) 
                 (dataConstructor "True")
             ) 
