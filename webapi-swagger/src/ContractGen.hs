@@ -700,24 +700,30 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
             case _paramSchemaEnum paramSchema of
               Nothing -> pure "Text"
               Just valueEnumList -> do
-                let (enumVals, ogVals) = DL.unzip $ fmap (\(Data.Aeson.String enumVal) -> (T.unpack $ T.toTitle enumVal, T.unpack enumVal) ) valueEnumList
-                let innerRecordTypeName = 
+                let newSumTypeName = 
                       setValidConstructorId $ 
                       fromJustNote ("Expected a Param Name but got Nothing. "
                         ++ "Need Param Name to set the name for the new type we need to create."
                         ++ "\nDebug Info: " ++ show paramSchema) mParamNameOrRecordName
-                let haskellNewTypeInfo = SumType innerRecordTypeName enumVals ogVals
+                let (enumVals, ogVals) = 
+                      DL.unzip $ 
+                        fmap (\(Data.Aeson.String enumVal) -> 
+                                  (setValidConstructorId (T.unpack enumVal), T.unpack enumVal) ) valueEnumList
+                let haskellNewTypeInfo = SumType newSumTypeName enumVals ogVals
                 currentState <- get
                 let onlySumTypes = DL.filter (\newTypeObj -> 
                           case newTypeObj of 
                             SumType _ _ _ -> True
                             _ -> False ) currentState
-                let (createNewType, newOrExistingName) = DL.foldl' (checkIfSumTypeExists haskellNewTypeInfo) (True, innerRecordTypeName) onlySumTypes
-                case createNewType of
-                  True -> do
-                    modify' (\existingState -> haskellNewTypeInfo:existingState)
-                    pure innerRecordTypeName
-                  False -> pure newOrExistingName
+                let createSumType = DL.foldl' checkIfSumTypeExists (CreateSumType haskellNewTypeInfo) onlySumTypes
+                case createSumType of
+                  CreateSumType (SumType sName sNewVals sOgVals) -> do
+                    modify' (\existingState -> (SumType sName sNewVals sOgVals):existingState)
+                    pure sName
+                  CreateSumType otherTy -> 
+                    error $ "Expected only SumTypes here, but got : " ++ (show otherTy)
+                      ++ "\nSince we have already filtered for only SumTypes, this should not be possible!"
+                  ExistingType existingTyName -> pure existingTyName
           _ -> pure "Text" -- error $ "Encountered SwaggerString with unknown Format! Debug Info: " ++ show paramSchema
       Just SwaggerNumber -> 
         case _paramSchemaFormat paramSchema of
@@ -807,24 +813,32 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
     case DL.nub stringList of
       sameElem:[] -> pure $ "[" ++ sameElem ++ "]"
       x -> error $ "Got different types in the same list. Not sure how to proceed! Please check the swagger doc! " ++ show x
-  checkIfSumTypeExists :: CreateNewType -> (Bool, String) -> CreateNewType -> (Bool, String)
-  checkIfSumTypeExists (SumType newTypeName newTypeVals ogVals) (newTypeNeeded, newOrExistingTypeName) (SumType typeName tVals tOgVals) = 
-    case newTypeNeeded of
-      False -> (newTypeNeeded, newOrExistingTypeName)
-      True -> 
+  checkIfSumTypeExists :: SumTypeCreation -> CreateNewType -> SumTypeCreation
+  checkIfSumTypeExists sumTypeCreation (SumType typeName tVals _) = 
+    case sumTypeCreation of
+      ExistingType eTyName -> ExistingType eTyName
+      CreateSumType (SumType newTypeName newTypeVals ogVals) -> do
         case (newTypeVals == tVals) of 
-          True -> (False, typeName)
+          True -> ExistingType typeName
           False -> 
             case (newTypeVals `DL.intersect` tVals) of
-              [] -> (True, newTypeName)
-              _ -> error $ "A new sum type would be created with elements already existing in other sum types!"
-                ++ "This needs to be handled! \nDebug Info: Type1 -> " ++ show (SumType newTypeName newTypeVals ogVals) 
-                ++ "\nType2 (added to state first) -> " ++ show (SumType typeName tVals tOgVals)
-  checkIfSumTypeExists newType _ existingType =
+              [] -> CreateSumType (SumType newTypeName newTypeVals ogVals) 
+              _ -> 
+                let modConstructorNames = fmap (\oldCons -> setValidConstructorId $ newTypeName ++ oldCons) newTypeVals
+                in CreateSumType (SumType newTypeName modConstructorNames ogVals)
+
+      CreateSumType xType -> 
+        error $ "Expected only SumTypes here but got : " ++ (show xType)
+          ++ "\nSince we already filtered for only SumTypes, this should not be possible!"
+
+  checkIfSumTypeExists newType existingType =
     error $ "PANIC : We already filtered for only Sum Types but encountered non-sum type constructor!"
       ++ "\nDebugInfo : New Type to be created is : " ++ (show newType)
       ++ "\nExisting type is : " ++ (show existingType)
 
+
+data SumTypeCreation = CreateSumType CreateNewType | ExistingType String 
+  deriving (Eq, Show)
 
 
 data ParamType = FormParam 
