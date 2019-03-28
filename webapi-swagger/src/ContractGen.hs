@@ -311,7 +311,7 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (
           -- An alias is not necessary here as the sum type details would be stored in the State
           -- And the type will be generated later when the State value is read.
         then pure accValue
-        else pure $ TypeAlias (T.unpack modelName) hsType:accValue
+        else pure $ TypeAlias (setValidConstructorId $ T.unpack modelName) hsType:accValue
       False -> do
         let mandatoryFields = fmap T.unpack (_schemaRequired modelSchema)
         recordNamesAndTypes <- foldlWithKey' (\scAccList innerRecord iRefSchema -> do 
@@ -740,7 +740,7 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
       Just SwaggerArray -> case _paramSchemaItems paramSchema of
                         Just (SwaggerItemsObject obj) -> 
                           case obj of
-                            Ref reference -> pure $ "[" ++ (T.unpack $ getReference reference) ++ "]"
+                            Ref reference -> pure $ "[" ++ (setValidConstructorId $ T.unpack $ getReference reference) ++ "]"
                             Inline recursiveSchema -> do
                               hType <- ( ( (getTypeFromSwaggerType mParamNameOrRecordName (Just recursiveSchema) ) . _schemaParamSchema) recursiveSchema)
                               pure $ "[" ++ hType ++ "]"
