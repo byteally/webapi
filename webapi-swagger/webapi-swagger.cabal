@@ -49,7 +49,6 @@ library
     , interpolate               >= 0.2   && < 0.3
     , yaml                      >= 0.8   && < 0.12
               
-              
   default-language: Haskell2010
   -- ghc-options: -Wall -Werror
   ghc-options: -Wall
@@ -64,6 +63,8 @@ executable init-swagger-project
   build-depends:
       base >=4.7 && <5
     , webapi-swagger
+    , optparse-applicative      >= 0.14  && < 0.15              
+    , text             
   default-language: Haskell2010
 
 test-suite webapi-swagger-test
