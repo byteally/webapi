@@ -491,7 +491,20 @@ getSwaggerData swaggerData = do
               case (DL.isPrefixOf "[" reqBodyType) of
                 True -> "'" ++ reqBodyType
                 False -> "'[" ++ reqBodyType ++ "]" )
-        pure $ Map.insert stdMethod (ApiTypeDetails apiOutType apiErrType mFormParamType mQueryParamType mFileParamType mHeaderInType finalReqBodyType mContentTypes xmlPresent) methodAcc
+        let apiTypeDetails = 
+              ApiTypeDetails 
+                {
+                  apiOut = apiOutType 
+                , apiErr = apiErrType 
+                , formParam = mFormParamType 
+                , queryParam = mQueryParamType 
+                , fileParam = mFileParamType 
+                , headerIn = mHeaderInType 
+                , requestBody = finalReqBodyType 
+                , contentTypes = mContentTypes 
+                , hasXML = xmlPresent 
+                }
+        pure $ Map.insert stdMethod apiTypeDetails methodAcc
       Nothing -> pure methodAcc
 
   groupParamTypes :: InsOrdHashMap Text Param -> ([Param], [Param], [Param], [Param], [Param]) -> Referenced Param -> ([Param], [Param], [Param], [Param], [Param])
