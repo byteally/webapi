@@ -818,10 +818,11 @@ getTypeFromSwaggerType mParamNameOrRecordName mOuterSchema paramSchema =
                         ++ "Debug Info (Schema): " ++ show outerSchema
               propertyList -> do -- TODO: This needs to be changed when we encounter _schemaProperties in some swagger doc/schema.
                 innerRecordsInfo <- forM propertyList (\(recordName, iRefSchema) -> do
+                      let recordNameStr = T.unpack recordName
                       innerRecordType <- case iRefSchema of
                           Ref refName -> pure $ setValidConstructorId $ T.unpack $ getReference refName
-                          Inline irSchema -> ((getTypeFromSwaggerType (Just recordTypeName) (Just irSchema)) . _schemaParamSchema) irSchema 
-                      pure (T.unpack recordName, innerRecordType) )
+                          Inline irSchema -> ((getTypeFromSwaggerType (Just $ recordNameStr) (Just irSchema)) . _schemaParamSchema) irSchema 
+                      pure (recordNameStr, innerRecordType) )
                 let finalProductTypeInfo = ProductType $ NewData recordTypeName innerRecordsInfo
                 modify' (\existingState -> finalProductTypeInfo:existingState)
                 pure recordTypeName
