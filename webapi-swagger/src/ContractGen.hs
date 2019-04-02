@@ -826,7 +826,9 @@ getTypeFromSwaggerType mRouteName mParamNameOrRecordName mOuterSchema paramSchem
                       innerRecordType <- case iRefSchema of
                           Ref refName -> pure $ setValidConstructorId $ T.unpack $ getReference refName
                           Inline irSchema -> ((getTypeFromSwaggerType mRouteName (Just $ recordNameStr) (Just irSchema)) . _schemaParamSchema) irSchema 
-                      pure (recordNameStr, innerRecordType) )
+                      let isRequired = isRequiredType outerSchema recordNameStr
+                      let typeWithMaybe = if isRequired then innerRecordType else setMaybeType innerRecordType
+                      pure (recordNameStr, typeWithMaybe) )
                 let finalProductTypeInfo = ProductType $ NewData recordTypeName innerRecordsInfo
                 modify' (\existingState -> -- finalProductTypeInfo:existingState)
                             case DL.elem finalProductTypeInfo existingState of
@@ -859,7 +861,11 @@ getTypeFromSwaggerType mRouteName mParamNameOrRecordName mOuterSchema paramSchem
       ++ "for the type : " ++ (show otherType) 
       ++ "\nWe expected it to be a Product Type!"
     
+  isRequiredType :: Schema -> String -> Bool
+  isRequiredType tSchema recordFieldName = DL.elem (T.pack recordFieldName) (_schemaRequired tSchema)
 
+  setMaybeType :: String -> String
+  setMaybeType = ("P.Maybe " ++ )
 
   isNamePresent :: String -> [CreateNewType] -> Bool
   isNamePresent newTypeName stateVals = 
