@@ -9,7 +9,7 @@ packages:
   extra-dep: true
 - location:
     git: https://github.com/GetShopTV/swagger2.git
-    commit: 5530096d740c890370bbcf3df711c0b13bc1e486
+    commit: 7d8bbfc384b1609288a3ae1442e2ab156b164714
   extra-dep: true
   
 extra-deps:
