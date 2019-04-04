@@ -501,20 +501,22 @@ getSwaggerData swaggerData = do
   
 
   processPathItem :: String -> PathItem -> Swagger -> (Map.Map StdMethod ApiTypeDetails) ->  StdMethod -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO (Map.Map StdMethod ApiTypeDetails)
-  processPathItem mainRouteName pathItem swaggerData methodDataAcc currentMethod =
+  processPathItem mainRouteName pathItem swaggerData methodDataAcc currentMethod = do
+    let commonPathParams = _pathItemParameters pathItem
     case currentMethod of
-      GET -> (processOperation mainRouteName methodDataAcc swaggerData) GET $ _pathItemGet pathItem
-      PUT -> (processOperation mainRouteName methodDataAcc swaggerData) PUT $ _pathItemPut pathItem
-      POST -> (processOperation mainRouteName methodDataAcc swaggerData) POST $ _pathItemPost pathItem
-      DELETE -> (processOperation mainRouteName methodDataAcc swaggerData) DELETE $ _pathItemDelete pathItem
-      OPTIONS -> (processOperation mainRouteName methodDataAcc swaggerData) OPTIONS $ _pathItemOptions pathItem
-      HEAD -> (processOperation mainRouteName methodDataAcc swaggerData) HEAD $ _pathItemHead pathItem
-      PATCH -> (processOperation mainRouteName methodDataAcc swaggerData) PATCH $ _pathItemPatch pathItem
+      GET -> (processOperation commonPathParams mainRouteName methodDataAcc swaggerData) GET $ _pathItemGet pathItem
+      PUT -> (processOperation commonPathParams mainRouteName methodDataAcc swaggerData) PUT $ _pathItemPut pathItem
+      POST -> (processOperation commonPathParams mainRouteName methodDataAcc swaggerData) POST $ _pathItemPost pathItem
+      DELETE -> (processOperation commonPathParams mainRouteName methodDataAcc swaggerData) DELETE $ _pathItemDelete pathItem
+      OPTIONS -> (processOperation commonPathParams mainRouteName methodDataAcc swaggerData) OPTIONS $ _pathItemOptions pathItem
+      HEAD -> (processOperation commonPathParams mainRouteName methodDataAcc swaggerData) HEAD $ _pathItemHead pathItem
+      PATCH -> (processOperation commonPathParams mainRouteName methodDataAcc swaggerData) PATCH $ _pathItemPatch pathItem
+      -- TODO: If the following case is hit, we need to add it to error/log reporting.
       _ -> pure $ Map.empty
 
 
-processOperation :: String -> Map.Map StdMethod ApiTypeDetails -> Swagger -> StdMethod -> Maybe Operation -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO (Map.Map StdMethod ApiTypeDetails)
-processOperation currentRouteName methodAcc swaggerData stdMethod mOperationData = 
+processOperation :: [Referenced Param] -> String -> Map.Map StdMethod ApiTypeDetails -> Swagger -> StdMethod -> Maybe Operation -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO (Map.Map StdMethod ApiTypeDetails)
+processOperation commonPathLvlParams currentRouteName methodAcc swaggerData stdMethod mOperationData = 
   case mOperationData of
     Just operationData -> do
       let refParamsHM = _swaggerParameters swaggerData
@@ -527,8 +529,10 @@ processOperation currentRouteName methodAcc swaggerData stdMethod mOperationData
               "()" -> True
               "Text" -> True
               _ -> False
+          
+      let pathLvlAndLocalParam = filterOutOverriddenParams refParamsHM (_operationParameters operationData) commonPathLvlParams
       -- Group the Referenced Params by ParamLocation and then go through each group separately.
-      let (formParamList, queryParamList, fileParamList, headerInList, bodyParamList) = DL.foldl' (groupParamTypes refParamsHM) ([], [], [], [], []) (_operationParameters operationData)
+      let (formParamList, queryParamList, fileParamList, headerInList, bodyParamList) = DL.foldl' (groupParamTypes refParamsHM) ([], [], [], [], []) pathLvlAndLocalParam
       mFormParamType <- getParamTypes formParamList FormParam
       mQueryParamType <- getParamTypes queryParamList QueryParam
       mFileParamType <- getParamTypes fileParamList FileParam
@@ -661,7 +665,6 @@ processOperation currentRouteName methodAcc swaggerData stdMethod mOperationData
             let levelInfo = Local ParamTy (currentRouteName, stdMethod)
             let fParamHM = HMS.singleton levelInfo [FormParamTy formParamDataInfo]
             modify' (\existingState -> HMS.unionWith (++) existingState fParamHM) 
-            -- TODO : This needs to change and return the LevelInfo as well in Phase 2
             pure $ Just newDataTypeName
           QueryParam -> do
             let paramNames = fmap (\param -> T.unpack $ _paramName param) paramList
@@ -675,7 +678,6 @@ processOperation currentRouteName methodAcc swaggerData stdMethod mOperationData
             let levelInfo = Local ParamTy (currentRouteName, stdMethod)
             let qParamHM = HMS.singleton levelInfo [QueryParamTy queryParamDataInfo]
             modify' (\existingState -> HMS.unionWith (++) existingState qParamHM)
-            -- TODO : This needs to change and return the LevelInfo as well in Phase 2
             pure $ Just newDataTypeName
           HeaderParam -> do
             typeListWithIsMandatory <- forM paramList (\param -> do
@@ -699,7 +701,7 @@ processOperation currentRouteName methodAcc swaggerData stdMethod mOperationData
             case listOfTypes of
               [] -> error $ "Tried to Get Body Param type but got an empty list/string! Debug Info: " ++ show paramList
               x:[] -> pure $ Just x
-              _ -> error $ "Encountered a list of Body Params. WebApi does not support this currently! Debug Info: " ++ show paramList
+              _ -> error $ "Encountered a list of Body Params. WebApi/Swagger does not support this currently! Debug Info: " ++ show paramList
 
   getParamTypeParam :: Param -> Maybe String -> Maybe Schema  -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String
   getParamTypeParam inputParam mParamName mOuterSchema = do
@@ -732,6 +734,29 @@ processOperation currentRouteName methodAcc swaggerData stdMethod mOperationData
       True -> haskellType
       False -> "Maybe " ++ haskellType 
 
+
+filterOutOverriddenParams :: InsOrdHashMap Text Param -> [Referenced Param] -> [Referenced Param] -> [Referenced Param]
+filterOutOverriddenParams globalParams pathLvlParams localOpParams = do
+  let pathLvlParamNames = fmap getParamName pathLvlParams
+  let localOpParamNames = fmap getParamName localOpParams
+  case DL.intersect pathLvlParamNames localOpParamNames of
+    [] -> pathLvlParams ++ localOpParams
+    ovrdnParams -> 
+      let modPathLvlParams = DL.filter (\param -> not $ DL.elem (getParamName param) ovrdnParams) pathLvlParams
+      in localOpParams ++ modPathLvlParams
+
+ where
+  getParamName :: Referenced Param -> String
+  getParamName refParam = 
+    case refParam of
+      Inline paramObj -> T.unpack $ _paramName paramObj
+      Ref refObj -> do
+        let paramNameTxt = getReference refObj
+        case HMSIns.lookup paramNameTxt globalParams of
+          Just paramVal -> T.unpack $ _paramName paramVal
+          Nothing -> error $ "Could not find referenced params value in the Ref Params HM! "
+            ++ "Please check the Swagger Doc! "
+            ++ "\nParam Name : " ++ (T.unpack paramNameTxt)
 
 
 addTypeToState :: (LevelInfo, TInfo) -> String -> String  -> (StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String)

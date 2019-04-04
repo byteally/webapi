@@ -16,7 +16,7 @@ import Data.Hashable
 
 
 
-type StateConfig = StateT (HashMap LevelInfo [TypeInfo]) IO ()
+type StateConfig a = StateT (HashMap LevelInfo [TypeInfo]) IO (a)
 
 
 type RouteName = String
