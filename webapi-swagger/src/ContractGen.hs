@@ -53,7 +53,7 @@ runCodeGen swaggerJsonInputFilePath outputPath projectName = do
  where
   createNewTypes :: HMS.HashMap LevelInfo [TypeInfo] -> FilePath -> [String] -> IO ()
   createNewTypes stateHM genPath globalModules = do
-    createdModuleNames <- HMS.foldlWithKey' (writeGeneratedTypesToFile genPath) (pure globalModules) $ trace (show stateHM) stateHM
+    createdModuleNames <- HMS.foldlWithKey' (writeGeneratedTypesToFile genPath) (pure globalModules) stateHM
     -- TODO : Setting xmlImport to False for now by default since it's not in scope!
     writeCabalAndProjectFiles genPath projectName False (DL.nub createdModuleNames)
 
@@ -263,7 +263,7 @@ writeGeneratedTypesToFile genPath ioModuleNames levelInfo typeInfos = do
           Local _ (rName, stdMethod) -> 
             ( genPath ++ (localRouteMethodTypesPath rName stdMethod), hsModuleToFileName localRouteMethodTypesModuleName)
 
-  tyModuleExists <- doesFileExist $ (trace $ "\nPATH" ++ (typesModuleDir ++ typesModuleName) ) (typesModuleDir ++ typesModuleName) 
+  tyModuleExists <- doesFileExist (typesModuleDir ++ typesModuleName) 
   let (modName:: String) = 
         case levelInfo of
           Global glType ->
@@ -565,16 +565,16 @@ processOperation currentRouteName methodAcc swaggerData stdMethod mOperationData
         case (currentCode >= 200 && currentCode < 300) of
           True -> do
             finalOutType <- do
-                let newTypeNameConstructor = (newTypeName ++ "ApiOut")
-                currentResponseType <- parseResponseContentGetType (lvlInfo, ApiOutI) currentResponse swaggerData newTypeNameConstructor
-                fOutType <- checkIfNewType (lvlInfo, ApiOutI) apiOutType currentResponseType newTypeNameConstructor swaggerData
-                pure $ Just fOutType
+              let newTypeNameConstructor = "ApiOut"
+              currentResponseType <- parseResponseContentGetType (lvlInfo, ApiOutI) currentResponse swaggerData newTypeNameConstructor
+              fOutType <- addTypeToState (lvlInfo, ApiOutI) currentResponseType newTypeNameConstructor
+              pure $ Just fOutType
             pure (finalOutType, apiErrType)
           False -> do
             finalErrType <- do
-                  let newTypeNameConstructor = (newTypeName ++ "ApiErr")
+                  let newTypeNameConstructor = "ApiErr"
                   currentResponseType <- parseResponseContentGetType (lvlInfo, ApiErrI) currentResponse swaggerData newTypeNameConstructor
-                  fErrType <- checkIfNewType (lvlInfo, ApiErrI) apiErrType currentResponseType newTypeNameConstructor swaggerData
+                  fErrType <- addTypeToState (lvlInfo, ApiErrI) currentResponseType newTypeNameConstructor
                   pure $ Just fErrType
             pure (apiOutType, finalErrType)
     ) (pure (Nothing, Nothing)) responsesHM  
@@ -689,36 +689,48 @@ processOperation currentRouteName methodAcc swaggerData stdMethod mOperationData
 
 
 
-checkIfNewType :: (LevelInfo, TInfo) ->  Maybe String -> String -> String -> Swagger -> (StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String)
-checkIfNewType (levelInfo, tInfo)  existingType currentType newTypeName _ = 
-  case existingType of 
-    Just eType ->
-      if (eType == currentType)
-      then pure eType
-      else do
-        -- The following code handles the cases when there are 2 or more possible types for an ApiOut or ApiErr
-        -- It creates/modifies a Sum Type with the possible response Types.
-        let sumTypeConstructors = [(setValidConstructorId $ newTypeName ++ currentType, currentType), 
-                                   (setValidConstructorId $ newTypeName ++ eType,eType)]
+addTypeToState :: (LevelInfo, TInfo) -> String -> String  -> (StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String)
+addTypeToState (levelInfo, tInfo) currentType newTypeName = do
+        let sumTyConsName = setValidConstructorId currentType
+            sumTypeConstructors = [(sumTyConsName, sumTyConsName)]
             sumTypeInfo = SumType (ComplexSumType newTypeName sumTypeConstructors) -- [currentType, eType] [currentType, eType] -- Note : OgNames not really applicable here so putting Haskell names
-        modify' (\existingState -> do
-          let (stateList, isChanged) = HMS.foldlWithKey' (addToStateSumType newTypeName currentType ) (HMS.empty, False) existingState
-          case isChanged of
-            False -> do
-              -- TODO : Placeholder LEvelInfo. Needs to change in Phase 2
-              -- This info would need to be passed in.
-              -- let levelInfo = Local DefinitionTy ("", GET) 
-              -- TODO: Adding DefinitionType as TypeInfo default. Needs to be passed down. Phase 2
-              let sumTyHM = HMS.singleton levelInfo [tInfoToTypeInfo tInfo sumTypeInfo]
-              HMS.unionWith (++) existingState sumTyHM
-            True -> stateList)
+        modify' (\existingState -> HMS.insertWith (insertIntoExistingSumTy sumTyConsName) levelInfo [tInfoToTypeInfo tInfo sumTypeInfo] existingState )
         pure newTypeName
-    Nothing -> pure currentType
 
  where
 
-  addToStateSumType :: String -> String -> (HMS.HashMap LevelInfo [TypeInfo], Bool) -> LevelInfo -> [TypeInfo] -> (HMS.HashMap LevelInfo [TypeInfo], Bool)
-  addToStateSumType newSumTypeName currentTypeStr (accVal, isChanged) lvlInfo tyInfoList = 
+  insertIntoExistingSumTy :: String -> [TypeInfo] -> [TypeInfo] -> [TypeInfo]
+  insertIntoExistingSumTy currentTyCons newTyInfo existingTyInfos = 
+    case newTyInfo of
+      (ApiErrTy ty):[] -> (addIfNotChanged (ApiErrTy ty)) $ DL.foldl' (addToApiErrTyInfo currentTyCons) (False, []) existingTyInfos
+      (ApiOutTy ty):[] -> (addIfNotChanged (ApiOutTy ty)) $ DL.foldl' (addToApiOutTyInfo currentTyCons) (False, []) existingTyInfos
+      _ -> error $ "Encountered empty or multiple value TypeInfo list." 
+            ++ "Expected only one value. Got : " ++ (show newTyInfo) 
+
+  addToApiErrTyInfo :: String -> (Bool, [TypeInfo]) -> TypeInfo -> (Bool, [TypeInfo])
+  addToApiErrTyInfo currentTyCons (isChanged, accVal) currentTyInfo = 
+    case currentTyInfo of
+      ApiErrTy (SumType (ComplexSumType tyName tyList )) -> 
+        let modTy = ApiErrTy (SumType (ComplexSumType tyName ((currentTyCons,currentTyCons):tyList) )) 
+        in (True, modTy:accVal)
+      _ -> (isChanged, currentTyInfo:accVal)
+    
+  addToApiOutTyInfo :: String -> (Bool, [TypeInfo]) -> TypeInfo -> (Bool, [TypeInfo])
+  addToApiOutTyInfo currentTyCons (isChanged, accVal) currentTyInfo = 
+    case currentTyInfo of
+      ApiOutTy (SumType (ComplexSumType tyName tyList )) -> 
+        let modTy = ApiOutTy (SumType (ComplexSumType tyName ((currentTyCons,currentTyCons):tyList) )) 
+        in (True, modTy:accVal)
+      _ -> (isChanged, currentTyInfo:accVal)
+
+  addIfNotChanged :: TypeInfo -> (Bool, [TypeInfo]) -> [TypeInfo] 
+  addIfNotChanged newTyInfo (isChanged, tyInfoList) = 
+    if isChanged 
+    then tyInfoList
+    else newTyInfo:tyInfoList
+        
+  addToStateSumType :: LevelInfo -> String -> String -> (HMS.HashMap LevelInfo [TypeInfo], Bool) -> LevelInfo -> [TypeInfo] -> (HMS.HashMap LevelInfo [TypeInfo], Bool)
+  addToStateSumType currentTyLvlInfo newSumTypeName currentTypeStr (accVal, isChanged) lvlInfo tyInfoList = 
     let (modTypeInfoList, valueChanged) = DL.foldl' (addToSSTypeInfo newSumTypeName currentTypeStr) ([], isChanged) tyInfoList
     in (HMS.insertWith (++) lvlInfo modTypeInfoList accVal, valueChanged)
 
