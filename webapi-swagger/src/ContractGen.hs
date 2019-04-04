@@ -156,6 +156,7 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
       (apiNameHs, contractDetails) <- getSwaggerData swaggerData
       let xmlImport = needsXmlImport contractDetails      
       newDefnTypesHM <- generateSwaggerDefinitionData (_swaggerDefinitions swaggerData) 
+      globalResponseTypesHM <- generateGlobalResponseData (_swaggerResponses swaggerData)
       -- We ignore the keys (level info) and just concat all the CDTs 
       -- let newDefnCDTList = fmap (getInnerTyFromTypeInfo) $ DL.concat $ HMS.elems newDefnTypesHM
       -- modify' (\stateValue -> DT.trace ("Adding Defns to State!") $ HMS.unionWith (++) stateValue newDefnTypesHM );
@@ -206,9 +207,10 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
       --                       "Data.Swagger.Internal hiding (Tag)"
       --                       ] (cycle [(False, Nothing)]) ) ++ qualifiedImportsForTypes ) ) --"GHC.Generics", "Data.Time.Calendar"
       --           (createDataDeclarations newDefnCDTList)
+      let globalTypes = HMS.unionWith (++) globalResponseTypesHM newDefnTypesHM
       liftIO $ do
         -- writeFile (contractOutputFolderPath ++ "src/Types.hs") $ prettyPrint hTypesModule ++ "\n\n"
-        HMS.foldlWithKey' (writeGeneratedTypesToFile contractOutputFolderPath) (pure []) newDefnTypesHM
+        HMS.foldlWithKey' (writeGeneratedTypesToFile contractOutputFolderPath) (pure []) globalTypes 
         -- createdModuleNames <- 
     
  where 
@@ -339,21 +341,47 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (
           let createTypeInfo = HNewType (setValidConstructorId $ T.unpack modelName) hsType
           in pure $ HMS.insertWith (++) (Global DefinitionTy) [DefinitionType createTypeInfo] accValue
       False -> do
-        let mandatoryFields = fmap T.unpack (_schemaRequired modelSchema)
-        recordNamesAndTypes <- foldlWithKey' (\scAccList innerRecord iRefSchema -> do 
-                accList <- scAccList
-                let innerRecordName = T.unpack innerRecord
-                let innerRecordTypeName = T.unpack $ T.append (T.toTitle modelName) (T.toTitle innerRecord)
-                innerRecordType <- case iRefSchema of
-                        Ref referenceName -> pure $ T.unpack $ getReference referenceName
-                        Inline irSchema -> ((getTypeFromSwaggerType (Global DefinitionTy) DefinitionI (Just innerRecordTypeName) (Just irSchema)) . _schemaParamSchema) irSchema
-                let recordTypeWithMaybe = 
-                      case (innerRecordName `DL.elem` mandatoryFields) of 
-                        True -> setValidConstructorId innerRecordType
-                        False -> "P.Maybe " ++ (setValidConstructorId innerRecordType)
-                pure $ (innerRecordName, recordTypeWithMaybe):accList ) (pure []) schemaProperties
-        let prodType = (ProductType $ NewData (T.unpack modelName) recordNamesAndTypes)
+        prodType <- parseSchemaToCDT (Global DefinitionTy) DefinitionI modelName modelSchema
         pure $ HMS.insertWith (++) (Global DefinitionTy) [DefinitionType prodType] accValue
+
+parseSchemaToCDT :: LevelInfo -> TInfo -> Text -> Schema -> StateConfig (CreateDataType)
+parseSchemaToCDT levelInfo tInfo mainTypeName ilSchema = do
+  let mandatoryFields = fmap T.unpack (_schemaRequired ilSchema)
+  recordNamesAndTypes <- foldlWithKey' (\scAccList innerRecord iRefSchema -> do 
+          accList <- scAccList
+          let innerRecordName = T.unpack innerRecord
+          let innerRecordTypeName = T.unpack $ T.append (T.toTitle mainTypeName) (T.toTitle innerRecord)
+          innerRecordType <- case iRefSchema of
+                  Ref referenceName -> pure $ T.unpack $ getReference referenceName
+                  Inline irSchema -> ((getTypeFromSwaggerType levelInfo tInfo (Just innerRecordTypeName) (Just irSchema)) . _schemaParamSchema) irSchema
+          let recordTypeWithMaybe = 
+                case (innerRecordName `DL.elem` mandatoryFields) of 
+                  True -> setValidConstructorId innerRecordType
+                  False -> "P.Maybe " ++ (setValidConstructorId innerRecordType)
+          pure $ (innerRecordName, recordTypeWithMaybe):accList ) (pure []) (_schemaProperties ilSchema)
+  pure (ProductType $ NewData (T.unpack mainTypeName) recordNamesAndTypes)
+
+
+generateGlobalResponseData :: InsOrdHashMap Text Response -> StateConfig (HMS.HashMap LevelInfo [TypeInfo])
+generateGlobalResponseData globalRespHM = foldlWithKey' parseResponseDefn (pure HMS.empty) globalRespHM
+ where
+  parseResponseDefn :: StateConfig (HMS.HashMap LevelInfo [TypeInfo]) -> Text -> Response -> StateConfig (HMS.HashMap LevelInfo [TypeInfo])
+  parseResponseDefn scAccValue responseDefName responseObj = do
+    accValue <- scAccValue
+    case _responseSchema responseObj of
+      Just (Ref refSchema) -> do
+        let refText = getReference refSchema 
+        -- NOTE : We will assume that any references here are only to Definitions types.
+        let respDataTy = HNewType (T.unpack responseDefName) (T.unpack refText)
+        -- TODO: Verify if DefinitionType is okay here.
+        let newRespHM = HMS.singleton (Global ResponseTy) [DefinitionType respDataTy]
+        pure $ HMS.unionWith (++) accValue newRespHM
+      Just (Inline ilSchema) -> do
+        let levelInfo = Global ResponseTy
+        cdt <- parseSchemaToCDT levelInfo DefinitionI responseDefName ilSchema
+        pure $ HMS.insertWith (++) levelInfo [DefinitionType cdt] accValue
+      -- TODO: we should probably log this in the error reporting as it doesn't make much sense if it's a `Nothing`
+      Nothing -> scAccValue
 
 
 
