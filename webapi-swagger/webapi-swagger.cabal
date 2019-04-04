@@ -21,6 +21,7 @@ source-repository head
 library
   exposed-modules:
       ContractGen
+      ContractGenTypes
   other-modules:
       Paths_webapi_swagger
   hs-source-dirs:
@@ -48,6 +49,7 @@ library
     , time                      >= 1.6   && < 1.9
     , interpolate               >= 0.2   && < 0.3
     , yaml                      >= 0.8   && < 0.12
+    , hashable
               
   default-language: Haskell2010
   -- ghc-options: -Wall -Werror

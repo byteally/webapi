@@ -21,6 +21,8 @@ type StateConfig = StateT (HashMap LevelInfo [TypeInfo]) IO ()
 
 type RouteName = String
 
+type RouteAndMethod = (RouteName, StdMethod)
+
 data StdMethod
     = GET
     | POST
@@ -44,8 +46,8 @@ type ModifiedRecords = [(String, String)]
 data JsonDirection = ToJson | FromJson deriving (Eq)
 
 instance Show JsonDirection where
-  show ToJson = "ToJSON"  
-  show FromJson = "FromJSON" 
+  show ToJson = "P.ToJSON"  
+  show FromJson = "P.FromJSON" 
 
 data SumTypeCreation = CreateSumType CreateDataType | ExistingType String 
   deriving (Eq, Show)
@@ -96,6 +98,18 @@ data TypeInfo = ApiErrTy CreateDataType
               | DefinitionType CreateDataType 
   deriving (Eq, Show, Generic)              
 
+
+data TInfo = ApiErrI 
+           | ApiOutI
+           | FormParamI
+           | QueryParamI
+           | FileParamI
+           | HeaderInI
+           | ReqBodyI
+           | ContentTypesI
+           | HeaderOutI
+           | DefinitionI
+  deriving (Eq, Show, Generic)        
 
 data CreateDataType = SumType DualSumType | ProductType NewData | HNewType String String
   deriving (Eq, Show, Generic)

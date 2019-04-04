@@ -46,179 +46,49 @@ runCodeGen :: FilePath -> FilePath -> String -> IO ()
 runCodeGen swaggerJsonInputFilePath outputPath projectName = do
   let projectFolderGenPath = outputPath ++ projectName ++ "/"
   createDirectoryIfMissing True (projectFolderGenPath ++ "src/")
-  newTypeCreationList <- execStateT (readSwaggerGenerateDefnModels swaggerJsonInputFilePath projectFolderGenPath projectName)  HMS.empty
-  createNewTypes newTypeCreationList projectFolderGenPath
+  (globalModuleNames, newTypeCreationList) <- runStateT (readSwaggerGenerateDefnModels swaggerJsonInputFilePath projectFolderGenPath projectName)  HMS.empty
+  createNewTypes newTypeCreationList projectFolderGenPath globalModuleNames
   writeFile (projectFolderGenPath ++ "src/CommonTypes.hs") commonTypesModuleContent
   
  where
-  createNewTypes :: HMS.HashMap LevelInfo [TypeInfo] -> FilePath -> IO ()
-  createNewTypes typeList genPath = undefined
-    -- TODO : Write logic to calculate file path/name based on LevelInfo 
-    -- let hTypes = DL.foldl' createType ([]::[Decl SrcSpanInfo]) typeList
-    -- appendFile (genPath ++ "src/Types.hs") $ 
-    --   (DL.unlines $ fmap prettyPrint hTypes )
-      
-  createType :: [Decl SrcSpanInfo] -> CreateDataType -> [Decl SrcSpanInfo]
-  createType accValue typeInfo = 
-    case typeInfo of
-      ProductType newData -> do
-        let toParamInstances =
-              case (DL.isInfixOf "QueryParam" $ mName newData) of
-                True -> [defaultToParamInstance (mName newData) "QueryParam"] 
-                False -> 
-                  case (DL.isInfixOf "FormParam" $ mName newData) of
-                    True -> [defaultToParamInstance (mName newData) "FormParam"]
-                    False -> []
-        let (modifiedRecords, dataDecl) = dataDeclaration (DataType noSrcSpan) (mName newData) (Right $ mRecordTypes newData) ["Eq", "Show", "Generic"] 
-        let jsonInsts = jsonInstances (mName newData) modifiedRecords
-        accValue ++ [dataDecl] ++ jsonInsts ++ toParamInstances ++ [defaultToSchemaInstance (mName newData)]
-      SumType (BasicEnum tName tConstructors ogConstructors) -> do
-        let toParamEncodeParamQueryParamInstance = [toParamQueryParamInstance tName] ++ [encodeParamSumTypeInstance tName (DL.zip tConstructors ogConstructors ) ]
-        let fromParamDecodeParamQueryParamInstance = [fromParamQueryParamInstance tName] ++ [decodeParamSumTypeInstance tName (DL.zip ogConstructors tConstructors ) ]
-        let toSchemaInstances = toSchemaInstanceForSumType tName (DL.zip ogConstructors tConstructors ) 
-        accValue ++ 
-          ([enumTypeDeclaration tName tConstructors ["Eq", "Generic", "Ord"] ] 
-            ++ (instanceDeclForShow tName) 
-            ++ (instanceDeclForJSONForSumType tName) 
-            ++ toParamEncodeParamQueryParamInstance 
-            ++ fromParamDecodeParamQueryParamInstance 
-            ++ toSchemaInstances)
-      SumType (ComplexSumType tName constructorTypeList ) -> do
-        accValue ++ 
-          ([complexSumTypeDecl tName constructorTypeList ["Eq", "Generic", "Ord", "Show"] ]
-            ++ jsonInstances tName [] )
-      HNewType tName alias -> accValue ++ [snd $ dataDeclaration (NewType noSrcSpan) (tName) (Left alias)  ["Eq", "Show", "Generic"] ]
+  createNewTypes :: HMS.HashMap LevelInfo [TypeInfo] -> FilePath -> [String] -> IO ()
+  createNewTypes stateHM genPath globalModules = do
+    createdModuleNames <- HMS.foldlWithKey' (writeGeneratedTypesToFile genPath) (pure globalModules) $ trace (show stateHM) stateHM
+    -- TODO : Setting xmlImport to False for now by default since it's not in scope!
+    writeCabalAndProjectFiles genPath projectName False (DL.nub createdModuleNames)
 
-  commonTypesModuleContent :: String
-  commonTypesModuleContent = [i|
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TypeSynonymInstances #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FlexibleInstances #-}
+createTypeDeclFromCDT :: [Decl SrcSpanInfo] -> CreateDataType -> [Decl SrcSpanInfo]
+createTypeDeclFromCDT accValue typeInfo = 
+  case typeInfo of
+    ProductType newData -> do
+      let toParamInstances =
+            case (DL.isInfixOf "QueryParam" $ mName newData) of
+              True -> [defaultToParamInstance (mName newData) "QueryParam"] 
+              False -> 
+                case (DL.isInfixOf "FormParam" $ mName newData) of
+                  True -> [defaultToParamInstance (mName newData) "FormParam"]
+                  False -> []
+      let (modifiedRecords, dataDecl) = dataDeclaration (DataType noSrcSpan) (mName newData) (Right $ mRecordTypes newData) ["P.Eq", "P.Show", "P.Generic"] 
+      let jsonInsts = jsonInstances (mName newData) modifiedRecords
+      accValue ++ [dataDecl] ++ jsonInsts ++ toParamInstances ++ [defaultToSchemaInstance (mName newData)]
+    SumType (BasicEnum tName tConstructors ogConstructors) -> do
+      let toParamEncodeParamQueryParamInstance = [toParamQueryParamInstance tName] ++ [encodeParamSumTypeInstance tName (DL.zip tConstructors ogConstructors ) ]
+      let fromParamDecodeParamQueryParamInstance = [fromParamQueryParamInstance tName] ++ [decodeParamSumTypeInstance tName (DL.zip ogConstructors tConstructors ) ]
+      let toSchemaInstances = toSchemaInstanceForSumType tName (DL.zip ogConstructors tConstructors ) 
+      accValue ++ 
+        ([enumTypeDeclaration tName tConstructors ["P.Eq", "P.Generic", "P.Ord"] ] 
+          ++ (instanceDeclForShow tName) 
+          ++ (instanceDeclForJSONForSumType tName) 
+          ++ toParamEncodeParamQueryParamInstance 
+          ++ fromParamDecodeParamQueryParamInstance 
+          ++ toSchemaInstances)
+    SumType (ComplexSumType tName constructorTypeList ) -> do
+      accValue ++ 
+        ([complexSumTypeDecl tName constructorTypeList ["P.Eq", "P.Generic", "P.Ord", "P.Show"] ]
+          ++ jsonInstances tName [] )
+    HNewType tName alias -> accValue ++ [snd $ dataDeclaration (NewType noSrcSpan) (tName) (Left alias)  ["P.Eq", "P.Show", "P.Generic"] ]
 
-module CommonTypes where
-
-import Data.ByteString as BS
-import qualified Data.ByteString.Char8 as ASCII
-import qualified Data.HashMap.Lazy as HM
-import WebApi.Param
-import qualified Data.Vector as V
-
-import qualified Data.Swagger as SW
-import Data.Swagger.Internal.Schema as SW
-import Data.Swagger.ParamSchema
-import Control.Lens hiding (List)
-import Data.Swagger.Internal hiding (Tag, CollectionFormat)
-
-import Data.Text
-import Data.Aeson
-import GHC.Generics
-
-data CollectionFormat = CSV | SSV | TSV | Pipes 
-
---change name to CollectionFormat
--- remove all qualifiers (WebApi.)
-newtype Collection (format :: CollectionFormat) (t :: *)  = Collection { getCollection :: V.Vector t}
-    deriving (Eq, Show)
--- write ToParam instance for Collection
-
-
-instance (EncodeParam (Collection format t) ) => ToParam 'QueryParam (Collection format t) where
-  toParam _ pfx val = [(pfx, Just $ encodeParam val)]
-
-instance (EncodeParam t) => EncodeParam (Collection 'CSV t) where
-  encodeParam (Collection innerVector) =  BS.intercalate "," $ fmap (\\singleVal -> encodeParam singleVal ) (V.toList innerVector)
-
-
-instance (EncodeParam t) => EncodeParam (Collection 'SSV t) where
-  encodeParam (Collection innerVector) =  BS.intercalate " " $ fmap (\\singleVal -> encodeParam singleVal ) (V.toList innerVector)
-
-instance (EncodeParam t) => EncodeParam (Collection 'TSV t) where
-  encodeParam (Collection innerVector) =  BS.intercalate "\\t" $ fmap (\\singleVal -> encodeParam singleVal ) (V.toList innerVector)
-
-instance (EncodeParam t) => EncodeParam (Collection 'Pipes t) where
-  encodeParam (Collection innerVector) =  BS.intercalate "|" $ fmap (\\singleVal -> encodeParam singleVal ) (V.toList innerVector)
-
-
-instance (DecodeParam (Collection format t) ) => FromParam 'QueryParam (Collection format t) where
-  fromParam pt key kvs = case lookupParam pt key kvs of
-    Just (Just par) -> case decodeParam par of
-          Just v -> Validation $ Right v
-          _      -> Validation $ Left [ParseErr key "Unable to cast to Collection"]
-    _ ->  Validation $ Left [NotFound key]
-
-
-instance (DecodeParam t) => DecodeParam (Collection 'CSV t) where
-  decodeParam str = 
-    case sequenceA $ fmap decodeParam (ASCII.split ',' str) of
-      Just parsedList -> Just $ Collection $ V.fromList $ parsedList
-      Nothing -> Nothing
-    
-
-instance (DecodeParam t) => DecodeParam (Collection 'SSV t) where
-  decodeParam str = 
-    case sequenceA $ fmap decodeParam (ASCII.split ' ' str) of
-      Just parsedList -> Just $ Collection $ V.fromList $ parsedList
-      Nothing -> Nothing
-
-    
-instance (DecodeParam t) => DecodeParam (Collection 'TSV t) where
-  decodeParam str = 
-    case sequenceA $ fmap decodeParam (ASCII.split '\\t' str) of
-      Just parsedList -> Just $ Collection $ V.fromList $ parsedList
-      Nothing -> Nothing
-
-
-instance (DecodeParam t) => DecodeParam (Collection 'Pipes t) where
-  decodeParam str = 
-    case sequenceA $ fmap decodeParam (ASCII.split '|' str) of
-      Just parsedList -> Just $ Collection $ V.fromList $ parsedList
-      Nothing -> Nothing
-
-
-keyMapping :: HM.HashMap String String -> String -> String
-keyMapping hMap k = 
-  case HM.lookup k hMap of
-    Just foundVal -> foundVal
-    Nothing -> k
-
-
-instance ToSchema (MultiSet Text) where
-  declareNamedSchema = plain . paramSchemaToSchema
-
-
-instance ToParamSchema (MultiSet Text) where
-  toParamSchema _ = mempty
-      & SW.type_ .~ SwaggerArray
-      & SW.items ?~ SwaggerItemsPrimitive Nothing (mempty & SW.type_ .~ SwaggerString)  
-      
-
-data SwaggerNumber = IntegerFormat Integer | DoubleFormat Double
-  deriving (Eq, Show, Generic)
-
-instance ToJSON SwaggerNumber
-instance FromJSON SwaggerNumber
-instance ToSchema SwaggerNumber
-instance ToParam 'QueryParam SwaggerNumber
-
-instance DecodeParam SwaggerNumber where
-  decodeParam bs =
-    case decodeParam bs :: Maybe Integer of 
-      Just x -> Just $ IntegerFormat x
-      Nothing -> 
-        case decodeParam bs :: Maybe Double of
-          Just y -> Just $ DoubleFormat y
-          Nothing -> error $ "Expected SwaggerNumber to coerce into either Integer or Double!"
-            ++ "\\nInput param is : " ++ (show bs)
-      |]
-
+  
 
 
 typeFamiliesForTypesModule :: [String]
@@ -263,7 +133,7 @@ qualifiedImportsForTypesModule =
                                ]                        
 
 
-readSwaggerGenerateDefnModels :: FilePath -> FilePath -> String -> StateConfig
+readSwaggerGenerateDefnModels :: FilePath -> FilePath -> String -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO [String]
 readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath projectName = do 
   swaggerJSONContents <- liftIO $ BSL.readFile swaggerJsonInputFilePath
   let decodedVal = eitherDecode swaggerJSONContents <|> either (Left . show) Right (decodeEither' (BSL.toStrict swaggerJSONContents))
@@ -274,8 +144,8 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
       let xmlImport = needsXmlImport contractDetails      
       newDefnTypesHM <- generateSwaggerDefinitionData (_swaggerDefinitions swaggerData) 
       -- We ignore the keys (level info) and just concat all the CDTs 
-      let newDefnCDTList = fmap (getInnerTyFromTypeInfo) $ DL.concat $ HMS.elems newDefnTypesHM
-      modify' (\stateValue -> DT.trace ("Adding Defns to State!") $ HMS.unionWith (++) stateValue newDefnTypesHM );
+      -- let newDefnCDTList = fmap (getInnerTyFromTypeInfo) $ DL.concat $ HMS.elems newDefnTypesHM
+      -- modify' (\stateValue -> DT.trace ("Adding Defns to State!") $ HMS.unionWith (++) stateValue newDefnTypesHM );
       let langExts = ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances"]
       let contractImports = ["Types", "Data.Int", "Data.Text"]
       let qualifiedImportsForContract =
@@ -295,37 +165,38 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
                 ++ fmap moduleImport qualifiedImportsForContract)
               (generateContractBody apiNameHs contractDetails)
       liftIO $ writeFile (contractOutputFolderPath ++ "src/Contract.hs") $ prettyPrint hContractModule
-      let qualifiedImportsForTypes = 
-            [("Data.ByteString.Char8", (True, Just $ ModuleName noSrcSpan "ASCII")), 
-            ("Data.HashMap.Lazy", (True, Just $ ModuleName noSrcSpan "HM") ),
-            ("Data.Swagger", (True, Just $ ModuleName noSrcSpan "SW") ), 
-            ("Data.Text", (True, Just $ ModuleName noSrcSpan "P") ),
-            ("Data.Int", (True, Just $ ModuleName noSrcSpan "P") ),
-            ("Data.Time.Clock", (True, Just $ ModuleName noSrcSpan "P") ),
-            ("GHC.Generics", (True, Just $ ModuleName noSrcSpan "P") ),
-            ("Data.Aeson", (True, Just $ ModuleName noSrcSpan "P") ),
-            ("WebApi.Param", (True, Just $ ModuleName noSrcSpan "P") ),
-            ("Data.Text.Encoding", (True, Just $ ModuleName noSrcSpan "P") ),
-            ("Prelude", (True, Just $ ModuleName noSrcSpan "P") )
-            ]
-      let hTypesModule = 
-            Module noSrcSpan 
-                (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
-                (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances", "DuplicateRecordFields", "OverloadedStrings"])
-                (fmap moduleImport 
-                  ( (DL.zip ["Prelude ()",
-                            "Data.Swagger.Schema", 
-                            "CommonTypes",
-                            "Control.Lens",
-                            "Data.Swagger.Internal.Schema",
-                            "Data.Swagger.ParamSchema",
-                            -- TODO : This is kind of a hack!
-                            "Data.Swagger.Internal hiding (Tag)"
-                            ] (cycle [(False, Nothing)]) ) ++ qualifiedImportsForTypes ) ) --"GHC.Generics", "Data.Time.Calendar"
-                (createDataDeclarations newDefnCDTList)
+      -- let qualifiedImportsForTypes = 
+      --       [("Data.ByteString.Char8", (True, Just $ ModuleName noSrcSpan "ASCII")), 
+      --       ("Data.HashMap.Lazy", (True, Just $ ModuleName noSrcSpan "HM") ),
+      --       ("Data.Swagger", (True, Just $ ModuleName noSrcSpan "SW") ), 
+      --       ("Data.Text", (True, Just $ ModuleName noSrcSpan "P") ),
+      --       ("Data.Int", (True, Just $ ModuleName noSrcSpan "P") ),
+      --       ("Data.Time.Clock", (True, Just $ ModuleName noSrcSpan "P") ),
+      --       ("GHC.Generics", (True, Just $ ModuleName noSrcSpan "P") ),
+      --       ("Data.Aeson", (True, Just $ ModuleName noSrcSpan "P") ),
+      --       ("WebApi.Param", (True, Just $ ModuleName noSrcSpan "P") ),
+      --       ("Data.Text.Encoding", (True, Just $ ModuleName noSrcSpan "P") ),
+      --       ("Prelude", (True, Just $ ModuleName noSrcSpan "P") )
+      --       ]
+      -- let hTypesModule = 
+      --       Module noSrcSpan 
+      --           (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Types") Nothing Nothing)
+      --           (fmap languageExtension ["TypeFamilies", "MultiParamTypeClasses", "DeriveGeneric", "TypeOperators", "DataKinds", "TypeSynonymInstances", "FlexibleInstances", "DuplicateRecordFields", "OverloadedStrings"])
+      --           (fmap moduleImport 
+      --             ( (DL.zip ["Prelude ()",
+      --                       "Data.Swagger.Schema", 
+      --                       "CommonTypes",
+      --                       "Control.Lens",
+      --                       "Data.Swagger.Internal.Schema",
+      --                       "Data.Swagger.ParamSchema",
+      --                       -- TODO : This is kind of a hack!
+      --                       "Data.Swagger.Internal hiding (Tag)"
+      --                       ] (cycle [(False, Nothing)]) ) ++ qualifiedImportsForTypes ) ) --"GHC.Generics", "Data.Time.Calendar"
+      --           (createDataDeclarations newDefnCDTList)
       liftIO $ do
-        writeFile (contractOutputFolderPath ++ "src/Types.hs") $ prettyPrint hTypesModule ++ "\n\n"
-        writeCabalAndProjectFiles contractOutputFolderPath projectName xmlImport
+        -- writeFile (contractOutputFolderPath ++ "src/Types.hs") $ prettyPrint hTypesModule ++ "\n\n"
+        HMS.foldlWithKey' (writeGeneratedTypesToFile contractOutputFolderPath) (pure []) newDefnTypesHM
+        -- createdModuleNames <- 
     
  where 
   
@@ -338,16 +209,17 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
                   in Map.foldl' (\innerAcc apiDetails -> hasXML apiDetails || innerAcc) accBool methodMap )
  
               
-createDataDeclarations :: [CreateDataType] -> [Decl SrcSpanInfo]
-createDataDeclarations newDataList = DL.foldl' (\accValue cNewTy -> 
-  case cNewTy of
-    ProductType newDataInfo -> 
-      let (modifiedRecords, dataDecl) = dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (Right $ mRecordTypes newDataInfo) ["P.Eq", "P.Show", "P.Generic"]
-          jsonInsts = jsonInstances (mName newDataInfo) modifiedRecords
-      in accValue ++ [dataDecl] ++ jsonInsts ++ [defaultToSchemaInstance (mName newDataInfo)] 
-    HNewType tName alias -> (snd $ dataDeclaration (NewType noSrcSpan) (tName) (Left alias)  ["Eq", "Show", "Generic"] ):accValue 
-    SumType _ -> error $ "Encountered a Sum Type creation while constructing initial types for Types.hs "
-      ++ "\n The value is : " ++ (show cNewTy)   ) [] newDataList
+-- createDataDeclarations :: [CreateDataType] -> [Decl SrcSpanInfo]
+-- createDataDeclarations = DL.foldl' createTypeDeclFromCDT [] 
+-- (\accValue cNewTy -> 
+--   case cNewTy of
+--     ProductType newDataInfo -> 
+--       let (modifiedRecords, dataDecl) = dataDeclaration (DataType noSrcSpan) (mName newDataInfo) (Right $ mRecordTypes newDataInfo) ["P.Eq", "P.Show", "P.Generic"]
+--           jsonInsts = jsonInstances (mName newDataInfo) modifiedRecords
+--       in accValue ++ [dataDecl] ++ jsonInsts ++ [defaultToSchemaInstance (mName newDataInfo)] 
+--     HNewType tName alias -> (snd $ dataDeclaration (NewType noSrcSpan) (tName) (Left alias)  ["Eq", "Show", "Generic"] ):accValue 
+--     SumType _ -> error $ "Encountered a Sum Type creation while constructing initial types for Types.hs "
+--       ++ "\n The value is : " ++ (show cNewTy)   ) [] newDataList
 
 
 globalTypesModulePath :: String
@@ -378,34 +250,36 @@ localRouteMethodTypesModName :: RouteName -> StdMethod -> String
 localRouteMethodTypesModName rName stdMethod = "Types." ++ rName ++ "." ++ (show stdMethod) ++ "."
 
 
-writeGeneratedTypesToFile :: LevelInfo -> [TypeInfo] -> IO ()
-writeGeneratedTypesToFile levelInfo typeInfos = do
+writeGeneratedTypesToFile :: FilePath  -> IO [String] -> LevelInfo -> [TypeInfo] -> IO [String]
+writeGeneratedTypesToFile genPath ioModuleNames levelInfo typeInfos = do
+  moduleNames <- ioModuleNames
   let (typesModuleDir, typesModuleName) = 
         case levelInfo of
           Global gType -> 
             case gType of
-              DefinitionTy -> (globalTypesModulePath, hsModuleToFileName globalDefnsModuleName)
-              ResponseTy -> (globalTypesModulePath, hsModuleToFileName globalRespTypesModuleName )
-              ParamTy -> (globalTypesModulePath, hsModuleToFileName globalParamTypesModuleName)
+              DefinitionTy -> (genPath ++ globalTypesModulePath, hsModuleToFileName globalDefnsModuleName)
+              ResponseTy -> (genPath ++ globalTypesModulePath, hsModuleToFileName globalRespTypesModuleName )
+              ParamTy -> (genPath ++ globalTypesModulePath, hsModuleToFileName globalParamTypesModuleName)
           Local _ (rName, stdMethod) -> 
-            ( (localRouteMethodTypesPath rName stdMethod), hsModuleToFileName localRouteMethodTypesModuleName)
+            ( genPath ++ (localRouteMethodTypesPath rName stdMethod), hsModuleToFileName localRouteMethodTypesModuleName)
 
-  tyModuleExists <- doesFileExist (typesModuleDir ++ typesModuleName) 
+  tyModuleExists <- doesFileExist $ (trace $ "\nPATH" ++ (typesModuleDir ++ typesModuleName) ) (typesModuleDir ++ typesModuleName) 
+  let (modName:: String) = 
+        case levelInfo of
+          Global glType ->
+            case glType of
+              DefinitionTy -> globalTypesHsModuleName ++ globalDefnsModuleName
+              ResponseTy -> globalTypesHsModuleName ++ globalRespTypesModuleName
+              ParamTy -> globalTypesHsModuleName ++ globalParamTypesModuleName
+          Local _ (rtName, sMethod) -> (localRouteMethodTypesModName rtName sMethod) ++ localRouteMethodTypesModuleName
   case tyModuleExists of 
-    True ->
+    True -> do
       let createDataTyList = fmap (getInnerTyFromTypeInfo) typeInfos
-          newContents = DL.concat $ fmap prettyPrint $ createDataDeclarations createDataTyList
-      in appendFile (typesModuleDir ++ typesModuleName) newContents
+          newContents = "\n\n" ++ (DL.concat $ fmap (++ "\n\n" ) $ fmap prettyPrint $ createDataDeclarations createDataTyList)
+      appendFile (typesModuleDir ++ typesModuleName) newContents
+      pure $ modName:moduleNames
     False -> do
       let createDataTyList = fmap (getInnerTyFromTypeInfo) typeInfos
-          modName = 
-            case levelInfo of
-              Global glType ->
-                case glType of
-                  DefinitionTy -> globalTypesHsModuleName ++ globalParamTypesModuleName
-                  ResponseTy -> globalTypesHsModuleName ++ globalRespTypesModuleName
-                  ParamTy -> globalTypesHsModuleName ++ globalParamTypesModuleName
-              Local _ (rtName, sMethod) -> (localRouteMethodTypesModName rtName sMethod) ++ localRouteMethodTypesModuleName
           newTyModuleContents = 
             prettyPrint $ 
               Module noSrcSpan 
@@ -415,10 +289,13 @@ writeGeneratedTypesToFile levelInfo typeInfos = do
                       ( (DL.zip importsForTypesModule (cycle [(False, Nothing)]) ) ++ qualifiedImportsForTypesModule ) )
                     (createDataDeclarations $ createDataTyList)
 
-      createDirectoryIfMissing True typesModuleDir 
+      createDirectoryIfMissing True typesModuleDir
       writeFile (typesModuleDir ++ typesModuleName) newTyModuleContents
+      pure $ modName:moduleNames
 
-
+ where
+  createDataDeclarations :: [CreateDataType] -> [Decl SrcSpanInfo]
+  createDataDeclarations = DL.foldl' createTypeDeclFromCDT []  
   
 
 
@@ -434,7 +311,7 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (
     let (schemaProperties::InsOrdHashMap Text (Referenced Schema) ) = _schemaProperties modelSchema
     case HMSIns.null schemaProperties of
       True -> do
-        hsType <- getTypeFromSwaggerType Nothing (Just $ T.unpack modelName) (Just modelSchema) (_schemaParamSchema modelSchema)
+        hsType <- getTypeFromSwaggerType (Global DefinitionTy) DefinitionI (Just $ T.unpack modelName) (Just modelSchema) (_schemaParamSchema modelSchema)
         if hsType == (T.unpack modelName)
         -- If the name of the type returned is the same, it would mean that it's a sum type. 
         -- An alias is not necessary here as the sum type details would be stored in the State
@@ -452,7 +329,7 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (
                 let innerRecordTypeName = T.unpack $ T.append (T.toTitle modelName) (T.toTitle innerRecord)
                 innerRecordType <- case iRefSchema of
                         Ref referenceName -> pure $ T.unpack $ getReference referenceName
-                        Inline irSchema -> ((getTypeFromSwaggerType Nothing (Just innerRecordTypeName) (Just irSchema)) . _schemaParamSchema) irSchema
+                        Inline irSchema -> ((getTypeFromSwaggerType (Global DefinitionTy) DefinitionI (Just innerRecordTypeName) (Just irSchema)) . _schemaParamSchema) irSchema
                 let recordTypeWithMaybe = 
                       case (innerRecordName `DL.elem` mandatoryFields) of 
                         True -> setValidConstructorId innerRecordType
@@ -482,7 +359,7 @@ getSwaggerData swaggerData = do
     finalPathWithParamTypes::[PathComponent] <- forM swaggerPath (\pathComponent -> 
         case pathComponent of 
           PathParamName pathParamName -> do
-            (mParamNameList::[Maybe String]) <- mapM (getPathParamTypeFromOperation pathParamName refParamsHM) (getListOfPathOperations swPathDetails::[Maybe Operation])
+            (mParamNameList::[Maybe String]) <- mapM (getPathParamTypeFromOperation mainRouteName pathParamName refParamsHM) (getListOfPathOperations swPathDetails::[(StdMethod, Maybe Operation)])
             case (DL.nub . catMaybes) mParamNameList of
               [] -> error "TODO : Please report this as a bug. Need to handle the use of Common Params!"
               singleParamType:[] -> pure (PathParamType singleParamType)
@@ -530,11 +407,11 @@ getSwaggerData swaggerData = do
   removeCurlyBraces :: String -> String 
   removeCurlyBraces = DL.filter (\x -> not (x == '{' || x == '}') )
 
-  getListOfPathOperations :: PathItem -> [Maybe Operation]
-  getListOfPathOperations pathItem = [_pathItemGet pathItem, _pathItemPut pathItem, _pathItemPost pathItem, _pathItemDelete pathItem, _pathItemOptions pathItem, _pathItemHead pathItem, _pathItemPatch pathItem]
+  getListOfPathOperations :: PathItem -> [(StdMethod, Maybe Operation)]
+  getListOfPathOperations pathItem = [(GET, _pathItemGet pathItem), (PUT, _pathItemPut pathItem), (POST,_pathItemPost pathItem), (DELETE, _pathItemDelete pathItem), (OPTIONS, _pathItemOptions pathItem), (HEAD, _pathItemHead pathItem), (PATCH, _pathItemPatch pathItem)]
   
-  getPathParamTypeFromOperation :: String -> InsOrdHashMap Text Param -> Maybe Operation -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO (Maybe String)
-  getPathParamTypeFromOperation paramPathName refParamsHM mOperation = case mOperation of
+  getPathParamTypeFromOperation :: RouteName -> String -> InsOrdHashMap Text Param -> (StdMethod, Maybe Operation) -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO (Maybe String)
+  getPathParamTypeFromOperation routeNameStr paramPathName refParamsHM (stdMethod, mOperation) = case mOperation of
     Just operation -> do 
       let paramList = _operationParameters operation
       mParamType <- foldM (\existingParamType refOrInlineParam -> 
@@ -546,7 +423,7 @@ getSwaggerData swaggerData = do
                 then 
                   case existingParamType of
                     Nothing -> do
-                      pathParamType <- getParamTypeForPathParam refParam
+                      pathParamType <- getParamTypeForPathParam (routeNameStr, stdMethod) refParam
                       pure $ Just pathParamType
                     Just _ -> error $ "Atleast two or more Params in the Params Ref HM match this param." 
                       ++ "This should be impossible. Please check the Swagger Spec!"
@@ -555,20 +432,22 @@ getSwaggerData swaggerData = do
               Nothing -> pure existingParamType
           Inline param -> case (_paramName param == T.pack paramPathName) of
             True -> do
-              pathParamType <- getParamTypeForPathParam param
+              pathParamType <- getParamTypeForPathParam (routeNameStr, stdMethod) param
               pure $ Just pathParamType
             False -> pure existingParamType
         ) Nothing paramList 
       pure mParamType 
     Nothing -> pure $ Nothing
 
-  getParamTypeForPathParam :: Param -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String
-  getParamTypeForPathParam param = 
+  getParamTypeForPathParam :: RouteAndMethod -> Param -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String
+  getParamTypeForPathParam (routeNameStr, stdMethod) param = 
     case (_paramSchema param) of
       ParamOther paramOtherSchema -> 
         case _paramOtherSchemaIn paramOtherSchema of
           ParamPath -> 
-            getTypeFromSwaggerType Nothing Nothing Nothing (_paramOtherSchemaParamSchema paramOtherSchema) 
+            -- TODO : Verify that it's okay to put DefinitionI for Path Param. 
+            -- Is it okay if this is generated in the local Types.hs file? 
+            getTypeFromSwaggerType (Local ParamTy (routeNameStr, stdMethod)) DefinitionI Nothing Nothing (_paramOtherSchemaParamSchema paramOtherSchema) 
           _ -> error $ "Expected Path Param but got another Param Type. \nParam : " ++ (show param)
       ParamBody _ -> error $ "Param matched by name in the Ref Params HM. "
                   ++ "This means it should be a Path Param but it is a Body Param. "
@@ -587,48 +466,51 @@ getSwaggerData swaggerData = do
       HEAD -> (processOperation mainRouteName methodDataAcc swaggerData) HEAD $ _pathItemHead pathItem
       PATCH -> (processOperation mainRouteName methodDataAcc swaggerData) PATCH $ _pathItemPatch pathItem
       _ -> pure $ Map.empty
-  processOperation :: String -> Map.Map StdMethod ApiTypeDetails -> Swagger -> StdMethod -> Maybe Operation -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO (Map.Map StdMethod ApiTypeDetails)
-  processOperation currentRouteName methodAcc swaggerData stdMethod mOperationData = 
-    case mOperationData of
-      Just operationData -> do
-        let refParamsHM = _swaggerParameters swaggerData
-        let apiResponses = _responsesResponses $ _operationResponses operationData
-        (mApiOutType, apiErrType) <- getApiType (currentRouteName ++ show stdMethod) apiResponses swaggerData
-        -- TODO: Case match on ApiOut and if `Nothing` then check for default responses in `_responsesDefault $ _operationResponses operationData`
-        let apiOutType = fromMaybe "()" mApiOutType
-        let addPlainText = 
-              case apiOutType of
-                "()" -> True
-                "Text" -> True
-                _ -> False
-        -- Group the Referenced Params by ParamLocation and then go through each group separately.
-        let (formParamList, queryParamList, fileParamList, headerInList, bodyParamList) = DL.foldl' (groupParamTypes refParamsHM) ([], [], [], [], []) (_operationParameters operationData)
-        mFormParamType <- getParamTypes (currentRouteName, stdMethod) formParamList FormParam
-        mQueryParamType <- getParamTypes (currentRouteName, stdMethod) queryParamList QueryParam
-        mFileParamType <- getParamTypes (currentRouteName, stdMethod) fileParamList FileParam
-        mHeaderInType <- getParamTypes (currentRouteName, stdMethod) headerInList HeaderParam
-        mReqBodyType <- getParamTypes (currentRouteName, stdMethod) bodyParamList BodyParam
-        let (mContentTypes, xmlPresent) = getContentTypes (_operationProduces operationData) addPlainText
-        let finalReqBodyType = flip fmap mReqBodyType (\reqBodyType -> 
-              case (DL.isPrefixOf "[" reqBodyType) of
-                True -> "'" ++ reqBodyType
-                False -> "'[" ++ reqBodyType ++ "]" )
-        let apiTypeDetails = 
-              ApiTypeDetails 
-                {
-                  apiOut = apiOutType 
-                , apiErr = apiErrType 
-                , formParam = mFormParamType 
-                , queryParam = mQueryParamType 
-                , fileParam = mFileParamType 
-                , headerIn = mHeaderInType 
-                , requestBody = finalReqBodyType 
-                , contentTypes = mContentTypes 
-                , hasXML = xmlPresent 
-                }
-        pure $ Map.insert stdMethod apiTypeDetails methodAcc
-      Nothing -> pure methodAcc
 
+
+processOperation :: String -> Map.Map StdMethod ApiTypeDetails -> Swagger -> StdMethod -> Maybe Operation -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO (Map.Map StdMethod ApiTypeDetails)
+processOperation currentRouteName methodAcc swaggerData stdMethod mOperationData = 
+  case mOperationData of
+    Just operationData -> do
+      let refParamsHM = _swaggerParameters swaggerData
+      let apiResponses = _responsesResponses $ _operationResponses operationData
+      (mApiOutType, apiErrType) <- getApiType apiResponses swaggerData
+      -- TODO: Case match on ApiOut and if `Nothing` then check for default responses in `_responsesDefault $ _operationResponses operationData`
+      let apiOutType = fromMaybe "()" mApiOutType
+      let addPlainText = 
+            case apiOutType of
+              "()" -> True
+              "Text" -> True
+              _ -> False
+      -- Group the Referenced Params by ParamLocation and then go through each group separately.
+      let (formParamList, queryParamList, fileParamList, headerInList, bodyParamList) = DL.foldl' (groupParamTypes refParamsHM) ([], [], [], [], []) (_operationParameters operationData)
+      mFormParamType <- getParamTypes formParamList FormParam
+      mQueryParamType <- getParamTypes queryParamList QueryParam
+      mFileParamType <- getParamTypes fileParamList FileParam
+      mHeaderInType <- getParamTypes headerInList HeaderParam
+      mReqBodyType <- getParamTypes bodyParamList BodyParam
+      let (mContentTypes, xmlPresent) = getContentTypes (_operationProduces operationData) addPlainText
+      let finalReqBodyType = flip fmap mReqBodyType (\reqBodyType -> 
+            case (DL.isPrefixOf "[" reqBodyType) of
+              True -> "'" ++ reqBodyType
+              False -> "'[" ++ reqBodyType ++ "]" )
+      let apiTypeDetails = 
+            ApiTypeDetails 
+              {
+                apiOut = apiOutType 
+              , apiErr = apiErrType 
+              , formParam = mFormParamType 
+              , queryParam = mQueryParamType 
+              , fileParam = mFileParamType 
+              , headerIn = mHeaderInType 
+              , requestBody = finalReqBodyType 
+              , contentTypes = mContentTypes 
+              , hasXML = xmlPresent 
+              }
+      pure $ Map.insert stdMethod apiTypeDetails methodAcc
+    Nothing -> pure methodAcc
+
+ where
   groupParamTypes :: InsOrdHashMap Text Param -> ([Param], [Param], [Param], [Param], [Param]) -> Referenced Param -> ([Param], [Param], [Param], [Param], [Param])
   groupParamTypes refParamsHM allParamLists refParam = 
     case refParam of
@@ -675,27 +557,29 @@ getSwaggerData swaggerData = do
       Nothing -> (Nothing, False)
   
 
-  getApiType :: String -> InsOrdHashMap HttpStatusCode (Referenced Response) -> Swagger -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO (Maybe String, Maybe String)
-  getApiType newTypeName responsesHM swaggerData = foldlWithKey' (\stateConfigWrappedTypes currentCode currentResponse -> do
+  getApiType :: InsOrdHashMap HttpStatusCode (Referenced Response) -> Swagger -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO (Maybe String, Maybe String)
+  getApiType responsesHM swaggerData = foldlWithKey' (\stateConfigWrappedTypes currentCode currentResponse -> do
+        let newTypeName = currentRouteName ++ (show stdMethod)
         (apiOutType, apiErrType) <- stateConfigWrappedTypes
+        let lvlInfo = Local ResponseTy (currentRouteName, stdMethod)
         case (currentCode >= 200 && currentCode < 300) of
           True -> do
             finalOutType <- do
                 let newTypeNameConstructor = (newTypeName ++ "ApiOut")
-                currentResponseType <- parseResponseContentGetType currentResponse swaggerData newTypeNameConstructor
-                fOutType <- checkIfNewType apiOutType currentResponseType newTypeNameConstructor swaggerData
+                currentResponseType <- parseResponseContentGetType (lvlInfo, ApiOutI) currentResponse swaggerData newTypeNameConstructor
+                fOutType <- checkIfNewType (lvlInfo, ApiOutI) apiOutType currentResponseType newTypeNameConstructor swaggerData
                 pure $ Just fOutType
             pure (finalOutType, apiErrType)
           False -> do
             finalErrType <- do
                   let newTypeNameConstructor = (newTypeName ++ "ApiErr")
-                  currentResponseType <- parseResponseContentGetType currentResponse swaggerData newTypeNameConstructor
-                  fErrType <- checkIfNewType apiErrType currentResponseType newTypeNameConstructor swaggerData
+                  currentResponseType <- parseResponseContentGetType (lvlInfo, ApiErrI) currentResponse swaggerData newTypeNameConstructor
+                  fErrType <- checkIfNewType (lvlInfo, ApiErrI) apiErrType currentResponseType newTypeNameConstructor swaggerData
                   pure $ Just fErrType
             pure (apiOutType, finalErrType)
     ) (pure (Nothing, Nothing)) responsesHM  
-  parseResponseContentGetType :: Referenced Response -> Swagger -> String -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String
-  parseResponseContentGetType referencedResp swaggerData newTypeConsName = do
+  parseResponseContentGetType :: (LevelInfo, TInfo) -> Referenced Response -> Swagger -> String -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String
+  parseResponseContentGetType (levelInfo, tInfo) referencedResp swaggerData newTypeConsName = do
     let swResponses :: InsOrdHashMap Text Response = _swaggerResponses swaggerData
     -- let swDataDefns :: InsOrdHashMap Text Schema = _swaggerDefinitions swaggerData
 
@@ -705,17 +589,17 @@ getSwaggerData swaggerData = do
           Just refResponse -> 
             case _responseSchema refResponse of
               Just (Ref (Reference refSchema) ) -> pure $ T.unpack refSchema 
-              Just (Inline inSchema) -> ( (getTypeFromSwaggerType Nothing (Just newTypeConsName) (Just inSchema) ) . _schemaParamSchema) inSchema
+              Just (Inline inSchema) -> ( (getTypeFromSwaggerType levelInfo tInfo (Just newTypeConsName) (Just inSchema) ) . _schemaParamSchema) inSchema
               Nothing -> pure "Text"
             -- TODO : Should we error out here or inform the user that Referenced Response not found in Responses HM? 
           Nothing -> pure "Text"
       Inline responseSchema -> 
         case (_responseSchema responseSchema) of
           Just (Ref refText) -> pure $ T.unpack $ getReference refText
-          Just (Inline respSchema) -> ((getTypeFromSwaggerType Nothing (Just newTypeConsName) (Just respSchema) ) . _schemaParamSchema) respSchema
+          Just (Inline respSchema) -> ((getTypeFromSwaggerType levelInfo tInfo (Just newTypeConsName) (Just respSchema) ) . _schemaParamSchema) respSchema
           Nothing -> pure "Text"
-  getParamTypes :: (RouteName, StdMethod) -> [Param] -> ParamType -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO (Maybe String)
-  getParamTypes (routeNameStr, stdMethod) paramList paramType = 
+  getParamTypes :: [Param] -> ParamType -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO (Maybe String)
+  getParamTypes paramList paramType = 
     case paramList of
       [] -> pure $ Nothing
       _ -> -- TODO : Refactor handling of adding Maybes and adding to State into a single function and call from all places.
@@ -723,13 +607,13 @@ getSwaggerData swaggerData = do
           FormParam -> do
             let paramNames = fmap (\param -> T.unpack $ _paramName param) paramList
             hTypesWithIsMandatory <- forM paramList (\param -> do 
-              hType <- getParamTypeParam param (Just $ T.unpack ( _paramName param) ) Nothing (routeNameStr, stdMethod)
+              hType <- getParamTypeParam param (Just $ T.unpack ( _paramName param) ) Nothing 
               pure (isMandatory param, hType) )
             let finalHaskellTypes = fmap (\(isMandatoryType, hType) -> (addMaybeToType isMandatoryType hType) ) hTypesWithIsMandatory
             let recordTypesInfo = DL.zip paramNames finalHaskellTypes
             let newDataTypeName = setValidConstructorId "HFormParam"
             let formParamDataInfo = ProductType (NewData newDataTypeName recordTypesInfo)
-            let levelInfo = Local ParamTy (routeNameStr, stdMethod)
+            let levelInfo = Local ParamTy (currentRouteName, stdMethod)
             let fParamHM = HMS.singleton levelInfo [FormParamTy formParamDataInfo]
             modify' (\existingState -> HMS.unionWith (++) existingState fParamHM) 
             -- TODO : This needs to change and return the LevelInfo as well in Phase 2
@@ -737,20 +621,20 @@ getSwaggerData swaggerData = do
           QueryParam -> do
             let paramNames = fmap (\param -> T.unpack $ _paramName param) paramList
             hTypesWithIsMandatory <- forM paramList (\param -> do 
-              hType <- getParamTypeParam param (Just $ T.unpack ( _paramName param) ) Nothing (routeNameStr, stdMethod)
+              hType <- getParamTypeParam param (Just $ T.unpack ( _paramName param) ) Nothing
               pure (isMandatory param, hType) )
             let finalHaskellTypes = fmap (\(isMandatoryType, hType) -> (addMaybeToType isMandatoryType hType) ) hTypesWithIsMandatory
             let recordTypesInfo = DL.zip paramNames finalHaskellTypes
             let newDataTypeName = setValidConstructorId "HQueryParam"
             let queryParamDataInfo = ProductType (NewData newDataTypeName recordTypesInfo)
-            let levelInfo = Local ParamTy (routeNameStr, stdMethod)
+            let levelInfo = Local ParamTy (currentRouteName, stdMethod)
             let qParamHM = HMS.singleton levelInfo [QueryParamTy queryParamDataInfo]
             modify' (\existingState -> HMS.unionWith (++) existingState qParamHM)
             -- TODO : This needs to change and return the LevelInfo as well in Phase 2
             pure $ Just newDataTypeName
           HeaderParam -> do
             typeListWithIsMandatory <- forM paramList (\param -> do
-                    hType <- getParamTypeParam param (Just $ T.unpack ( _paramName param) ) Nothing (routeNameStr, stdMethod)
+                    hType <- getParamTypeParam param (Just $ T.unpack ( _paramName param) ) Nothing
                     pure (isMandatory param, hType) )
             let finalHaskellTypes = fmap (\(isMandatoryType, hType) -> (addMaybeToType isMandatoryType hType) ) typeListWithIsMandatory
             case finalHaskellTypes of
@@ -759,29 +643,38 @@ getSwaggerData swaggerData = do
               _ -> error $ "Encountered multiple Header Params! This is not yet handled!"
                 ++ "\nDebug Info : " ++ (show paramList)
           FileParam -> do
-            typeList <- forM paramList (\param -> getParamTypeParam param (Just $ T.unpack ( _paramName param) ) Nothing (routeNameStr, stdMethod))
+            typeList <- forM paramList (\param -> getParamTypeParam param (Just $ T.unpack ( _paramName param) ) Nothing )
             case typeList of
               [] -> pure Nothing
               x:[] -> pure $ Just x
               _ -> error $ "Encountered list of FileParam. This is not yet handled! "
                 ++ "\nDebug Info: " ++ (show paramList)
           BodyParam -> do
-            listOfTypes <- forM paramList (\param -> getParamTypeParam param (Just $ T.unpack (_paramName param)) Nothing (routeNameStr, stdMethod) )
+            listOfTypes <- forM paramList (\param -> getParamTypeParam param (Just $ T.unpack (_paramName param)) Nothing )
             case listOfTypes of
               [] -> error $ "Tried to Get Body Param type but got an empty list/string! Debug Info: " ++ show paramList
               x:[] -> pure $ Just x
               _ -> error $ "Encountered a list of Body Params. WebApi does not support this currently! Debug Info: " ++ show paramList
 
-  getParamTypeParam :: Param -> Maybe String -> Maybe Schema -> (RouteName, StdMethod) ->  StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String
-  getParamTypeParam inputParam mParamName mOuterSchema (routeNameStr, stdMethod) = do
+  getParamTypeParam :: Param -> Maybe String -> Maybe Schema  -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String
+  getParamTypeParam inputParam mParamName mOuterSchema = do
   -- TODO : This may need to be calculated or passed here (or passed back from getTypeFromSwaggerType) if/when we consider route-level common params.
-    let levelInfo = Local ParamTy (routeNameStr, stdMethod)
+    let levelInfo = Local ParamTy (currentRouteName, stdMethod)
     case _paramSchema inputParam of
       ParamBody refSchema -> 
         case refSchema of 
           Ref refType -> pure $ T.unpack (getReference refType)
-          Inline rSchema -> getTypeFromSwaggerType (Just "TODO : replace") mParamName (Just rSchema) (_schemaParamSchema rSchema) 
-      ParamOther pSchema -> getTypeFromSwaggerType (Just "TODO : replace") mParamName mOuterSchema $ _paramOtherSchemaParamSchema pSchema 
+          Inline rSchema -> getTypeFromSwaggerType levelInfo ReqBodyI mParamName (Just rSchema) (_schemaParamSchema rSchema) 
+      ParamOther pSchema ->
+        let tInfo = 
+              case _paramOtherSchemaIn pSchema of
+                ParamQuery -> QueryParamI
+                ParamHeader -> HeaderInI
+                ParamFormData -> FormParamI
+                -- TODO : Verify if this should ever be ParamPath. 
+                -- If not, we should log this and error it when adding logging/error mechanism.
+                ParamPath -> DefinitionI
+        in getTypeFromSwaggerType levelInfo tInfo mParamName mOuterSchema $ _paramOtherSchemaParamSchema pSchema 
 
   isMandatory :: Param -> Bool
   isMandatory param = 
@@ -796,8 +689,8 @@ getSwaggerData swaggerData = do
 
 
 
-checkIfNewType :: Maybe String -> String -> String -> Swagger -> (StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String)
-checkIfNewType existingType currentType newTypeName _ = 
+checkIfNewType :: (LevelInfo, TInfo) ->  Maybe String -> String -> String -> Swagger -> (StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String)
+checkIfNewType (levelInfo, tInfo)  existingType currentType newTypeName _ = 
   case existingType of 
     Just eType ->
       if (eType == currentType)
@@ -814,9 +707,9 @@ checkIfNewType existingType currentType newTypeName _ =
             False -> do
               -- TODO : Placeholder LEvelInfo. Needs to change in Phase 2
               -- This info would need to be passed in.
-              let levelInfo = Local DefinitionTy ("", GET) 
+              -- let levelInfo = Local DefinitionTy ("", GET) 
               -- TODO: Adding DefinitionType as TypeInfo default. Needs to be passed down. Phase 2
-              let sumTyHM = HMS.singleton levelInfo [DefinitionType sumTypeInfo]
+              let sumTyHM = HMS.singleton levelInfo [tInfoToTypeInfo tInfo sumTypeInfo]
               HMS.unionWith (++) existingState sumTyHM
             True -> stateList)
         pure newTypeName
@@ -881,9 +774,25 @@ updateTypeInfoDataTy tyInfo newCdt =
     HeaderOutTy _ -> HeaderOutTy newCdt 
     DefinitionType _ -> DefinitionType newCdt 
 
+tInfoToTypeInfo :: TInfo -> CreateDataType -> TypeInfo
+tInfoToTypeInfo tInfo cdt =
+  case tInfo of
+    ApiErrI -> ApiErrTy cdt
+    ApiOutI -> ApiOutTy cdt
+    FormParamI -> FormParamTy cdt
+    QueryParamI -> QueryParamTy cdt
+    FileParamI -> FileParamTy cdt
+    HeaderInI -> HeaderInTy cdt
+    ReqBodyI -> ReqBodyTy cdt
+    ContentTypesI -> ContentTypesTy cdt
+    HeaderOutI -> HeaderOutTy cdt
+    DefinitionI -> DefinitionType cdt
 
-getTypeFromSwaggerType :: Maybe RouteName -> Maybe String -> Maybe Schema ->  ParamSchema t -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String 
-getTypeFromSwaggerType mRouteName mParamNameOrRecordName mOuterSchema paramSchema = 
+
+
+getTypeFromSwaggerType :: LevelInfo -> TInfo -> Maybe String -> Maybe Schema ->  ParamSchema t -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String 
+getTypeFromSwaggerType levelInfo tInfo mParamNameOrRecordName mOuterSchema paramSchema = 
+    -- let mRouteName = 
     case (_paramSchemaType paramSchema) of 
       Just SwaggerString -> 
         case _paramSchemaFormat paramSchema of
@@ -913,12 +822,11 @@ getTypeFromSwaggerType mRouteName mParamNameOrRecordName mOuterSchema paramSchem
                             _ -> False ) $ fmap getInnerTyFromTypeInfo $ DL.concat $ HMS.elems currentState
                 let createSumType = DL.foldl' checkIfSumTypeExists (CreateSumType haskellNewTypeInfo) onlySumTypes
                 -- TODO : This is a placeholder value and needs to be changed in Phase 2
-                let levelInfo = Local DefinitionTy ("",GET)
+                -- let levelInfo = Local DefinitionTy ("",GET)
                 case createSumType of
                   CreateSumType (SumType (BasicEnum sName sNewVals sOgVals) ) -> do
                     let sumTyInfo = (SumType (BasicEnum sName sNewVals sOgVals) )
-                    -- TODO : TypeInfo is temp set as DefinitionType. This needs to be changed in Phase 2
-                    let sumTyHM = HMS.singleton levelInfo [DefinitionType sumTyInfo]
+                    let sumTyHM = HMS.singleton levelInfo [tInfoToTypeInfo tInfo sumTyInfo]
                     modify' (\existingState -> HMS.unionWith (++) existingState sumTyHM)
                     pure sName
                   CreateSumType otherTy -> 
@@ -943,7 +851,7 @@ getTypeFromSwaggerType mRouteName mParamNameOrRecordName mOuterSchema paramSchem
                           case obj of
                             Ref reference -> pure $ "[" ++ (setValidConstructorId $ T.unpack $ getReference reference) ++ "]"
                             Inline recursiveSchema -> do
-                              hType <- ( ( (getTypeFromSwaggerType mRouteName mParamNameOrRecordName (Just recursiveSchema) ) . _schemaParamSchema) recursiveSchema)
+                              hType <- ( ( (getTypeFromSwaggerType levelInfo tInfo mParamNameOrRecordName (Just recursiveSchema) ) . _schemaParamSchema) recursiveSchema)
                               pure $ "[" ++ hType ++ "]"
                         -- NOTE : SwaggerItemsArray is used in a case where there are tuple Schemas.
                         -- So we need to represent the following list of Ref Schemas as a tuple or newtype (over tuple).
@@ -963,13 +871,13 @@ getTypeFromSwaggerType mRouteName mParamNameOrRecordName mOuterSchema paramSchem
                                           DL.unzip $ fmap (\(Data.Aeson.String val) -> (T.unpack $ T.toTitle val, T.unpack val) ) enumVals
                                     let haskellNewTypeInfo = SumType (BasicEnum titleCaseParamName enumValList ogVals)
                                     -- TODO : This is a placeholder value and needs to be changed in Phase 2
-                                    let levelInfo = Local DefinitionTy ("",GET)
-                                    let hNewTyHM = HMS.singleton levelInfo [DefinitionType haskellNewTypeInfo]
+                                    -- let levelInfo = Local DefinitionTy ("",GET)
+                                    let hNewTyHM = HMS.singleton levelInfo [tInfoToTypeInfo tInfo haskellNewTypeInfo]
                                     modify'(\existingState -> HMS.unionWith (++) existingState hNewTyHM)
                                     pure titleCaseParamName
-                                  Nothing ->  getTypeFromSwaggerType mRouteName Nothing Nothing innerParamSchema
+                                  Nothing ->  getTypeFromSwaggerType levelInfo tInfo Nothing Nothing innerParamSchema
                           case mCollectionFormat of
-                            (Just CollectionMulti) -> pure $ "MultiSet " ++ typeName 
+                            (Just CollectionMulti) -> pure $ "P.MultiSet " ++ typeName 
                             (Just CollectionTSV) -> pure $ "DelimitedCollection \"\t\" " ++ typeName
                             (Just CollectionSSV) -> pure $ "DelimitedCollection \" \"" ++ typeName
                             (Just CollectionPipes) -> pure $ "DelimitedCollection \"|\"" ++ typeName
@@ -990,7 +898,7 @@ getTypeFromSwaggerType mRouteName mParamNameOrRecordName mOuterSchema paramSchem
                   Just additionalProps -> 
                     case additionalProps of
                       AdditionalPropertiesSchema (Ref ref) -> pure $ "(HM.HashMap P.Text " ++ (setValidConstructorId $ T.unpack $ getReference ref) ++ ")"
-                      AdditionalPropertiesSchema (Inline internalSchema) -> ((getTypeFromSwaggerType mRouteName (Just recordTypeName) (Just internalSchema)) . _schemaParamSchema) internalSchema
+                      AdditionalPropertiesSchema (Inline internalSchema) -> ((getTypeFromSwaggerType levelInfo tInfo (Just recordTypeName) (Just internalSchema)) . _schemaParamSchema) internalSchema
                       AdditionalPropertiesAllowed _ -> error "TODO: unhandled case of additional props"
                       
                   Nothing -> 
@@ -1004,7 +912,7 @@ getTypeFromSwaggerType mRouteName mParamNameOrRecordName mOuterSchema paramSchem
                       let recordNameStr = T.unpack recordName
                       innerRecordType <- case iRefSchema of
                           Ref refName -> pure $ setValidConstructorId $ T.unpack $ getReference refName
-                          Inline irSchema -> ((getTypeFromSwaggerType mRouteName (Just $ recordNameStr) (Just irSchema)) . _schemaParamSchema) irSchema 
+                          Inline irSchema -> ((getTypeFromSwaggerType levelInfo tInfo (Just $ recordNameStr) (Just irSchema)) . _schemaParamSchema) irSchema 
                       let isRequired = isRequiredType outerSchema recordNameStr
                       let typeWithMaybe = if isRequired then innerRecordType else setMaybeType innerRecordType
                       pure (recordNameStr, typeWithMaybe) )
@@ -1024,8 +932,8 @@ getTypeFromSwaggerType mRouteName mParamNameOrRecordName mOuterSchema paramSchem
                 --                   False -> finalProductTypeInfo:existingState )
 
                 -- TODO : This is a placeholder value and needs to be changed in Phase 2
-                let levelInfo = Local DefinitionTy ("",GET)
-                let hNewTyHM = HMS.singleton levelInfo [DefinitionType finalProductTypeInfo]
+                -- let levelInfo = Local DefinitionTy ("",GET)
+                let hNewTyHM = HMS.singleton levelInfo [tInfoToTypeInfo tInfo finalProductTypeInfo]
                 modify'(\existingState -> HMS.unionWith (++) existingState hNewTyHM)
                 pure recordTypeName
           Nothing -> error $ "Expected outer schema to be present when trying to construct type of SwaggerObject. Debug Info (ParamSchema):  " ++ show paramSchema
@@ -1548,12 +1456,12 @@ instanceDeclForJSONForSumType dataTypeName = [toJsonInstance, fromJsonInstance]
                     (Paren noSrcSpan (Lambda noSrcSpan [PVar noSrcSpan (nameDecl "textVal")] 
                       (Case noSrcSpan (InfixApp noSrcSpan (variableName "decodeParam") (QVarOp noSrcSpan (unQualSymDecl "$")) (App noSrcSpan (variableName "encodeUtf8") (variableName "textVal") )) 
                         [Alt noSrcSpan 
-                          (PApp noSrcSpan (UnQual noSrcSpan (nameDecl "Just")) [PVar noSrcSpan (nameDecl "x")]) 
+                          (PApp noSrcSpan (UnQual noSrcSpan (nameDecl "P.Just")) [PVar noSrcSpan (nameDecl "x")]) 
                           (UnGuardedRhs noSrcSpan 
                             (App noSrcSpan (variableName "pure") (variableName "x") )) 
                           Nothing
                         ,Alt noSrcSpan 
-                          (PApp noSrcSpan (UnQual noSrcSpan (nameDecl "Nothing")) []) 
+                          (PApp noSrcSpan (UnQual noSrcSpan (nameDecl "P.Nothing")) []) 
                           (UnGuardedRhs noSrcSpan (App noSrcSpan (variableName "error") (stringLiteral "Failed while parsing Status value from JSON")))
                           Nothing ]
                       )))) (variableName"jsonVal") )) Nothing])])
@@ -1614,7 +1522,8 @@ queryParamInstanceIRule paramDirection sumTypeName =
     (IHApp noSrcSpan 
       (IHApp noSrcSpan 
         (instanceHead paramDirection)
-        (TyPromoted noSrcSpan (PromotedCon noSrcSpan True (UnQual noSrcSpan (nameDecl "QueryParam") ) ) )) 
+        (typeConstructor "P.QueryParam") )
+        -- (TyPromoted noSrcSpan (PromotedCon noSrcSpan True (UnQual noSrcSpan (nameDecl "QueryParam") ) ) ) ) 
       (typeConstructor sumTypeName) )
 
 -- The ToParam 'QueryParam instance for Sum Type
@@ -1707,7 +1616,11 @@ decodeParamSumTypeInstance sumTypeName caseOptions =
 fromParamQueryParamInstance :: String -> Decl SrcSpanInfo
 fromParamQueryParamInstance sumTypeName = 
   InstDecl noSrcSpan Nothing
-  (queryParamInstanceIRule "P.FromParam" sumTypeName)
+  (IRule noSrcSpan Nothing Nothing 
+    (IHApp noSrcSpan 
+      (instanceHead "P.DecodeParam") 
+      (typeConstructor sumTypeName) ))
+  -- (queryParamInstanceIRule "P.FromParam" sumTypeName)
   (Just 
     [InsDecl noSrcSpan 
       (FunBind noSrcSpan 
@@ -1967,7 +1880,7 @@ toSchemaInstanceForSumType typeName constructorValues =
           (instanceHead "ToSchema") 
           (TyParen noSrcSpan 
             (TyApp noSrcSpan 
-              (typeConstructor "MultiSet") 
+              (typeConstructor "P.MultiSet") 
               (typeConstructor typeName)
             )
           )
@@ -1993,7 +1906,7 @@ toSchemaInstanceForSumType typeName constructorValues =
           (instanceHead "ToParamSchema")
           (TyParen noSrcSpan 
             (TyApp noSrcSpan 
-              (typeConstructor "MultiSet") 
+              (typeConstructor "P.MultiSet") 
               (typeConstructor typeName)
             )
           )
@@ -2093,17 +2006,17 @@ haskellKeywords =
   ,"where"]
 
 
-writeCabalAndProjectFiles :: FilePath -> String -> Bool -> IO ()
-writeCabalAndProjectFiles generationPath projectName needsWebapiXml = do
-  writeFile (generationPath ++ projectName ++ ".cabal") (cabalFileContents needsWebapiXml)
+writeCabalAndProjectFiles :: FilePath -> String -> Bool -> [String] -> IO ()
+writeCabalAndProjectFiles generationPath projectName needsWebapiXml modulesForImport = do
+  writeFile (generationPath ++ projectName ++ ".cabal") (cabalFileContents needsWebapiXml modulesForImport)
   writeFile (generationPath ++ "LICENSE") licenseFileContents
   -- TODO : Once webapi-xml is pushed to GitHub, it needs to be added to the cabal.project file
   writeFile (generationPath ++ "cabal.project") cabalProjectFileContents
 
 
  where
-  cabalFileContents :: Bool -> String
-  cabalFileContents webapiXmlNeeded = [i|
+  cabalFileContents :: Bool -> [String] -> String
+  cabalFileContents webapiXmlNeeded moduleImports = [i|
 name:           #{projectName}
 version:        0.1.0.0
 description:    Generated project with a contract accoriding to the provided Swagger doc.
@@ -2120,9 +2033,9 @@ cabal-version:  >= 1.10
 library
   exposed-modules:
       Contract
-  other-modules:
-      Types 
       CommonTypes
+      #{customUnlines moduleImports}
+  other-modules:
   hs-source-dirs:
       src
   build-depends:
@@ -2207,6 +2120,139 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 |]
 
+customUnlines :: [String] -> String
+customUnlines [] = []
+customUnlines (l:ls) = l ++ ("\n      " ++ customUnlines ls)
+
+commonTypesModuleContent :: String
+commonTypesModuleContent = [i|
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances #-}
+
+module CommonTypes where
+
+import Data.ByteString as BS
+import qualified Data.ByteString.Char8 as ASCII
+import qualified Data.HashMap.Lazy as HM
+import WebApi.Param
+import qualified Data.Vector as V
+
+import qualified Data.Swagger as SW
+import Data.Swagger.Internal.Schema as SW
+import Data.Swagger.ParamSchema
+import Control.Lens hiding (List)
+import Data.Swagger.Internal hiding (Tag, CollectionFormat)
+
+import Data.Text
+import Data.Aeson
+import GHC.Generics
+
+data CollectionFormat = CSV | SSV | TSV | Pipes 
+
+--change name to CollectionFormat
+-- remove all qualifiers (WebApi.)
+newtype Collection (format :: CollectionFormat) (t :: *)  = Collection { getCollection :: V.Vector t}
+    deriving (Eq, Show)
+-- write ToParam instance for Collection
+
+
+instance (EncodeParam (Collection format t) ) => ToParam 'QueryParam (Collection format t) where
+  toParam _ pfx val = [(pfx, Just $ encodeParam val)]
+
+instance (EncodeParam t) => EncodeParam (Collection 'CSV t) where
+  encodeParam (Collection innerVector) =  BS.intercalate "," $ fmap (\\singleVal -> encodeParam singleVal ) (V.toList innerVector)
+
+
+instance (EncodeParam t) => EncodeParam (Collection 'SSV t) where
+  encodeParam (Collection innerVector) =  BS.intercalate " " $ fmap (\\singleVal -> encodeParam singleVal ) (V.toList innerVector)
+
+instance (EncodeParam t) => EncodeParam (Collection 'TSV t) where
+  encodeParam (Collection innerVector) =  BS.intercalate "\\t" $ fmap (\\singleVal -> encodeParam singleVal ) (V.toList innerVector)
+
+instance (EncodeParam t) => EncodeParam (Collection 'Pipes t) where
+  encodeParam (Collection innerVector) =  BS.intercalate "|" $ fmap (\\singleVal -> encodeParam singleVal ) (V.toList innerVector)
+
+
+instance (DecodeParam (Collection format t) ) => FromParam 'QueryParam (Collection format t) where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+    Just (Just par) -> case decodeParam par of
+          Just v -> Validation $ Right v
+          _      -> Validation $ Left [ParseErr key "Unable to cast to Collection"]
+    _ ->  Validation $ Left [NotFound key]
+
+
+instance (DecodeParam t) => DecodeParam (Collection 'CSV t) where
+  decodeParam str = 
+    case sequenceA $ fmap decodeParam (ASCII.split ',' str) of
+      Just parsedList -> Just $ Collection $ V.fromList $ parsedList
+      Nothing -> Nothing
+    
+
+instance (DecodeParam t) => DecodeParam (Collection 'SSV t) where
+  decodeParam str = 
+    case sequenceA $ fmap decodeParam (ASCII.split ' ' str) of
+      Just parsedList -> Just $ Collection $ V.fromList $ parsedList
+      Nothing -> Nothing
+
+    
+instance (DecodeParam t) => DecodeParam (Collection 'TSV t) where
+  decodeParam str = 
+    case sequenceA $ fmap decodeParam (ASCII.split '\\t' str) of
+      Just parsedList -> Just $ Collection $ V.fromList $ parsedList
+      Nothing -> Nothing
+
+
+instance (DecodeParam t) => DecodeParam (Collection 'Pipes t) where
+  decodeParam str = 
+    case sequenceA $ fmap decodeParam (ASCII.split '|' str) of
+      Just parsedList -> Just $ Collection $ V.fromList $ parsedList
+      Nothing -> Nothing
+
+
+keyMapping :: HM.HashMap String String -> String -> String
+keyMapping hMap k = 
+  case HM.lookup k hMap of
+    Just foundVal -> foundVal
+    Nothing -> k
+
+
+instance ToSchema (MultiSet Text) where
+  declareNamedSchema = plain . paramSchemaToSchema
+
+
+instance ToParamSchema (MultiSet Text) where
+  toParamSchema _ = mempty
+      & SW.type_ .~ SwaggerArray
+      & SW.items ?~ SwaggerItemsPrimitive Nothing (mempty & SW.type_ .~ SwaggerString)  
+      
+
+data SwaggerNumber = IntegerFormat Integer | DoubleFormat Double
+  deriving (Eq, Show, Generic)
+
+instance ToJSON SwaggerNumber
+instance FromJSON SwaggerNumber
+instance ToSchema SwaggerNumber
+instance ToParam 'QueryParam SwaggerNumber
+
+instance DecodeParam SwaggerNumber where
+  decodeParam bs =
+    case decodeParam bs :: Maybe Integer of 
+      Just x -> Just $ IntegerFormat x
+      Nothing -> 
+        case decodeParam bs :: Maybe Double of
+          Just y -> Just $ DoubleFormat y
+          Nothing -> error $ "Expected SwaggerNumber to coerce into either Integer or Double!"
+            ++ "\\nInput param is : " ++ (show bs)
+      |]
 
 
 ---------------------------------------------------------------------------------------
