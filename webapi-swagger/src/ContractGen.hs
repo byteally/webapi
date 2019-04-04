@@ -135,13 +135,14 @@ qualifiedImportsForTypesModule =
 qualifiedGlobalImports :: [String] -> [(String, (Bool, Maybe (ModuleName SrcSpanInfo)))]                               
 qualifiedGlobalImports moduleList =
   let moduleWithQuals = fmap (\modName -> 
-            if DL.isInfixOf modName globalDefnsModuleName 
+            if DL.isInfixOf globalDefnsModuleName modName 
             then (modName, "Defns")
-            else if DL.isInfixOf modName globalRespTypesModuleName
+            else if DL.isInfixOf globalRespTypesModuleName modName
                  then (modName, "Resps")
-                 else if DL.isInfixOf modName globalParamTypesModuleName
+                 else if DL.isInfixOf globalParamTypesModuleName modName
                       then (modName, "Params")
-                      else error "Expected one of the 3 Global Defn modules!") moduleList
+                      else error "Expected one of the 3 Global Defn modules!") (DL.nub moduleList)
+        -- TODO : find out how duplicate entries are coming into imports so we can remove the above call to `nub`
   in fmap (\(modName, qualName) -> (modName, (True, Just $ ModuleName noSrcSpan qualName) )  ) moduleWithQuals
 
 
@@ -299,7 +300,7 @@ writeGeneratedTypesToFile genPath ioModuleNames levelInfo typeInfos = do
                     (fmap languageExtension typeFamiliesForTypesModule)
                     (fmap moduleImport 
                       ( (DL.zip importsForTypesModule (cycle [(False, Nothing)]) ) 
-                         ++ qualifiedImportsForTypesModule ++ qualifiedGlobalImports moduleNames ) )
+                         ++ qualifiedImportsForTypesModule ++ ( qualifiedGlobalImports (getGlobalModuleNames moduleNames) ) ) )
                     (createDataDeclarations $ createDataTyList)
 
       createDirectoryIfMissing True typesModuleDir
