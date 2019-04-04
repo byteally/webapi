@@ -130,7 +130,19 @@ qualifiedImportsForTypesModule =
                                , ("WebApi.Param", (True, Just $ ModuleName noSrcSpan "P") )
                                , ("Data.Text.Encoding", (True, Just $ ModuleName noSrcSpan "P") )
                                , ("Prelude", (True, Just $ ModuleName noSrcSpan "P") )
-                               ]                        
+                               ]       
+                               
+qualifiedGlobalImports :: [String] -> [(String, (Bool, Maybe (ModuleName SrcSpanInfo)))]                               
+qualifiedGlobalImports moduleList =
+  let moduleWithQuals = fmap (\modName -> 
+            if DL.isInfixOf modName globalDefnsModuleName 
+            then (modName, "Defns")
+            else if DL.isInfixOf modName globalRespTypesModuleName
+                 then (modName, "Resps")
+                 else if DL.isInfixOf modName globalParamTypesModuleName
+                      then (modName, "Params")
+                      else error "Expected one of the 3 Global Defn modules!") moduleList
+  in fmap (\(modName, qualName) -> (modName, (True, Just $ ModuleName noSrcSpan qualName) )  ) moduleWithQuals
 
 
 readSwaggerGenerateDefnModels :: FilePath -> FilePath -> String -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO [String]
@@ -286,7 +298,8 @@ writeGeneratedTypesToFile genPath ioModuleNames levelInfo typeInfos = do
                     (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan modName) Nothing Nothing)
                     (fmap languageExtension typeFamiliesForTypesModule)
                     (fmap moduleImport 
-                      ( (DL.zip importsForTypesModule (cycle [(False, Nothing)]) ) ++ qualifiedImportsForTypesModule ) )
+                      ( (DL.zip importsForTypesModule (cycle [(False, Nothing)]) ) 
+                         ++ qualifiedImportsForTypesModule ++ qualifiedGlobalImports moduleNames ) )
                     (createDataDeclarations $ createDataTyList)
 
       createDirectoryIfMissing True typesModuleDir
@@ -296,6 +309,9 @@ writeGeneratedTypesToFile genPath ioModuleNames levelInfo typeInfos = do
  where
   createDataDeclarations :: [CreateDataType] -> [Decl SrcSpanInfo]
   createDataDeclarations = DL.foldl' createTypeDeclFromCDT []  
+
+  getGlobalModuleNames :: [String] -> [String]
+  getGlobalModuleNames = DL.filter (DL.isInfixOf ".GlobalDefinitions.") 
   
 
 
