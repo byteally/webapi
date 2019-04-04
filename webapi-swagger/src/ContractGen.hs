@@ -680,15 +680,18 @@ processOperation commonPathLvlParams currentRouteName methodAcc swaggerData stdM
             modify' (\existingState -> HMS.unionWith (++) existingState qParamHM)
             pure $ Just newDataTypeName
           HeaderParam -> do
+            let paramNames = fmap (\param -> T.unpack $ _paramName param) paramList
             typeListWithIsMandatory <- forM paramList (\param -> do
                     hType <- getParamTypeParam param (Just $ T.unpack ( _paramName param) ) Nothing
                     pure (isMandatory param, hType) )
             let finalHaskellTypes = fmap (\(isMandatoryType, hType) -> (addMaybeToType isMandatoryType hType) ) typeListWithIsMandatory
-            case finalHaskellTypes of
-              [] -> pure Nothing
-              x:[] -> pure $ Just x
-              _ -> error $ "Encountered multiple Header Params! This is not yet handled!"
-                ++ "\nDebug Info : " ++ (show paramList)
+            let recordTypesInfo = DL.zip paramNames finalHaskellTypes
+            let newDataTypeName = setValidConstructorId "HHeaderParam"
+            let headerParamDataInfo = ProductType (NewData newDataTypeName recordTypesInfo)
+            let levelInfo = Local ParamTy (currentRouteName, stdMethod)
+            let headerParamHM = HMS.singleton levelInfo [HeaderInTy headerParamDataInfo]
+            modify' (\existingState -> HMS.unionWith (++) existingState headerParamHM)
+            pure $ Just newDataTypeName
           FileParam -> do
             typeList <- forM paramList (\param -> getParamTypeParam param (Just $ T.unpack ( _paramName param) ) Nothing )
             case typeList of
