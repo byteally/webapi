@@ -36,6 +36,7 @@ import Data.Yaml (decodeEither')
 import Control.Applicative ((<|>))
 
 import ContractGenTypes
+import Constants
 import qualified Data.HashMap.Strict as HMS
 
 runDefaultPathCodeGen :: IO ()
@@ -107,13 +108,13 @@ typeFamiliesForTypesModule = [
 importsForTypesModule :: [String]
 importsForTypesModule = [ 
                           "Prelude ()"
-                        , "Data.Swagger.Schema"
+                        -- , "Data.Swagger.Schema"
                         , "CommonTypes"
                         , "Control.Lens"
-                        , "Data.Swagger.Internal.Schema"
-                        , "Data.Swagger.ParamSchema"
+                        -- , "Data.Swagger.Internal.Schema"
+                        -- , "Data.Swagger.ParamSchema"
                          -- TODO : This is kind of a hack!
-                        , "Data.Swagger.Internal hiding (Tag)"
+                        -- , "Data.Swagger.Internal hiding (Tag)"
                         ]
 
 qualifiedImportsForTypesModule :: [(String, (Bool, Maybe (ModuleName SrcSpanInfo) ))]  
@@ -121,10 +122,12 @@ qualifiedImportsForTypesModule =
                                [
                                  ("Data.ByteString.Char8", (True, Just $ ModuleName noSrcSpan "ASCII"))
                                , ("Data.HashMap.Lazy", (True, Just $ ModuleName noSrcSpan "HM") )
-                               , ("Data.Swagger", (True, Just $ ModuleName noSrcSpan "SW") )
+                              --  , ("Data.Swagger", (True, Just $ ModuleName noSrcSpan "SW") )
                                , ("Data.Text", (True, Just $ ModuleName noSrcSpan "P") )
                                , ("Data.Int", (True, Just $ ModuleName noSrcSpan "P") )
+                               , ("Data.ByteString", (True, Just $ ModuleName noSrcSpan "P"))
                                , ("Data.Time.Clock", (True, Just $ ModuleName noSrcSpan "P") )
+                               , ("Data.Time.Calendar", (True, Just $ ModuleName noSrcSpan "P") )
                                , ("GHC.Generics", (True, Just $ ModuleName noSrcSpan "P") )
                                , ("Data.Aeson", (True, Just $ ModuleName noSrcSpan "P") )
                                , ("WebApi.Param", (True, Just $ ModuleName noSrcSpan "P") )
@@ -136,11 +139,11 @@ qualifiedGlobalImports :: [String] -> [(String, (Bool, Maybe (ModuleName SrcSpan
 qualifiedGlobalImports moduleList =
   let moduleWithQuals = fmap (\modName -> 
             if DL.isInfixOf globalDefnsModuleName modName 
-            then (modName, "Defns")
+            then (modName, globalDefnsQualName)
             else if DL.isInfixOf globalRespTypesModuleName modName
-                 then (modName, "Resps")
+                 then (modName, globalRespTypesQualName)
                  else if DL.isInfixOf globalParamTypesModuleName modName
-                      then (modName, "Params")
+                      then (modName, globalParamsQualName)
                       else error "Expected one of the 3 Global Defn modules!") (DL.nub moduleList)
         -- TODO : find out how duplicate entries are coming into imports so we can remove the above call to `nub`
   in fmap (\(modName, qualName) -> (modName, (True, Just $ ModuleName noSrcSpan qualName) )  ) moduleWithQuals
@@ -237,33 +240,6 @@ readSwaggerGenerateDefnModels swaggerJsonInputFilePath contractOutputFolderPath 
 --       ++ "\n The value is : " ++ (show cNewTy)   ) [] newDataList
 
 
-globalTypesModulePath :: String
-globalTypesModulePath = "src/Types/GlobalDefinitions/"
-
-globalTypesHsModuleName :: String
-globalTypesHsModuleName = "Types.GlobalDefinitions."
-
-globalDefnsModuleName :: String
-globalDefnsModuleName = "TypeDefinitions"
-
-globalRespTypesModuleName :: String
-globalRespTypesModuleName = "ResponseDefinitions"
-
-globalParamTypesModuleName :: String
-globalParamTypesModuleName = "ParamDefinitions"
-
-hsModuleToFileName :: String -> String
-hsModuleToFileName modName = modName ++ ".hs"
-
-localRouteMethodTypesModuleName :: String
-localRouteMethodTypesModuleName = "Types"
-
-localRouteMethodTypesPath :: RouteName -> StdMethod -> String
-localRouteMethodTypesPath rName stdMethod = "src/Types/" ++ rName ++ "/" ++ (show stdMethod) ++ "/"
-
-localRouteMethodTypesModName :: RouteName -> StdMethod -> String
-localRouteMethodTypesModName rName stdMethod = "Types." ++ rName ++ "." ++ (show stdMethod) ++ "."
-
 
 writeGeneratedTypesToFile :: FilePath  -> IO [String] -> LevelInfo -> [TypeInfo] -> IO [String]
 writeGeneratedTypesToFile genPath ioModuleNames levelInfo typeInfos = do
@@ -339,10 +315,10 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (
         -- Along with the Restructuring of Generated types into modules, we have scrapped `TypeAlias` and replaced it with `NewType`
         else 
           let createTypeInfo = HNewType (setValidConstructorId $ T.unpack modelName) hsType
-          in pure $ HMS.insertWith (++) (Global DefinitionTy) [DefinitionType createTypeInfo] accValue
+          in pure $ HMS.insertWith checkForDuplicateAndAdd (Global DefinitionTy) [DefinitionType createTypeInfo] accValue
       False -> do
         prodType <- parseSchemaToCDT (Global DefinitionTy) DefinitionI modelName modelSchema
-        pure $ HMS.insertWith (++) (Global DefinitionTy) [DefinitionType prodType] accValue
+        pure $ HMS.insertWith checkForDuplicateAndAdd (Global DefinitionTy) [DefinitionType prodType] accValue
 
 parseSchemaToCDT :: LevelInfo -> TInfo -> Text -> Schema -> StateConfig (CreateDataType)
 parseSchemaToCDT levelInfo tInfo mainTypeName ilSchema = do
@@ -357,9 +333,9 @@ parseSchemaToCDT levelInfo tInfo mainTypeName ilSchema = do
           let recordTypeWithMaybe = 
                 case (innerRecordName `DL.elem` mandatoryFields) of 
                   True -> setValidConstructorId innerRecordType
-                  False -> "P.Maybe " ++ (setValidConstructorId innerRecordType)
+                  False -> "P.Maybe " ++ innerRecordType
           pure $ (innerRecordName, recordTypeWithMaybe):accList ) (pure []) (_schemaProperties ilSchema)
-  pure (ProductType $ NewData (T.unpack mainTypeName) recordNamesAndTypes)
+  pure (ProductType $ NewData (setValidConstructorId $ T.unpack mainTypeName) recordNamesAndTypes)
 
 
 generateGlobalResponseData :: InsOrdHashMap Text Response -> StateConfig (HMS.HashMap LevelInfo [TypeInfo])
@@ -375,11 +351,11 @@ generateGlobalResponseData globalRespHM = foldlWithKey' parseResponseDefn (pure 
         let respDataTy = HNewType (T.unpack responseDefName) (T.unpack refText)
         -- TODO: Verify if DefinitionType is okay here.
         let newRespHM = HMS.singleton (Global ResponseTy) [DefinitionType respDataTy]
-        pure $ HMS.unionWith (++) accValue newRespHM
+        pure $ HMS.unionWith checkForDuplicateAndAdd accValue newRespHM
       Just (Inline ilSchema) -> do
         let levelInfo = Global ResponseTy
         cdt <- parseSchemaToCDT levelInfo DefinitionI responseDefName ilSchema
-        pure $ HMS.insertWith (++) levelInfo [DefinitionType cdt] accValue
+        pure $ HMS.insertWith checkForDuplicateAndAdd levelInfo [DefinitionType cdt] accValue
       -- TODO: we should probably log this in the error reporting as it doesn't make much sense if it's a `Nothing`
       Nothing -> scAccValue
 
@@ -540,7 +516,7 @@ processOperation commonPathLvlParams currentRouteName methodAcc swaggerData stdM
       let addPlainText = 
             case apiOutType of
               "()" -> True
-              "Text" -> True
+              "P.Text" -> True
               _ -> False
           
       let pathLvlAndLocalParam = filterOutOverriddenParams refParamsHM (_operationParameters operationData) commonPathLvlParams
@@ -628,38 +604,36 @@ processOperation commonPathLvlParams currentRouteName methodAcc swaggerData stdM
           True -> do
             finalOutType <- do
               let newTypeNameConstructor = "ApiOut"
-              currentResponseType <- parseResponseContentGetType (lvlInfo, ApiOutI) currentResponse swaggerData newTypeNameConstructor
-              fOutType <- addTypeToState (lvlInfo, ApiOutI) currentResponseType newTypeNameConstructor
+              (tyLevelInfo, currentResponseType) <- parseResponseContentGetType (lvlInfo, ApiOutI) currentResponse swaggerData newTypeNameConstructor
+              fOutType <- addTypeToState (lvlInfo, ApiOutI) (tyLevelInfo, currentResponseType) newTypeNameConstructor
               pure $ Just fOutType
             pure (finalOutType, apiErrType)
           False -> do
             finalErrType <- do
-                  let newTypeNameConstructor = "ApiErr"
-                  currentResponseType <- parseResponseContentGetType (lvlInfo, ApiErrI) currentResponse swaggerData newTypeNameConstructor
-                  fErrType <- addTypeToState (lvlInfo, ApiErrI) currentResponseType newTypeNameConstructor
-                  pure $ Just fErrType
+              let newTypeNameConstructor = "ApiErr"
+              (tyLevelInfo, currentResponseType) <- parseResponseContentGetType (lvlInfo, ApiErrI) currentResponse swaggerData newTypeNameConstructor
+              fErrType <- addTypeToState (lvlInfo, ApiErrI) (tyLevelInfo, currentResponseType) newTypeNameConstructor
+              pure $ Just fErrType
             pure (apiOutType, finalErrType)
     ) (pure (Nothing, Nothing)) responsesHM  
-  parseResponseContentGetType :: (LevelInfo, TInfo) -> Referenced Response -> Swagger -> String -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String
+  parseResponseContentGetType :: (LevelInfo, TInfo) -> Referenced Response -> Swagger -> String -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO (LevelInfo, String)
   parseResponseContentGetType (levelInfo, tInfo) referencedResp swaggerData newTypeConsName = do
     let swResponses :: InsOrdHashMap Text Response = _swaggerResponses swaggerData
     -- let swDataDefns :: InsOrdHashMap Text Schema = _swaggerDefinitions swaggerData
 
     case referencedResp of
-      Ref refText -> 
-        case HMSIns.lookup (getReference refText) swResponses of
-          Just refResponse -> 
-            case _responseSchema refResponse of
-              Just (Ref (Reference refSchema) ) -> pure $ T.unpack refSchema 
-              Just (Inline inSchema) -> ( (getTypeFromSwaggerType levelInfo tInfo newTypeConsName (Just inSchema) ) . _schemaParamSchema) inSchema
-              Nothing -> pure "Text"
-            -- TODO : Should we error out here or inform the user that Referenced Response not found in Responses HM? 
-          Nothing -> pure "Text"
+      Ref refText -> do
+        let refRespName = getReference refText
+        let globalRespLevel = Global ResponseTy
+        pure (globalRespLevel, T.unpack refRespName)
       Inline responseSchema -> 
         case (_responseSchema responseSchema) of
-          Just (Ref refText) -> pure $ T.unpack $ getReference refText
-          Just (Inline respSchema) -> ((getTypeFromSwaggerType levelInfo tInfo newTypeConsName (Just respSchema) ) . _schemaParamSchema) respSchema
-          Nothing -> pure "Text"
+          Just (Ref refText) -> pure (Global DefinitionTy, T.unpack $ getReference refText)
+          Just (Inline respSchema) -> do
+            typeNameStr <- ((getTypeFromSwaggerType levelInfo tInfo newTypeConsName (Just respSchema) ) . _schemaParamSchema) respSchema
+            pure (levelInfo, typeNameStr)
+          -- NOTE : The following case means no content is returned with the Response!
+          Nothing -> pure (levelInfo, "()")
   getParamTypes :: [Param] -> ParamType -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO (Maybe String)
   getParamTypes paramList paramType = 
     case paramList of
@@ -677,7 +651,7 @@ processOperation commonPathLvlParams currentRouteName methodAcc swaggerData stdM
             let formParamDataInfo = ProductType (NewData newDataTypeName recordTypesInfo)
             let levelInfo = Local ParamTy (currentRouteName, stdMethod)
             let fParamHM = HMS.singleton levelInfo [FormParamTy formParamDataInfo]
-            modify' (\existingState -> HMS.unionWith (++) existingState fParamHM) 
+            modifyState fParamHM
             pure $ Just newDataTypeName
           QueryParam -> do
             let paramNames = fmap (\param -> T.unpack $ _paramName param) paramList
@@ -690,7 +664,7 @@ processOperation commonPathLvlParams currentRouteName methodAcc swaggerData stdM
             let queryParamDataInfo = ProductType (NewData newDataTypeName recordTypesInfo)
             let levelInfo = Local ParamTy (currentRouteName, stdMethod)
             let qParamHM = HMS.singleton levelInfo [QueryParamTy queryParamDataInfo]
-            modify' (\existingState -> HMS.unionWith (++) existingState qParamHM)
+            modifyState qParamHM
             pure $ Just newDataTypeName
           HeaderParam -> do
             let paramNames = fmap (\param -> T.unpack $ _paramName param) paramList
@@ -703,7 +677,7 @@ processOperation commonPathLvlParams currentRouteName methodAcc swaggerData stdM
             let headerParamDataInfo = ProductType (NewData newDataTypeName recordTypesInfo)
             let levelInfo = Local ParamTy (currentRouteName, stdMethod)
             let headerParamHM = HMS.singleton levelInfo [HeaderInTy headerParamDataInfo]
-            modify' (\existingState -> HMS.unionWith (++) existingState headerParamHM)
+            modifyState headerParamHM
             pure $ Just newDataTypeName
           FileParam -> do
             typeList <- forM paramList (\param -> getParamTypeParam param (T.unpack ( _paramName param) ) Nothing )
@@ -748,7 +722,7 @@ processOperation commonPathLvlParams currentRouteName methodAcc swaggerData stdM
   addMaybeToType isNotNull haskellType = 
     case isNotNull of
       True -> haskellType
-      False -> "Maybe " ++ haskellType 
+      False -> "P.Maybe " ++ haskellType 
 
 
 filterOutOverriddenParams :: InsOrdHashMap Text Param -> [Referenced Param] -> [Referenced Param] -> [Referenced Param]
@@ -775,15 +749,31 @@ filterOutOverriddenParams globalParams pathLvlParams localOpParams = do
             ++ "\nParam Name : " ++ (T.unpack paramNameTxt)
 
 
-addTypeToState :: (LevelInfo, TInfo) -> String -> String  -> (StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String)
-addTypeToState (levelInfo, tInfo) currentType newTypeName = do
-        let sumTyConsName = setValidConstructorId currentType
-            sumTypeConstructors = [(sumTyConsName, sumTyConsName)]
+addTypeToState :: (LevelInfo, TInfo) -> (LevelInfo, String) -> String  -> (StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String)
+addTypeToState (levelInfo, tInfo) (tLevelInfo, currentType) newTypeName = do
+        let typeWithQual = addQual levelInfo currentType tLevelInfo
+        let sumTyConsName = 
+              if currentType == "()"
+              then "NoContent"
+              else setValidConstructorId currentType
+            sumTypeConstructors = [(sumTyConsName, typeWithQual)]
             sumTypeInfo = SumType (ComplexSumType newTypeName sumTypeConstructors) -- [currentType, eType] [currentType, eType] -- Note : OgNames not really applicable here so putting Haskell names
         modify' (\existingState -> HMS.insertWith (insertIntoExistingSumTy sumTyConsName) levelInfo [tInfoToTypeInfo tInfo sumTypeInfo] existingState )
         pure newTypeName
 
  where
+  addQual :: LevelInfo -> String -> LevelInfo -> String
+  addQual currentLvlInfo typeStr typeLvlInfo = 
+    case currentLvlInfo == typeLvlInfo of
+      True -> typeStr
+      False ->
+        let qualImportName = 
+              case typeLvlInfo of
+                Global DefinitionTy -> globalDefnsQualName 
+                Global ResponseTy -> globalRespTypesQualName
+                Global ParamTy -> globalParamsQualName
+                _ -> error $ "Expected a Global LevelInfo if LevelInfos don't match. Got : " ++ (show typeLvlInfo)
+        in qualImportName ++ "." ++ typeStr
 
   insertIntoExistingSumTy :: String -> [TypeInfo] -> [TypeInfo] -> [TypeInfo]
   insertIntoExistingSumTy currentTyCons newTyInfo existingTyInfos = 
@@ -818,7 +808,7 @@ addTypeToState (levelInfo, tInfo) currentType newTypeName = do
   addToStateSumType :: LevelInfo -> String -> String -> (HMS.HashMap LevelInfo [TypeInfo], Bool) -> LevelInfo -> [TypeInfo] -> (HMS.HashMap LevelInfo [TypeInfo], Bool)
   addToStateSumType currentTyLvlInfo newSumTypeName currentTypeStr (accVal, isChanged) lvlInfo tyInfoList = 
     let (modTypeInfoList, valueChanged) = DL.foldl' (addToSSTypeInfo newSumTypeName currentTypeStr) ([], isChanged) tyInfoList
-    in (HMS.insertWith (++) lvlInfo modTypeInfoList accVal, valueChanged)
+    in (HMS.insertWith checkForDuplicateAndAdd lvlInfo modTypeInfoList accVal, valueChanged)
 
   addToSSTypeInfo :: String -> String -> ([TypeInfo], Bool) -> TypeInfo -> ([TypeInfo], Bool) 
   addToSSTypeInfo newSumTypeName currentTypeStr (accTyInfoList, isChanged) currentTyInfo = 
@@ -898,6 +888,7 @@ getTypeFromSwaggerType levelInfo tInfo paramNameOrRecordName mOuterSchema paramS
           Just "date-time" -> pure "P.UTCTime"
           Just "password" -> error $ "Encountered SwaggerString with Format as `password`. This needs to be handled! Debug Info : " ++ show paramSchema
           Just "byte" -> pure "P.ByteString"
+          -- TODO : Map binary to ByteString
           Just "binary" -> error $ "Encountered SwaggerString with Format as `binary`. This needs to be handled! Debug Info: " ++ show paramSchema
           Nothing -> 
             case _paramSchemaEnum paramSchema of
@@ -909,24 +900,25 @@ getTypeFromSwaggerType levelInfo tInfo paramNameOrRecordName mOuterSchema paramS
                         fmap (\(Data.Aeson.String enumVal) -> 
                                   (setValidConstructorId (T.unpack enumVal), T.unpack enumVal) ) valueEnumList
                 let haskellNewTypeInfo = SumType (BasicEnum newSumTypeName enumVals ogVals )
-                currentState <- get
-                let onlySumTypes = DL.filter (\newTypeObj -> do
-                          case newTypeObj of 
-                            SumType (BasicEnum _ _ _) -> True
-                            _ -> False ) $ fmap getInnerTyFromTypeInfo $ DL.concat $ HMS.elems currentState
-                let createSumType = DL.foldl' checkIfSumTypeExists (CreateSumType haskellNewTypeInfo) onlySumTypes
-                -- TODO : This is a placeholder value and needs to be changed in Phase 2
-                -- let levelInfo = Local DefinitionTy ("",GET)
-                case createSumType of
-                  CreateSumType (SumType (BasicEnum sName sNewVals sOgVals) ) -> do
-                    let sumTyInfo = (SumType (BasicEnum sName sNewVals sOgVals) )
-                    let sumTyHM = HMS.singleton levelInfo [tInfoToTypeInfo tInfo sumTyInfo]
-                    modify' (\existingState -> HMS.unionWith (++) existingState sumTyHM)
-                    pure sName
-                  CreateSumType otherTy -> 
-                    error $ "Expected only SumTypes here, but got : " ++ (show otherTy)
-                      ++ "\nSince we have already filtered for only SumTypes, this should not be possible!"
-                  ExistingType existingTyName -> pure existingTyName
+                let sumTyHM = HMS.singleton levelInfo [tInfoToTypeInfo tInfo haskellNewTypeInfo]
+                modifyState sumTyHM
+                pure newSumTypeName
+                -- currentState <- get
+                -- let onlySumTypes = DL.filter (\newTypeObj -> do
+                --           case newTypeObj of 
+                --             SumType (BasicEnum _ _ _) -> True
+                --             _ -> False ) $ fmap getInnerTyFromTypeInfo $ DL.concat $ HMS.elems currentState
+                -- let createSumType = DL.foldl' checkIfSumTypeExists (CreateSumType haskellNewTypeInfo) onlySumTypes
+                -- case createSumType of
+                --   CreateSumType (SumType (BasicEnum sName sNewVals sOgVals) ) -> do
+                --     let sumTyInfo = (SumType (BasicEnum sName sNewVals sOgVals) )
+                --     let sumTyHM = HMS.singleton levelInfo [tInfoToTypeInfo tInfo sumTyInfo]
+                --     modify' (\existingState -> HMS.unionWith (++) existingState sumTyHM)
+                --     pure sName
+                  -- CreateSumType otherTy -> 
+                  --   error $ "Expected only SumTypes here, but got : " ++ (show otherTy)
+                  --     ++ "\nSince we have already filtered for only SumTypes, this should not be possible!"
+                  -- ExistingType existingTyName -> pure existingTyName
           _ -> pure "P.Text" -- error $ "Encountered SwaggerString with unknown Format! Debug Info: " ++ show paramSchema
       Just SwaggerNumber -> 
         case _paramSchemaFormat paramSchema of
@@ -945,7 +937,8 @@ getTypeFromSwaggerType levelInfo tInfo paramNameOrRecordName mOuterSchema paramS
                           case obj of
                             Ref reference -> pure $ "[" ++ (setValidConstructorId $ T.unpack $ getReference reference) ++ "]"
                             Inline recursiveSchema -> do
-                              hType <- ( ( (getTypeFromSwaggerType levelInfo tInfo paramNameOrRecordName (Just recursiveSchema) ) . _schemaParamSchema) recursiveSchema)
+                              let innerTypeName = (setValidConstructorId $ paramNameOrRecordName ++ "Contents")
+                              hType <- ( ( (getTypeFromSwaggerType levelInfo tInfo innerTypeName (Just recursiveSchema) ) . _schemaParamSchema) recursiveSchema)
                               pure $ "[" ++ hType ++ "]"
                         -- NOTE : SwaggerItemsArray is used in a case where there are tuple Schemas.
                         -- So we need to represent the following list of Ref Schemas as a tuple or newtype (over tuple).
@@ -965,7 +958,7 @@ getTypeFromSwaggerType levelInfo tInfo paramNameOrRecordName mOuterSchema paramS
                                           DL.unzip $ fmap (\(Data.Aeson.String val) -> (T.unpack $ T.toTitle val, T.unpack val) ) enumVals
                                     let haskellNewTypeInfo = SumType (BasicEnum titleCaseParamName enumValList ogVals)
                                     let hNewTyHM = HMS.singleton levelInfo [tInfoToTypeInfo tInfo haskellNewTypeInfo]
-                                    modify'(\existingState -> HMS.unionWith (++) existingState hNewTyHM)
+                                    modifyState hNewTyHM
                                     pure titleCaseParamName
                                     -- TODO: Is it allowed for a CollectionFmt type to have this inner schema (complex type)? 
                                   Nothing ->  getTypeFromSwaggerType levelInfo tInfo ("Collection" ++ titleCaseParamName) Nothing innerParamSchema
@@ -1007,24 +1000,8 @@ getTypeFromSwaggerType levelInfo tInfo paramNameOrRecordName mOuterSchema paramS
                       let typeWithMaybe = if isRequired then innerRecordType else setMaybeType innerRecordType
                       pure (recordNameStr, typeWithMaybe) )
                 let finalProductTypeInfo = ProductType $ NewData recordTypeName innerRecordsInfo
-                 -- NOTE : The below logic is checking for duplicate types. 
-                --  This should not be an issue anymore with the new directory (qual) structure.
-                -- Hence removing the checks
-
-                -- modify' (\existingState -> -- finalProductTypeInfo:existingState)
-                --             case DL.elem finalProductTypeInfo existingState of
-                --               True -> existingState
-                --               False -> do
-                --                 case isNamePresent recordTypeName existingState of
-                --                   True -> 
-                --                     let modType = setNewTypeConsName mRouteName finalProductTypeInfo
-                --                     in modType:existingState
-                --                   False -> finalProductTypeInfo:existingState )
-
-                -- TODO : This is a placeholder value and needs to be changed in Phase 2
-                -- let levelInfo = Local DefinitionTy ("",GET)
                 let hNewTyHM = HMS.singleton levelInfo [tInfoToTypeInfo tInfo finalProductTypeInfo]
-                modify'(\existingState -> HMS.unionWith (++) existingState hNewTyHM)
+                modifyState hNewTyHM
                 pure recordTypeName
           Nothing -> error $ "Expected outer schema to be present when trying to construct type of SwaggerObject. Debug Info (ParamSchema):  " ++ show paramSchema
       Just SwaggerFile -> pure "W.FileInfo" -- TODO 
@@ -1065,29 +1042,50 @@ getTypeFromSwaggerType levelInfo tInfo paramNameOrRecordName mOuterSchema paramS
     case DL.nub stringList of
       sameElem:[] -> pure $ "[" ++ sameElem ++ "]"
       x -> error $ "Got different types in the same list. Not sure how to proceed! Please check the swagger doc! " ++ show x
-  checkIfSumTypeExists :: SumTypeCreation -> CreateDataType -> SumTypeCreation
-  checkIfSumTypeExists sumTypeCreation (SumType (BasicEnum typeName tVals _) ) = 
-    case sumTypeCreation of
-      ExistingType eTyName -> ExistingType eTyName
-      CreateSumType (SumType (BasicEnum newTypeName newTypeVals ogVals ) ) -> do
-        case (newTypeVals == tVals) of 
-          True -> ExistingType typeName
-          False -> 
-            case (newTypeVals `DL.intersect` tVals) of
-              [] -> CreateSumType (SumType (BasicEnum newTypeName newTypeVals ogVals ) )
-              _ -> 
-                let modConstructorNames = fmap (\oldCons -> setValidConstructorId $ newTypeName ++ oldCons) newTypeVals
-                in CreateSumType (SumType (BasicEnum newTypeName modConstructorNames ogVals ) )
+  -- checkIfSumTypeExists :: SumTypeCreation -> CreateDataType -> SumTypeCreation
+  -- checkIfSumTypeExists sumTypeCreation (SumType (BasicEnum typeName tVals _) ) = 
+  --   case sumTypeCreation of
+  --     ExistingType eTyName -> ExistingType eTyName
+  --     CreateSumType (SumType (BasicEnum newTypeName newTypeVals ogVals ) ) -> do
+  --       case (newTypeVals == tVals) of 
+  --         True -> ExistingType typeName
+  --         False -> 
+  --           case (newTypeVals `DL.intersect` tVals) of
+  --             [] -> CreateSumType (SumType (BasicEnum newTypeName newTypeVals ogVals ) )
+  --             _ -> 
+  --               let modConstructorNames = fmap (\oldCons -> setValidConstructorId $ newTypeName ++ oldCons) newTypeVals
+  --               in CreateSumType (SumType (BasicEnum newTypeName modConstructorNames ogVals ) )
 
-      CreateSumType xType -> 
-        error $ "Expected only SumTypes here but got : " ++ (show xType)
-          ++ "\nSince we already filtered for only SumTypes, this should not be possible!"
+  --     CreateSumType xType -> 
+  --       error $ "Expected only SumTypes here but got : " ++ (show xType)
+  --         ++ "\nSince we already filtered for only SumTypes, this should not be possible!"
 
-  checkIfSumTypeExists newType existingType =
-    error $ "PANIC : We already filtered for only Sum Types but encountered non-sum type constructor!"
-      ++ "\nDebugInfo : New Type to be created is : " ++ (show newType)
-      ++ "\nExisting type is : " ++ (show existingType)
+  -- checkIfSumTypeExists newType existingType =
+  --   error $ "PANIC : We already filtered for only Sum Types but encountered non-sum type constructor!"
+  --     ++ "\nDebugInfo : New Type to be created is : " ++ (show newType)
+  --     ++ "\nExisting type is : " ++ (show existingType)
 
+
+modifyState :: HMS.HashMap LevelInfo [TypeInfo] -> StateConfig ()
+modifyState hNewTyHM = modify' (\existingState -> HMS.unionWith checkForDuplicateAndAdd existingState hNewTyHM)
+
+  
+checkForDuplicateAndAdd :: [TypeInfo] -> [TypeInfo] -> [TypeInfo]
+checkForDuplicateAndAdd = DL.union
+
+--  where
+
+  -- (trace (traceStateValIfAuthor newList existingList) existingList)
+
+  -- traceStateValIfAuthor :: [TypeInfo] -> [TypeInfo] -> String
+  -- traceStateValIfAuthor newList exList = show newList
+    -- case newList of
+    --   someTy:[] -> 
+    --     case getTypeName someTy of
+    --       "Author" -> "NewList : " ++ (show newList) ++ "\nExistingList : " ++ (show exList) 
+    --       "Tree" -> "NewList : " ++ (show newList) ++ "\nExistingList : " ++ (show exList) 
+    --       _ -> ""
+    --   _ -> "more than 1 elem or not Def Ty"
 
 
 parseHaskellSrcContract :: String -> IO ()
@@ -2058,299 +2056,21 @@ toSchemaInstanceForSumType typeName constructorValues =
             (dataConstructor "String") 
             (stringLiteral ogCons)
 
-haskellKeywords :: [String]
-haskellKeywords = 
-  ["as"
-  ,"case"
-  ,"of"
-  ,"class"
-  ,"data"
-  ,"data family"
-  ,"data instance"
-  ,"default"
-  ,"deriving"
-  ,"deriving instance"
-  ,"do"
-  ,"forall"
-  ,"foreign"
-  ,"hiding"
-  ,"if"
-  ,"then"
-  ,"else"
-  ,"import"
-  ,"infix"
-  ,"infixl"
-  ,"infixr"
-  ,"instance"
-  ,"let"
-  ,"in"
-  ,"mdo"
-  ,"module"
-  ,"newtype"
-  ,"proc"
-  ,"qualified"
-  ,"rec"
-  ,"type"
-  ,"type family"
-  ,"type instance"
-  ,"where"]
+
 
 
 writeCabalAndProjectFiles :: FilePath -> String -> Bool -> [String] -> IO ()
 writeCabalAndProjectFiles generationPath projectName needsWebapiXml modulesForImport = do
-  writeFile (generationPath ++ projectName ++ ".cabal") (cabalFileContents needsWebapiXml modulesForImport)
+  writeFile (generationPath ++ projectName ++ ".cabal") (cabalFileContents projectName needsWebapiXml modulesForImport)
   writeFile (generationPath ++ "LICENSE") licenseFileContents
   -- TODO : Once webapi-xml is pushed to GitHub, it needs to be added to the cabal.project file
   writeFile (generationPath ++ "cabal.project") cabalProjectFileContents
 
 
- where
-  cabalFileContents :: Bool -> [String] -> String
-  cabalFileContents webapiXmlNeeded moduleImports = [i|
-name:           #{projectName}
-version:        0.1.0.0
-description:    Generated project with a contract accoriding to the provided Swagger doc.
-homepage:       http://byteally.github.io/webapi/
-bug-reports:    https://github.com/byteally/webapi/issues
-author:         Magesh B
-maintainer:     magesh85@gmail.com
-copyright:      2018 Byteally
-license:        BSD3
-license-file:   LICENSE
-build-type:     Simple
-cabal-version:  >= 1.10
-
-library
-  exposed-modules:
-      Contract
-      CommonTypes
-      #{customUnlines moduleImports}
-  other-modules:
-  hs-source-dirs:
-      src
-  build-depends:
-      base >=4.7 && <5
-    , text
-    , swagger2
-    , lens
-    , aeson
-    , bytestring
-    , webapi
-    , unordered-containers
-    , webapi-contract
-    , vector
-    , time
-    , multiset
-    #{if webapiXmlNeeded then ", webapi-xml" else ""::String}
-  default-language: Haskell2010
-  ghc-options: -Wall
-  |]
-
-  cabalProjectFileContents :: String 
-  cabalProjectFileContents = [i|
-compiler : ghc
-packages : .
-source-repository-package
-    type: git
-    location: https://github.com/byteally/webapi
-    tag: 8346e24255a72130ba4097a40aacd7897e0e70de
-    subdir: webapi-contract
-
-source-repository-package
-    type: git
-    location: https://github.com/byteally/webapi
-    tag: 8346e24255a72130ba4097a40aacd7897e0e70de
-    subdir: webapi
-
-source-repository-package
-    type: git
-    location: https://github.com/byteally/webapi
-    tag: 8346e24255a72130ba4097a40aacd7897e0e70de
-    subdir: webapi-xml
-
-source-repository-package
-    type: git
-    location: https://github.com/capital-match/bytestring-trie.git
-    tag: 47526b2ec810239fe824c03c13cf1d81f0741b5c
-|]
 
 
-  licenseFileContents :: String
-  licenseFileContents = [i|
-Copyright Author name here (c) 2018
-
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-
-    * Neither the name of Author name here nor the names of other
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-|]
-
-customUnlines :: [String] -> String
-customUnlines [] = []
-customUnlines (l:ls) = l ++ ("\n      " ++ customUnlines ls)
-
-commonTypesModuleContent :: String
-commonTypesModuleContent = [i|
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TypeSynonymInstances #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FlexibleInstances #-}
-
-module CommonTypes where
-
-import Data.ByteString as BS
-import qualified Data.ByteString.Char8 as ASCII
-import qualified Data.HashMap.Lazy as HM
-import WebApi.Param
-import qualified Data.Vector as V
-
-import qualified Data.Swagger as SW
-import Data.Swagger.Internal.Schema as SW
-import Data.Swagger.ParamSchema
-import Control.Lens hiding (List)
-import Data.Swagger.Internal hiding (Tag, CollectionFormat)
-
-import Data.Text
-import Data.Aeson
-import GHC.Generics
-
-data CollectionFormat = CSV | SSV | TSV | Pipes 
-
---change name to CollectionFormat
--- remove all qualifiers (WebApi.)
-newtype Collection (format :: CollectionFormat) (t :: *)  = Collection { getCollection :: V.Vector t}
-    deriving (Eq, Show)
--- write ToParam instance for Collection
-
-
-instance (EncodeParam (Collection format t) ) => ToParam 'QueryParam (Collection format t) where
-  toParam _ pfx val = [(pfx, Just $ encodeParam val)]
-
-instance (EncodeParam t) => EncodeParam (Collection 'CSV t) where
-  encodeParam (Collection innerVector) =  BS.intercalate "," $ fmap (\\singleVal -> encodeParam singleVal ) (V.toList innerVector)
-
-
-instance (EncodeParam t) => EncodeParam (Collection 'SSV t) where
-  encodeParam (Collection innerVector) =  BS.intercalate " " $ fmap (\\singleVal -> encodeParam singleVal ) (V.toList innerVector)
-
-instance (EncodeParam t) => EncodeParam (Collection 'TSV t) where
-  encodeParam (Collection innerVector) =  BS.intercalate "\\t" $ fmap (\\singleVal -> encodeParam singleVal ) (V.toList innerVector)
-
-instance (EncodeParam t) => EncodeParam (Collection 'Pipes t) where
-  encodeParam (Collection innerVector) =  BS.intercalate "|" $ fmap (\\singleVal -> encodeParam singleVal ) (V.toList innerVector)
-
-
-instance (DecodeParam (Collection format t) ) => FromParam 'QueryParam (Collection format t) where
-  fromParam pt key kvs = case lookupParam pt key kvs of
-    Just (Just par) -> case decodeParam par of
-          Just v -> Validation $ Right v
-          _      -> Validation $ Left [ParseErr key "Unable to cast to Collection"]
-    _ ->  Validation $ Left [NotFound key]
-
-
-instance (DecodeParam t) => DecodeParam (Collection 'CSV t) where
-  decodeParam str = 
-    case sequenceA $ fmap decodeParam (ASCII.split ',' str) of
-      Just parsedList -> Just $ Collection $ V.fromList $ parsedList
-      Nothing -> Nothing
-    
-
-instance (DecodeParam t) => DecodeParam (Collection 'SSV t) where
-  decodeParam str = 
-    case sequenceA $ fmap decodeParam (ASCII.split ' ' str) of
-      Just parsedList -> Just $ Collection $ V.fromList $ parsedList
-      Nothing -> Nothing
-
-    
-instance (DecodeParam t) => DecodeParam (Collection 'TSV t) where
-  decodeParam str = 
-    case sequenceA $ fmap decodeParam (ASCII.split '\\t' str) of
-      Just parsedList -> Just $ Collection $ V.fromList $ parsedList
-      Nothing -> Nothing
-
-
-instance (DecodeParam t) => DecodeParam (Collection 'Pipes t) where
-  decodeParam str = 
-    case sequenceA $ fmap decodeParam (ASCII.split '|' str) of
-      Just parsedList -> Just $ Collection $ V.fromList $ parsedList
-      Nothing -> Nothing
-
-
-keyMapping :: HM.HashMap String String -> String -> String
-keyMapping hMap k = 
-  case HM.lookup k hMap of
-    Just foundVal -> foundVal
-    Nothing -> k
-
-
-instance ToSchema (MultiSet Text) where
-  declareNamedSchema = plain . paramSchemaToSchema
-
-
-instance ToParamSchema (MultiSet Text) where
-  toParamSchema _ = mempty
-      & SW.type_ .~ SwaggerArray
-      & SW.items ?~ SwaggerItemsPrimitive Nothing (mempty & SW.type_ .~ SwaggerString)  
-      
-
-data SwaggerNumber = IntegerFormat Integer | DoubleFormat Double
-  deriving (Eq, Show, Generic)
-
-instance ToJSON SwaggerNumber
-instance FromJSON SwaggerNumber
-instance ToSchema SwaggerNumber
-instance ToParam 'QueryParam SwaggerNumber
-
-instance DecodeParam SwaggerNumber where
-  decodeParam bs =
-    case decodeParam bs :: Maybe Integer of 
-      Just x -> Just $ IntegerFormat x
-      Nothing -> 
-        case decodeParam bs :: Maybe Double of
-          Just y -> Just $ DoubleFormat y
-          Nothing -> error $ "Expected SwaggerNumber to coerce into either Integer or Double!"
-            ++ "\\nInput param is : " ++ (show bs)
-      |]
 
 
 ---------------------------------------------------------------------------------------
 -- Support multiple versions of GHC (Use ifndef )
 -- for LTS 9.0 -> 1.18.2
-
-
-
-
-
-
