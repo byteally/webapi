@@ -330,7 +330,7 @@ generateSwaggerDefinitionData defDataHM = foldlWithKey' parseSwaggerDefinition (
     let (schemaProperties::InsOrdHashMap Text (Referenced Schema) ) = _schemaProperties modelSchema
     case HMSIns.null schemaProperties of
       True -> do
-        hsType <- getTypeFromSwaggerType (Global DefinitionTy) DefinitionI (Just $ T.unpack modelName) (Just modelSchema) (_schemaParamSchema modelSchema)
+        hsType <- getTypeFromSwaggerType (Global DefinitionTy) DefinitionI (T.unpack modelName) (Just modelSchema) (_schemaParamSchema modelSchema)
         if hsType == (T.unpack modelName)
         -- If the name of the type returned is the same, it would mean that it's a sum type. 
         -- An alias is not necessary here as the sum type details would be stored in the State
@@ -353,7 +353,7 @@ parseSchemaToCDT levelInfo tInfo mainTypeName ilSchema = do
           let innerRecordTypeName = T.unpack $ T.append (T.toTitle mainTypeName) (T.toTitle innerRecord)
           innerRecordType <- case iRefSchema of
                   Ref referenceName -> pure $ T.unpack $ getReference referenceName
-                  Inline irSchema -> ((getTypeFromSwaggerType levelInfo tInfo (Just innerRecordTypeName) (Just irSchema)) . _schemaParamSchema) irSchema
+                  Inline irSchema -> ((getTypeFromSwaggerType levelInfo tInfo innerRecordTypeName (Just irSchema)) . _schemaParamSchema) irSchema
           let recordTypeWithMaybe = 
                 case (innerRecordName `DL.elem` mandatoryFields) of 
                   True -> setValidConstructorId innerRecordType
@@ -404,7 +404,8 @@ getSwaggerData swaggerData = do
     finalPathWithParamTypes::[PathComponent] <- forM swaggerPath (\pathComponent -> 
         case pathComponent of 
           PathParamName pathParamName -> do
-            (mParamNameList::[Maybe String]) <- mapM (getPathParamTypeFromOperation mainRouteName pathParamName refParamsHM) (getListOfPathOperations swPathDetails::[(StdMethod, Maybe Operation)])
+            let pathLvlParams = _pathItemParameters swPathDetails
+            (mParamNameList::[Maybe String]) <- mapM (getPathParamTypeFromOperation mainRouteName pathParamName refParamsHM pathLvlParams) (getListOfPathOperations swPathDetails::[(StdMethod, Maybe Operation)])
             case (DL.nub . catMaybes) mParamNameList of
               [] -> error "TODO : Please report this as a bug. Need to handle the use of Common Params!"
               singleParamType:[] -> pure (PathParamType singleParamType)
@@ -455,10 +456,11 @@ getSwaggerData swaggerData = do
   getListOfPathOperations :: PathItem -> [(StdMethod, Maybe Operation)]
   getListOfPathOperations pathItem = [(GET, _pathItemGet pathItem), (PUT, _pathItemPut pathItem), (POST,_pathItemPost pathItem), (DELETE, _pathItemDelete pathItem), (OPTIONS, _pathItemOptions pathItem), (HEAD, _pathItemHead pathItem), (PATCH, _pathItemPatch pathItem)]
   
-  getPathParamTypeFromOperation :: RouteName -> String -> InsOrdHashMap Text Param -> (StdMethod, Maybe Operation) -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO (Maybe String)
-  getPathParamTypeFromOperation routeNameStr paramPathName refParamsHM (stdMethod, mOperation) = case mOperation of
+  getPathParamTypeFromOperation :: RouteName -> String -> InsOrdHashMap Text Param -> [Referenced Param] -> (StdMethod, Maybe Operation) -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO (Maybe String)
+  getPathParamTypeFromOperation routeNameStr paramPathName refParamsHM pathLvlParams (stdMethod, mOperation) = case mOperation of
     Just operation -> do 
-      let paramList = _operationParameters operation
+      let opParamList = _operationParameters operation
+      let finalParams = filterOutOverriddenParams refParamsHM opParamList pathLvlParams
       mParamType <- foldM (\existingParamType refOrInlineParam -> 
         case refOrInlineParam of
           Ref (Reference pmText) -> 
@@ -475,12 +477,20 @@ getSwaggerData swaggerData = do
                       ++ "\nDebug Info (Path Param Name) : " ++ (show paramPathName)
                 else pure existingParamType
               Nothing -> pure existingParamType
-          Inline param -> case (_paramName param == T.pack paramPathName) of
-            True -> do
-              pathParamType <- getParamTypeForPathParam (routeNameStr, stdMethod) param
-              pure $ Just pathParamType
-            False -> pure existingParamType
-        ) Nothing paramList 
+          Inline param ->
+            case (_paramName param == T.pack paramPathName ) of
+              True -> do
+                let pSchema = _paramSchema param 
+                case pSchema of
+                  ParamOther pOSchema -> 
+                    case _paramOtherSchemaIn pOSchema of
+                      ParamPath -> do
+                        pathParamType <- getParamTypeForPathParam (routeNameStr, stdMethod) param
+                        pure $ Just pathParamType
+                      _ -> pure existingParamType 
+                  ParamBody _ -> pure existingParamType 
+              False -> pure existingParamType
+        ) Nothing finalParams 
       pure mParamType 
     Nothing -> pure $ Nothing
 
@@ -492,7 +502,10 @@ getSwaggerData swaggerData = do
           ParamPath -> 
             -- TODO : Verify that it's okay to put DefinitionI for Path Param. 
             -- Is it okay if this is generated in the local Types.hs file? 
-            getTypeFromSwaggerType (Local ParamTy (routeNameStr, stdMethod)) DefinitionI Nothing Nothing (_paramOtherSchemaParamSchema paramOtherSchema) 
+
+            -- TODO : Since Path Params can be only primitive types, we should have another function 
+            --        to calculate the type. 
+            getTypeFromSwaggerType (Local ParamTy (routeNameStr, stdMethod)) DefinitionI (T.unpack $ _paramName param) Nothing (_paramOtherSchemaParamSchema paramOtherSchema) 
           _ -> error $ "Expected Path Param but got another Param Type. \nParam : " ++ (show param)
       ParamBody _ -> error $ "Param matched by name in the Ref Params HM. "
                   ++ "This means it should be a Path Param but it is a Body Param. "
@@ -638,14 +651,14 @@ processOperation commonPathLvlParams currentRouteName methodAcc swaggerData stdM
           Just refResponse -> 
             case _responseSchema refResponse of
               Just (Ref (Reference refSchema) ) -> pure $ T.unpack refSchema 
-              Just (Inline inSchema) -> ( (getTypeFromSwaggerType levelInfo tInfo (Just newTypeConsName) (Just inSchema) ) . _schemaParamSchema) inSchema
+              Just (Inline inSchema) -> ( (getTypeFromSwaggerType levelInfo tInfo newTypeConsName (Just inSchema) ) . _schemaParamSchema) inSchema
               Nothing -> pure "Text"
             -- TODO : Should we error out here or inform the user that Referenced Response not found in Responses HM? 
           Nothing -> pure "Text"
       Inline responseSchema -> 
         case (_responseSchema responseSchema) of
           Just (Ref refText) -> pure $ T.unpack $ getReference refText
-          Just (Inline respSchema) -> ((getTypeFromSwaggerType levelInfo tInfo (Just newTypeConsName) (Just respSchema) ) . _schemaParamSchema) respSchema
+          Just (Inline respSchema) -> ((getTypeFromSwaggerType levelInfo tInfo newTypeConsName (Just respSchema) ) . _schemaParamSchema) respSchema
           Nothing -> pure "Text"
   getParamTypes :: [Param] -> ParamType -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO (Maybe String)
   getParamTypes paramList paramType = 
@@ -656,7 +669,7 @@ processOperation commonPathLvlParams currentRouteName methodAcc swaggerData stdM
           FormParam -> do
             let paramNames = fmap (\param -> T.unpack $ _paramName param) paramList
             hTypesWithIsMandatory <- forM paramList (\param -> do 
-              hType <- getParamTypeParam param (Just $ T.unpack ( _paramName param) ) Nothing 
+              hType <- getParamTypeParam param (T.unpack ( _paramName param) ) Nothing 
               pure (isMandatory param, hType) )
             let finalHaskellTypes = fmap (\(isMandatoryType, hType) -> (addMaybeToType isMandatoryType hType) ) hTypesWithIsMandatory
             let recordTypesInfo = DL.zip paramNames finalHaskellTypes
@@ -669,7 +682,7 @@ processOperation commonPathLvlParams currentRouteName methodAcc swaggerData stdM
           QueryParam -> do
             let paramNames = fmap (\param -> T.unpack $ _paramName param) paramList
             hTypesWithIsMandatory <- forM paramList (\param -> do 
-              hType <- getParamTypeParam param (Just $ T.unpack ( _paramName param) ) Nothing
+              hType <- getParamTypeParam param (T.unpack ( _paramName param) ) Nothing
               pure (isMandatory param, hType) )
             let finalHaskellTypes = fmap (\(isMandatoryType, hType) -> (addMaybeToType isMandatoryType hType) ) hTypesWithIsMandatory
             let recordTypesInfo = DL.zip paramNames finalHaskellTypes
@@ -682,7 +695,7 @@ processOperation commonPathLvlParams currentRouteName methodAcc swaggerData stdM
           HeaderParam -> do
             let paramNames = fmap (\param -> T.unpack $ _paramName param) paramList
             typeListWithIsMandatory <- forM paramList (\param -> do
-                    hType <- getParamTypeParam param (Just $ T.unpack ( _paramName param) ) Nothing
+                    hType <- getParamTypeParam param (T.unpack ( _paramName param) ) Nothing
                     pure (isMandatory param, hType) )
             let finalHaskellTypes = fmap (\(isMandatoryType, hType) -> (addMaybeToType isMandatoryType hType) ) typeListWithIsMandatory
             let recordTypesInfo = DL.zip paramNames finalHaskellTypes
@@ -693,28 +706,28 @@ processOperation commonPathLvlParams currentRouteName methodAcc swaggerData stdM
             modify' (\existingState -> HMS.unionWith (++) existingState headerParamHM)
             pure $ Just newDataTypeName
           FileParam -> do
-            typeList <- forM paramList (\param -> getParamTypeParam param (Just $ T.unpack ( _paramName param) ) Nothing )
+            typeList <- forM paramList (\param -> getParamTypeParam param (T.unpack ( _paramName param) ) Nothing )
             case typeList of
               [] -> pure Nothing
               x:[] -> pure $ Just x
               _ -> error $ "Encountered list of FileParam. This is not yet handled! "
                 ++ "\nDebug Info: " ++ (show paramList)
           BodyParam -> do
-            listOfTypes <- forM paramList (\param -> getParamTypeParam param (Just $ T.unpack (_paramName param)) Nothing )
+            listOfTypes <- forM paramList (\param -> getParamTypeParam param (T.unpack (_paramName param)) Nothing )
             case listOfTypes of
               [] -> error $ "Tried to Get Body Param type but got an empty list/string! Debug Info: " ++ show paramList
               x:[] -> pure $ Just x
               _ -> error $ "Encountered a list of Body Params. WebApi/Swagger does not support this currently! Debug Info: " ++ show paramList
 
-  getParamTypeParam :: Param -> Maybe String -> Maybe Schema  -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String
-  getParamTypeParam inputParam mParamName mOuterSchema = do
+  getParamTypeParam :: Param -> String -> Maybe Schema  -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String
+  getParamTypeParam inputParam paramName mOuterSchema = do
   -- TODO : This may need to be calculated or passed here (or passed back from getTypeFromSwaggerType) if/when we consider route-level common params.
     let levelInfo = Local ParamTy (currentRouteName, stdMethod)
     case _paramSchema inputParam of
       ParamBody refSchema -> 
         case refSchema of 
           Ref refType -> pure $ T.unpack (getReference refType)
-          Inline rSchema -> getTypeFromSwaggerType levelInfo ReqBodyI mParamName (Just rSchema) (_schemaParamSchema rSchema) 
+          Inline rSchema -> getTypeFromSwaggerType levelInfo ReqBodyI paramName (Just rSchema) (_schemaParamSchema rSchema) 
       ParamOther pSchema ->
         let tInfo = 
               case _paramOtherSchemaIn pSchema of
@@ -724,7 +737,7 @@ processOperation commonPathLvlParams currentRouteName methodAcc swaggerData stdM
                 -- TODO : Verify if this should ever be ParamPath. 
                 -- If not, we should log this and error it when adding logging/error mechanism.
                 ParamPath -> DefinitionI
-        in getTypeFromSwaggerType levelInfo tInfo mParamName mOuterSchema $ _paramOtherSchemaParamSchema pSchema 
+        in getTypeFromSwaggerType levelInfo tInfo paramName mOuterSchema $ _paramOtherSchemaParamSchema pSchema 
 
   isMandatory :: Param -> Bool
   isMandatory param = 
@@ -875,8 +888,8 @@ tInfoToTypeInfo tInfo cdt =
 
 
 
-getTypeFromSwaggerType :: LevelInfo -> TInfo -> Maybe String -> Maybe Schema ->  ParamSchema t -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String 
-getTypeFromSwaggerType levelInfo tInfo mParamNameOrRecordName mOuterSchema paramSchema = 
+getTypeFromSwaggerType :: LevelInfo -> TInfo -> String -> Maybe Schema ->  ParamSchema t -> StateT (HMS.HashMap LevelInfo [TypeInfo]) IO String 
+getTypeFromSwaggerType levelInfo tInfo paramNameOrRecordName mOuterSchema paramSchema = 
     -- let mRouteName = 
     case (_paramSchemaType paramSchema) of 
       Just SwaggerString -> 
@@ -890,11 +903,7 @@ getTypeFromSwaggerType levelInfo tInfo mParamNameOrRecordName mOuterSchema param
             case _paramSchemaEnum paramSchema of
               Nothing -> pure "P.Text"
               Just valueEnumList -> do
-                let newSumTypeName = 
-                      setValidConstructorId $ 
-                      fromJustNote ("Expected a Param Name but got Nothing. "
-                        ++ "Need Param Name to set the name for the new type we need to create."
-                        ++ "\nDebug Info: " ++ show paramSchema) mParamNameOrRecordName
+                let newSumTypeName = setValidConstructorId $ paramNameOrRecordName
                 let (enumVals, ogVals) = 
                       DL.unzip $ 
                         fmap (\(Data.Aeson.String enumVal) -> 
@@ -936,7 +945,7 @@ getTypeFromSwaggerType levelInfo tInfo mParamNameOrRecordName mOuterSchema param
                           case obj of
                             Ref reference -> pure $ "[" ++ (setValidConstructorId $ T.unpack $ getReference reference) ++ "]"
                             Inline recursiveSchema -> do
-                              hType <- ( ( (getTypeFromSwaggerType levelInfo tInfo mParamNameOrRecordName (Just recursiveSchema) ) . _schemaParamSchema) recursiveSchema)
+                              hType <- ( ( (getTypeFromSwaggerType levelInfo tInfo paramNameOrRecordName (Just recursiveSchema) ) . _schemaParamSchema) recursiveSchema)
                               pure $ "[" ++ hType ++ "]"
                         -- NOTE : SwaggerItemsArray is used in a case where there are tuple Schemas.
                         -- So we need to represent the following list of Ref Schemas as a tuple or newtype (over tuple).
@@ -948,19 +957,18 @@ getTypeFromSwaggerType levelInfo tInfo mParamNameOrRecordName mOuterSchema param
                           --   Inline innerSchema -> ((getTypeFromSwaggerType mRouteName mParamNameOrRecordName (Just innerSchema) ) . _schemaParamSchema) innerSchema) 
                         Just (SwaggerItemsPrimitive mCollectionFormat innerParamSchema) -> do
                           typeName <- do
-                                let paramName = fromJustNote ("Expected a Param Name but got Nothing. Need Param Name to set the name for the new type we need to create. Debug Info: " ++ show paramSchema) mParamNameOrRecordName
-                                let titleCaseParamName = T.unpack $ T.toTitle $ T.pack paramName
+                                let paramName = paramNameOrRecordName
+                                let titleCaseParamName = setValidConstructorId $ T.unpack $ T.toTitle $ T.pack paramName
                                 case _paramSchemaEnum innerParamSchema of
                                   Just enumVals -> do
                                     let (enumValList, ogVals)::([String], [String]) = 
                                           DL.unzip $ fmap (\(Data.Aeson.String val) -> (T.unpack $ T.toTitle val, T.unpack val) ) enumVals
                                     let haskellNewTypeInfo = SumType (BasicEnum titleCaseParamName enumValList ogVals)
-                                    -- TODO : This is a placeholder value and needs to be changed in Phase 2
-                                    -- let levelInfo = Local DefinitionTy ("",GET)
                                     let hNewTyHM = HMS.singleton levelInfo [tInfoToTypeInfo tInfo haskellNewTypeInfo]
                                     modify'(\existingState -> HMS.unionWith (++) existingState hNewTyHM)
                                     pure titleCaseParamName
-                                  Nothing ->  getTypeFromSwaggerType levelInfo tInfo Nothing Nothing innerParamSchema
+                                    -- TODO: Is it allowed for a CollectionFmt type to have this inner schema (complex type)? 
+                                  Nothing ->  getTypeFromSwaggerType levelInfo tInfo ("Collection" ++ titleCaseParamName) Nothing innerParamSchema
                           case mCollectionFormat of
                             (Just CollectionMulti) -> pure $ "P.MultiSet " ++ typeName 
                             (Just CollectionTSV) -> pure $ "DelimitedCollection \"\t\" " ++ typeName
@@ -971,10 +979,7 @@ getTypeFromSwaggerType levelInfo tInfo mParamNameOrRecordName mOuterSchema param
                         Nothing -> error "Expected a SwaggerItems type due to SwaggerArray ParamSchema Type. But it did not find any! Please check the swagger spec!"
       Just SwaggerObject -> do
         let recordTypeName = 
-              setValidConstructorId $ 
-              fromJustNote ("Expected a Param Name but got Nothing. "
-                ++ "Need Param Name to set the name for the new type we need to create."
-                ++ "\nDebug Info: " ++ show paramSchema) mParamNameOrRecordName
+              setValidConstructorId paramNameOrRecordName
         case mOuterSchema of
           Just outerSchema -> 
             case (HMSIns.toList $ _schemaProperties outerSchema) of
@@ -983,7 +988,7 @@ getTypeFromSwaggerType levelInfo tInfo mParamNameOrRecordName mOuterSchema param
                   Just additionalProps -> 
                     case additionalProps of
                       AdditionalPropertiesSchema (Ref ref) -> pure $ "(HM.HashMap P.Text " ++ (setValidConstructorId $ T.unpack $ getReference ref) ++ ")"
-                      AdditionalPropertiesSchema (Inline internalSchema) -> ((getTypeFromSwaggerType levelInfo tInfo (Just recordTypeName) (Just internalSchema)) . _schemaParamSchema) internalSchema
+                      AdditionalPropertiesSchema (Inline internalSchema) -> ((getTypeFromSwaggerType levelInfo tInfo recordTypeName (Just internalSchema)) . _schemaParamSchema) internalSchema
                       AdditionalPropertiesAllowed _ -> error "TODO: unhandled case of additional props"
                       
                   Nothing -> 
@@ -997,7 +1002,7 @@ getTypeFromSwaggerType levelInfo tInfo mParamNameOrRecordName mOuterSchema param
                       let recordNameStr = T.unpack recordName
                       innerRecordType <- case iRefSchema of
                           Ref refName -> pure $ setValidConstructorId $ T.unpack $ getReference refName
-                          Inline irSchema -> ((getTypeFromSwaggerType levelInfo tInfo (Just $ recordNameStr) (Just irSchema)) . _schemaParamSchema) irSchema 
+                          Inline irSchema -> ((getTypeFromSwaggerType levelInfo tInfo recordNameStr (Just irSchema)) . _schemaParamSchema) irSchema 
                       let isRequired = isRequiredType outerSchema recordNameStr
                       let typeWithMaybe = if isRequired then innerRecordType else setMaybeType innerRecordType
                       pure (recordNameStr, typeWithMaybe) )
