@@ -54,9 +54,12 @@ data RoutePiece a = Static T.Text | Dynamic a
 
 -- NOTE: "{foo}..{bar}" would be represented as
 --       [ PathParam foo, StaticParam "..", PathParam bar]
-data PathParamPiece = DynParamPiece T.Text
-                    | StaticParamPiece T.Text
+data PathParamPiece a = DynParamPiece    a
+                      | StaticParamPiece T.Text
                     deriving (Show, Eq, Generic)
+
+type PathParamPieceUntyped = PathParamPiece T.Text
+type PathParamPieceTyped   = PathParamPiece Ref
 
 data Primitive
   = Date
@@ -75,7 +78,7 @@ data Primitive
   | File
   | Null
   | Array Ref
-  | Tuple Ref
+  | Tuple [Ref]
   | MultiSet Ref
   | DelimitedCollection Delimiter Ref  
   deriving (Show, Eq, Generic)
@@ -121,6 +124,7 @@ data CustomType = CustomType TypeConstructor
                 deriving (Show, Eq, Generic)
 
 data Provenance = Global [T.Text]
+                | RouteLocal (Route UnparsedPiece)
                 | Local  (Route UnparsedPiece) Method [T.Text]
                 deriving (Show, Eq, Generic)
 
@@ -223,23 +227,34 @@ generateRoutesState globalParams globalResps pItems = do
           let route = parseRoute routeStr
               updState = generateRouteMethodState globalParams globalResps (_pathItemParameters pItem) route
           sws
-          updState GET (_pathItemGet pItem)
-          updState PUT (_pathItemPut pItem)
-          updState POST (_pathItemPost pItem)
-          updState DELETE (_pathItemDelete pItem)
-          updState OPTIONS (_pathItemOptions pItem)
-          updState PATCH (_pathItemPatch pItem)                    
+          ppG   <- updState GET (_pathItemGet pItem)
+          ppP   <- updState PUT (_pathItemPut pItem)
+          ppPT  <- updState POST (_pathItemPost pItem)
+          ppDel <- updState DELETE (_pathItemDelete pItem)
+          ppOpt <- updState OPTIONS (_pathItemOptions pItem)
+          ppPat <- updState PATCH (_pathItemPatch pItem)
+          parseRouteType route (groupByParamName [ppG, ppP, ppPT, ppDel, ppOpt, ppPat])
 
-generateRouteMethodState :: Definitions Param -> Definitions Response -> [SW.Referenced Param] -> Route UnparsedPiece -> Method -> Maybe Operation -> SwaggerGenerator ()
+        groupByParamName :: [(Method, [Param])] -> [(T.Text, [(Method, Param)])]
+        groupByParamName methAndPars =
+            let methPars = L.groupBy   (\(_, parl) (_, parr) -> _paramName parl == _paramName parr) $
+                           L.sortBy    (\(_, parl) (_, parr) -> compare (_paramName parl) (_paramName parr)) $ 
+                           concatMap (\(meth, pars) ->
+                                        map (\par -> (meth, par)
+                                            ) pars) methAndPars
+                methParsNamed = map (\x -> case x of
+                                        (x' : _) -> (_paramName (snd x'), x)) methPars
+            in  methParsNamed
+            
+generateRouteMethodState :: Definitions Param -> Definitions Response -> [SW.Referenced Param] -> Route UnparsedPiece -> Method -> Maybe Operation -> SwaggerGenerator (Method, [Param])
 generateRouteMethodState globalParams globalResps routeRefs route meth mOp =
   case mOp of
-    Nothing -> pure ()
+    Nothing -> pure (meth, [])
     Just op -> do
       let opParams    = overrideParams routeRefs (_operationParameters op)
                         -- TODO: ResponsesDefault ignored.
           opResponses = _operationResponses op
       let (pp, qp, fp, fip, hp, bp) = groupParamDefinitions globalParams routeRefs
-      -- parseRouteType route meth routeRefs
       _ <- paramDefinitions PathParam route meth pp
       qpTycon <- paramDefinitions QueryParam route meth qp
       fpTycon <- paramDefinitions FormParam route meth fp
@@ -250,7 +265,7 @@ generateRouteMethodState globalParams globalResps routeRefs route meth mOp =
       succTycon <- outputDefinitions ApiOutput route meth sucs
       errTycon <- outputDefinitions ApiError route meth sucs
       insertContract route meth qpTycon fpTycon fipTycon hpTycon bodyTycon succTycon errTycon
-      pure ()
+      pure (meth, pp)
 
 insertContract :: Route UnparsedPiece -> Method ->
                   TypeConstructor -> TypeConstructor -> TypeConstructor -> TypeConstructor ->
@@ -267,12 +282,34 @@ insertContract r m qp fp fip hp bdy succ err = do
                            , apiError    = err
                            , contentTypes = []
                            , cookieOut   = ""
+                           , headerOut   = ""
                            }
   modify' (\s -> s { apiContract = HM.insert (r, m) cInfo (apiContract s) })
       
-parseRouteType :: Route UnparsedPiece -> [SW.Referenced Param] ->
-                   SwaggerGenerator ()
-parseRouteType (Route pieces) refs = undefined
+parseRouteType :: Route UnparsedPiece ->
+                  [(T.Text, [(Method, Param)])] ->
+                  SwaggerGenerator ()
+parseRouteType route params = do
+  pure ()
+{-  
+  let pps = routePathParamPiece route
+      ppDyns = L.foldl' (\acc x -> case x of
+                            Dynamic ds -> acc ++ ds
+                            Static _   -> acc
+                        ) [] pps
+  kvs <- go ppDyns
+  pure ()
+  
+  where go ppDyns =
+          case ppDyns of
+            (pp : pps) -> case L.lookup pp params of
+              Just methAndPars -> pathParamDefinition route methAndPars
+              Nothing          -> error "Panic: route param not found"
+-}        
+      
+  
+  
+  
 {-  
   Route <$> (mapM (parseRoutePiece refs) pieces)
   where parseRoutePiece refs (Static t)    = pure (Static t)
@@ -452,17 +489,24 @@ data ParamTypeInfo = ParamTypeInfo { paramType       :: Ref
                                    , isParamRequired :: Maybe Bool
                                    } deriving (Show, Eq, Generic)
 
+
+pathParamDefinition :: Route UnparsedPiece -> [(Method, Param)] -> SwaggerGenerator ParamTypeInfo
+pathParamDefinition r par = undefined
+
 paramDefinition :: Route UnparsedPiece -> Method -> Param -> SwaggerGenerator ParamTypeInfo
-paramDefinition r m par = do
+paramDefinition r m = paramDefinition' (localProv r m)
+
+paramDefinition' :: Provenance -> Param -> SwaggerGenerator ParamTypeInfo
+paramDefinition' prov par = do
   let name = _paramName par
       req  = _paramRequired par
   paramTypeRef <- case _paramSchema par of
                    ParamBody (SW.Inline schema) -> do
-                     schemaDefinition (localProv r m) name schema
+                     schemaDefinition prov name schema
                    ParamBody (SW.Ref (Reference name)) ->
                      lookupGlobalDefinition name
                    ParamOther pOth           -> 
-                     paramSchemaDefinition (localProv r m) name (_paramOtherSchemaParamSchema pOth)
+                     paramSchemaDefinition prov name (_paramOtherSchemaParamSchema pOth)
   pure (ParamTypeInfo paramTypeRef name req)
 
 paramSchemaDefinition :: Provenance -> DefinitionName -> ParamSchema t -> SwaggerGenerator Ref
@@ -512,7 +556,7 @@ paramSchemaDefinition prov def parSch = go
           Just (SwaggerItemsArray rscs) -> tupleDefinition rscs
           Nothing -> error "TODO: default for array"
 
-        primitiveArrayDefinition _mfmt _ipar = undefined
+        primitiveArrayDefinition = undefined
         objectArrayDefinition = undefined
         tupleDefinition = undefined
         
@@ -578,7 +622,6 @@ schemaDefinition prov def sch = do
                                       ) (pure []) props
            let tyDef = productType def fields
            insertDefinition prov def tyDef
-           -- pure (referenceOf prov def (Object (customHaskType finalTyDef)))
            
          arrayDefinition = undefined         
          schemaField k rsc = case rsc of
@@ -589,7 +632,6 @@ schemaDefinition prov def sch = do
          
 referenceOf :: Provenance -> DefinitionName -> SwaggerHaskType -> Ref
 referenceOf prv defn (Object ct) = Ref prv defn (getTypeConstructor ct)
--- TODO: Lists are to be handled differently
 referenceOf _ _ (Primitive ty)   = Inline ty
 
 extendProvenance :: DefinitionName -> Provenance -> Provenance
@@ -685,7 +727,6 @@ checkNameClash tyl tyr =
         constructorNameClashes xs ys =
           map ConstructorClash (L.intersect xs ys)
 
-
 -- NOTE: Just checking for {. Can it be escaped?
 parseRoute :: FilePath -> Route UnparsedPiece
 parseRoute fp =
@@ -695,14 +736,27 @@ parseRoute fp =
              True -> Dynamic (T.pack piece)
              False -> Static (T.pack piece)
          ) pieces
-      
-parsePathParam :: UnparsedPiece -> [PathParamPiece]
+
+routePathParamPiece :: Route UnparsedPiece -> Route [PathParamPieceUntyped]
+routePathParamPiece (Route pieces) =
+  Route $
+  map (\piece -> case piece of
+          Dynamic t -> Dynamic (parsePathParam t)
+          Static s  -> Static s
+      ) pieces
+  
+parsePathParam :: UnparsedPiece -> [PathParamPieceUntyped]
 parsePathParam piece =
+  -- NOTE: need a parser to properly parse this out
   [ DynParamPiece (T.tail (T.init piece)) ]
 
-isDynParamPiece :: PathParamPiece -> Bool
+isDynParamPiece :: PathParamPiece a -> Bool
 isDynParamPiece (DynParamPiece _) = True
 isDynParamPiece _                 = False
+
+isDynPiece :: RoutePiece a -> Bool
+isDynPiece (Dynamic {}) = True
+isDynPiece _            = False
 
 splitOn :: Char -> String -> [String]
 splitOn _ ""  =  []
