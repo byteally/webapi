@@ -23,8 +23,8 @@ import qualified Data.List as L
 import Data.Hashable
 import qualified Data.Aeson as A
 
-data Ref a = Inline a
-           | Ref    Provenance DefinitionName TypeConstructor
+data Ref  = Inline Primitive
+          | Ref    Provenance DefinitionName TypeConstructor
            deriving (Show, Eq, Generic)
 
 data ErrorMessage = ErrorMessage T.Text
@@ -58,7 +58,7 @@ data PathParamPiece = DynParamPiece T.Text
                     | StaticParamPiece T.Text
                     deriving (Show, Eq, Generic)
 
-data SwaggerHaskType
+data Primitive
   = Date
   | DateTime
   | Password
@@ -72,12 +72,16 @@ data SwaggerHaskType
   | Int32
   | Int64
   | Bool
-  | Array (Ref SwaggerHaskType)
-  | Tuple [Ref SwaggerHaskType ]
-  | MultiSet (Ref SwaggerHaskType)
-  | DelimitedCollection Delimiter (Ref SwaggerHaskType)
   | File
   | Null
+  | Array Ref
+  | Tuple Ref
+  | MultiSet Ref
+  | DelimitedCollection Delimiter Ref  
+  deriving (Show, Eq, Generic)
+
+data SwaggerHaskType
+  = Primitive Primitive
   | Object CustomType
   deriving (Show, Eq, Generic)
 
@@ -113,7 +117,7 @@ dataConstructorNames (CustomType _ dcons) =
   map (\(DataConstructor n _) -> n) dcons
 
 data CustomType = CustomType TypeConstructor
-                             [DataConstructor SwaggerHaskType]
+                             [DataConstructor]
                 deriving (Show, Eq, Generic)
 
 data Provenance = Global [T.Text]
@@ -125,7 +129,7 @@ type DataConstructorName = T.Text
 type KeyName             = T.Text
 type RecordName          = T.Text
 
-data DataConstructor a = DataConstructor DataConstructorName [ (Maybe RecordName, Ref a) ]
+data DataConstructor = DataConstructor DataConstructorName [ (Maybe RecordName, Ref) ]
                        deriving (Show, Eq, Generic)
 
 data Delimiter = SlashT | Space | Pipe | Comma
@@ -443,7 +447,7 @@ responseDataConName rt s =
   responseTypeName rt <>
   T.pack (show s)
 
-data ParamTypeInfo = ParamTypeInfo { paramType       :: Ref SwaggerHaskType
+data ParamTypeInfo = ParamTypeInfo { paramType       :: Ref
                                    , paramName       :: DefinitionName
                                    , isParamRequired :: Maybe Bool
                                    } deriving (Show, Eq, Generic)
@@ -461,7 +465,7 @@ paramDefinition r m par = do
                      paramSchemaDefinition (localProv r m) name (_paramOtherSchemaParamSchema pOth)
   pure (ParamTypeInfo paramTypeRef name req)
 
-paramSchemaDefinition :: Provenance -> DefinitionName -> ParamSchema t -> SwaggerGenerator (Ref SwaggerHaskType)
+paramSchemaDefinition :: Provenance -> DefinitionName -> ParamSchema t -> SwaggerGenerator Ref
 paramSchemaDefinition prov def parSch = go
   where go =
          case (_paramSchemaType parSch) of
@@ -514,7 +518,7 @@ paramSchemaDefinition prov def parSch = go
         
         inline = pure . Inline
 
-sumType :: T.Text -> [(T.Text, [Ref SwaggerHaskType])] -> TypeDefinition
+sumType :: T.Text -> [(T.Text, [Ref])] -> TypeDefinition
 sumType rawName ctors =
   let dcons    = map (\(ctorN, args) -> DataConstructor (mkDataConstructorName ctorN) (ctorArgs args)) ctors
       cty      = CustomType (mkTypeConstructorName rawName) dcons
@@ -528,7 +532,7 @@ enumType rawName rawCtors =
       cty   = CustomType (mkTypeConstructorName rawName) dcons
   in  defaultTypeDefinition cty 
 
-productType :: T.Text -> [(T.Text, Ref SwaggerHaskType)] -> TypeDefinition
+productType :: T.Text -> [(T.Text, Ref)] -> TypeDefinition
 productType rawName rawFlds =
   let dcon = DataConstructor
              (mkDataConstructorName rawName)
@@ -547,7 +551,7 @@ mkDataConstructorName = T.toTitle
 mkTypeConstructorName :: T.Text -> T.Text
 mkTypeConstructorName = T.toTitle
 
-schemaDefinitions :: Provenance -> Definitions Schema -> SwaggerGenerator [Ref SwaggerHaskType]
+schemaDefinitions :: Provenance -> Definitions Schema -> SwaggerGenerator [Ref]
 schemaDefinitions prov =
   OHM.foldlWithKey' (\s k sc -> do
                         xs <- s
@@ -555,7 +559,7 @@ schemaDefinitions prov =
                         pure (x : xs)
                     ) (pure [])
 
-schemaDefinition :: Provenance -> DefinitionName -> Schema -> SwaggerGenerator (Ref SwaggerHaskType)
+schemaDefinition :: Provenance -> DefinitionName -> Schema -> SwaggerGenerator Ref
 schemaDefinition prov def sch = do
   let paramSchema = _schemaParamSchema sch
   case (_paramSchemaType paramSchema) of
@@ -583,16 +587,16 @@ schemaDefinition prov def sch = do
            SW.Inline s -> do
              schemaDefinition (extendProvenance k prov) k s
          
-referenceOf :: Provenance -> DefinitionName -> SwaggerHaskType -> Ref SwaggerHaskType
+referenceOf :: Provenance -> DefinitionName -> SwaggerHaskType -> Ref
 referenceOf prv defn (Object ct) = Ref prv defn (getTypeConstructor ct)
 -- TODO: Lists are to be handled differently
-referenceOf _ _ ty               = Inline ty
+referenceOf _ _ (Primitive ty)   = Inline ty
 
 extendProvenance :: DefinitionName -> Provenance -> Provenance
 extendProvenance n (Global ks)    = Global (ks ++ [n])
 extendProvenance n (Local r m ks) = Local r m (ks ++ [n])
 
-lookupGlobalDefinition :: DefinitionName -> SwaggerGenerator (Ref SwaggerHaskType)
+lookupGlobalDefinition :: DefinitionName -> SwaggerGenerator Ref
 lookupGlobalDefinition defn = do
   mcTy <- gets (lookupDefinition defn . typeState)
   case mcTy of
@@ -618,7 +622,7 @@ insertParamType pt route meth tyDef = do
   let prov = ParamType pt route meth
   customHaskType <$> insertWithTypeMeta (ParamType pt route meth) tyDef
 
-insertDefinition :: Provenance -> DefinitionName -> TypeDefinition -> SwaggerGenerator (Ref SwaggerHaskType)
+insertDefinition :: Provenance -> DefinitionName -> TypeDefinition -> SwaggerGenerator Ref
 insertDefinition prov def tyDef = do
   val <- insertWithTypeMeta (Definition prov def) tyDef
   pure (referenceOf prov def (Object (customHaskType val)))
