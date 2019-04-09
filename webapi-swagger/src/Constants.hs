@@ -8,6 +8,7 @@ module Constants where
 
 import ContractGenTypes
 import Data.String.Interpolate
+import SwaggerGen (Method)
 
 
 globalTypesModulePath :: String
@@ -31,10 +32,20 @@ hsModuleToFileName modName = modName ++ ".hs"
 localRouteMethodTypesModuleName :: String
 localRouteMethodTypesModuleName = "Types"
 
-localRouteMethodTypesPath :: RouteName -> StdMethod -> String
+routeLevelTypesModuleName :: String
+routeLevelTypesModuleName = "RouteTypes"
+
+routeLevelTypesPath :: String -> String
+routeLevelTypesPath rPath = "src/Types/" ++ rPath ++ "/" 
+
+routeLevelTypesModName :: String -> String
+routeLevelTypesModName rPath = "Types." ++ rPath ++ "."
+
+
+localRouteMethodTypesPath :: RouteName -> Method -> String
 localRouteMethodTypesPath rName stdMethod = "src/Types/" ++ rName ++ "/" ++ (show stdMethod) ++ "/"
 
-localRouteMethodTypesModName :: RouteName -> StdMethod -> String
+localRouteMethodTypesModName :: RouteName -> Method -> String
 localRouteMethodTypesModName rName stdMethod = "Types." ++ rName ++ "." ++ (show stdMethod) ++ "."
 
 globalDefnsQualName :: String
@@ -326,3 +337,48 @@ haskellKeywords =
   ,"type family"
   ,"type instance"
   ,"where"]
+
+
+
+languageExtensionsForTypesModule :: [String]
+languageExtensionsForTypesModule =  [ 
+                                      "TypeFamilies"
+                                    , "MultiParamTypeClasses"
+                                    , "DeriveGeneric"
+                                    , "TypeOperators"
+                                    , "DataKinds"
+                                    , "TypeSynonymInstances"
+                                    , "FlexibleInstances"
+                                    , "DuplicateRecordFields"
+                                    , "OverloadedStrings"
+                                    ]
+
+importsForTypesModule :: [String]
+importsForTypesModule = [ 
+                          "Prelude ()"
+                        , "CommonTypes"
+                        , "Control.Lens"
+                        ]
+                        -- , "Data.Swagger.Schema"
+                        -- , "Data.Swagger.Internal.Schema"
+                        -- , "Data.Swagger.ParamSchema"
+                         -- TODO : This is kind of a hack!
+                        -- , "Data.Swagger.Internal hiding (Tag)"
+
+qualifiedImportsForTypesModule :: [(String, String)]  
+qualifiedImportsForTypesModule = 
+                               [
+                                 ("Data.ByteString.Char8", "ASCII")
+                               , ("Data.HashMap.Lazy", "HM" )
+                               , ("Data.Text", "P" )
+                               , ("Data.Int", "P" )
+                               , ("Data.ByteString", "P")
+                               , ("Data.Time.Clock", "P" )
+                               , ("Data.Time.Calendar", "P" )
+                               , ("GHC.Generics", "P" )
+                               , ("Data.Aeson", "P" )
+                               , ("WebApi.Param", "P" )
+                               , ("Data.Text.Encoding", "P" )
+                               , ("Prelude", "P" )
+                               ]    
+                               --  , ("Data.Swagger", (True, Just $ ModuleName noSrcSpan "SW") )
