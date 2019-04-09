@@ -165,6 +165,13 @@ data SwaggerGenState = SwaggerGenState { typeState   :: TypeState
                                        , errors      :: [ErrorMessage]
                                        } deriving (Show, Eq, Generic)
 
+defaultSwaggerState :: SwaggerGenState
+defaultSwaggerState = SwaggerGenState { typeState   = HM.empty
+                                      , routeState  = HM.empty
+                                      , apiContract = HM.empty
+                                      , errors      = []
+                                      }
+
 type TypeState      = HM.HashMap TypeMeta TypeDefinition
 type RouteState     = HM.HashMap (Route UnparsedPiece) (Route Ref)
 
@@ -214,8 +221,13 @@ data ContractInfo ty = ContractInfo { contentTypes :: [T.Text]
                                     } deriving (Show, Eq, Generic)
 
 newtype SwaggerGenerator a =
-  SwaggerGenerator { runSwaggerGenerator :: ReaderT Config (StateT SwaggerGenState IO) a }
+  SwaggerGenerator { getSwaggerGenerator :: ReaderT Config (StateT SwaggerGenState IO) a }
   deriving (MonadReader Config, MonadState SwaggerGenState, Functor, Applicative, Monad)
+
+runSwaggerGenerator :: Config -> SwaggerGenerator () -> IO SwaggerGenState
+runSwaggerGenerator cfg (SwaggerGenerator rsio) = 
+  snd <$> runStateT (runReaderT rsio cfg) defaultSwaggerState 
+
 
 generateSwaggerState :: Swagger -> SwaggerGenerator ()
 generateSwaggerState sw = do
