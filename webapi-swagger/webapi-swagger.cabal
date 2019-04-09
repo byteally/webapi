@@ -23,6 +23,7 @@ library
       ContractGen
       ContractGenTypes
       SwaggerGen
+      GenerationCore
   other-modules:
       Paths_webapi_swagger
   hs-source-dirs:
