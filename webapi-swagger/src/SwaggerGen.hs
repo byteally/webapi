@@ -77,6 +77,8 @@ data Primitive
   | Bool
   | File
   | Null
+  | Default Ref
+  | Maybe Ref
   | Array Ref
   | Tuple [Ref]
   | MultiSet Ref
@@ -243,7 +245,9 @@ generateRoutesState globalParams globalResps pItems = do
                                         map (\par -> (meth, par)
                                             ) pars) methAndPars
                 methParsNamed = map (\x -> case x of
-                                        (x' : _) -> (_paramName (snd x'), x)) methPars
+                                        (x' : _) -> (_paramName (snd x'), x)
+                                        _        -> error "Panic: group cannot be empty"
+                                    ) methPars
             in  methParsNamed
             
 generateRouteMethodState :: Definitions Param -> Definitions Response -> [SW.Referenced Param] -> Route UnparsedPiece -> Method -> Maybe Operation -> SwaggerGenerator (Method, [Param])
@@ -254,7 +258,7 @@ generateRouteMethodState globalParams globalResps routeRefs route meth mOp =
       let opParams    = overrideParams routeRefs (_operationParameters op)
                         -- TODO: ResponsesDefault ignored.
           opResponses = _operationResponses op
-      let (pp, qp, fp, fip, hp, bp) = groupParamDefinitions globalParams routeRefs
+      let (pp, qp, fp, fip, hp, bp) = groupParamDefinitions globalParams opParams
       _ <- paramDefinitions PathParam route meth pp
       qpTycon <- paramDefinitions QueryParam route meth qp
       fpTycon <- paramDefinitions FormParam route meth fp
@@ -263,14 +267,14 @@ generateRouteMethodState globalParams globalResps routeRefs route meth mOp =
       bodyTycon <- paramDefinitions BodyParam route meth bp
       let (sucs, fails, _headers) = groupOutputDefinitions globalResps opResponses
       succTycon <- outputDefinitions ApiOutput route meth sucs
-      errTycon <- outputDefinitions ApiError route meth sucs
+      errTycon <- outputDefinitions ApiError route meth fails
       insertContract route meth qpTycon fpTycon fipTycon hpTycon bodyTycon succTycon errTycon
       pure (meth, pp)
 
 insertContract :: Route UnparsedPiece -> Method ->
                   TypeConstructor -> TypeConstructor -> TypeConstructor -> TypeConstructor ->
                   TypeConstructor -> TypeConstructor -> TypeConstructor -> SwaggerGenerator ()
-insertContract r m qp fp fip hp bdy succ err = do
+insertContract r m qp fp fip hp bdy suc err = do
   let cInfo = ContractInfo { queryParam  = qp
                            , pathParam   = ""
                            , formParam   = fp
@@ -278,7 +282,7 @@ insertContract r m qp fp fip hp bdy succ err = do
                            , cookieParam = ""
                            , headerParam = hp
                            , requestBody = [bdy]
-                           , apiOutput   = succ
+                           , apiOutput   = suc
                            , apiError    = err
                            , contentTypes = []
                            , cookieOut   = ""
@@ -289,7 +293,7 @@ insertContract r m qp fp fip hp bdy succ err = do
 parseRouteType :: Route UnparsedPiece ->
                   [(T.Text, [(Method, Param)])] ->
                   SwaggerGenerator ()
-parseRouteType route params = do
+parseRouteType _route _params = do
   pure ()
 {-  
   let pps = routePathParamPiece route
@@ -327,7 +331,7 @@ overrideParams routeRefs methRefs =
 
 globalSwaggerDefinitions :: Definitions Schema -> SwaggerGenerator ()
 globalSwaggerDefinitions defs = do
-  schemaDefinitions (Global []) defs
+  _ <- schemaDefinitions (Global []) defs
   pure ()
 
 outputDefinitions :: ResponseType -> Route UnparsedPiece -> Method ->
@@ -342,16 +346,16 @@ outputDefinitions rType r m rs = do
 
   where outputDefinition code mrsch = case mrsch of
           Nothing -> pure (code, Inline Null)
-          Just (SW.Ref (Reference name)) -> do
-            refT <- lookupGlobalDefinition name
+          Just (SW.Ref (Reference n)) -> do
+            refT <- lookupGlobalDefinition n
             pure (code, refT)
           Just (SW.Inline sc)            -> do
             -- TODO: a name is being made up here
             --       this name should not be clashing with any key
             --       To handle this, verify that all keys under this route/meth
             --       do not have this name
-            let name = responseName code
-            refT <- schemaDefinition (localProv r m) name sc
+            let n = responseName code
+            refT <- schemaDefinition (localProv r m) n sc
             pure (code, refT)
         responseName code = "Response" <> T.pack (show code)
 
@@ -362,7 +366,7 @@ groupOutputDefinitions :: Definitions Response -> Responses ->
                                                                               -- success & failure
                            )
 -- TODO: handling of default responses                           
-groupOutputDefinitions globResponses responses =
+groupOutputDefinitions globResponses resps =
   let inlineResps =
         map (\(code, rres) -> case rres of
                       SW.Ref (Reference n) -> 
@@ -370,13 +374,13 @@ groupOutputDefinitions globResponses responses =
                           Nothing -> error "Panic: global response not found"
                           Just p  -> (code, p)
                       SW.Inline p -> (code, p)
-                  ) $ OHM.toList (_responsesResponses responses)
-      headers     = concatMap (\(code, resp) ->
+                  ) $ OHM.toList (_responsesResponses resps)
+      hds         = concatMap (\(code, resp) ->
                                  map (\(hn, hdr) -> (code, hn, hdr)) (OHM.toList (_responseHeaders resp))) inlineResps
       successes   = map (fmap _responseSchema) $ filter (isSuccess . fst) inlineResps
       failures    = map (fmap _responseSchema) $ filter (not . isSuccess . fst) inlineResps
       isSuccess c = c >= 200 && c < 300
-  in  (successes, failures, headers)
+  in  (successes, failures, hds)
 
   
 
@@ -439,7 +443,7 @@ isHeaderParam par =
 isBodyParam :: Param -> Bool
 isBodyParam par =
   case _paramSchema par of
-    ParamBody parOther -> True
+    ParamBody _ -> True
     _ -> False
 
 isFileParam :: Param -> Bool
@@ -486,32 +490,44 @@ responseDataConName rt s =
 
 data ParamTypeInfo = ParamTypeInfo { paramType       :: Ref
                                    , paramName       :: DefinitionName
-                                   , isParamRequired :: Maybe Bool
                                    } deriving (Show, Eq, Generic)
 
 
 pathParamDefinition :: Route UnparsedPiece -> [(Method, Param)] -> SwaggerGenerator ParamTypeInfo
-pathParamDefinition r par = undefined
+pathParamDefinition _r _par = undefined
 
 paramDefinition :: Route UnparsedPiece -> Method -> Param -> SwaggerGenerator ParamTypeInfo
 paramDefinition r m = paramDefinition' (localProv r m)
 
 paramDefinition' :: Provenance -> Param -> SwaggerGenerator ParamTypeInfo
 paramDefinition' prov par = do
-  let name = _paramName par
-      req  = _paramRequired par
+  let parName = _paramName par
+      req  = case _paramRequired par of
+        Nothing -> False
+        Just t  -> t
   paramTypeRef <- case _paramSchema par of
-                   ParamBody (SW.Inline schema) -> do
-                     schemaDefinition prov name schema
-                   ParamBody (SW.Ref (Reference name)) ->
-                     lookupGlobalDefinition name
+                   ParamBody (SW.Inline sch) -> do
+                     schemaDefinition prov parName sch
+                   ParamBody (SW.Ref (Reference n)) ->
+                     lookupGlobalDefinition n
                    ParamOther pOth           -> 
-                     paramSchemaDefinition prov name (_paramOtherSchemaParamSchema pOth)
-  pure (ParamTypeInfo paramTypeRef name req)
+                     paramSchemaDefinition prov parName (_paramOtherSchemaParamSchema pOth)
+  let reqParamTypeRef = case req of
+        True  -> case paramTypeRef of
+          Inline (Default r) -> r
+          _                  -> paramTypeRef
+        False -> case paramTypeRef of
+          Inline (Default r) -> Inline (Default r)
+          _                  -> Inline (Maybe paramTypeRef)
+  pure (ParamTypeInfo reqParamTypeRef parName)
 
 paramSchemaDefinition :: Provenance -> DefinitionName -> ParamSchema t -> SwaggerGenerator Ref
-paramSchemaDefinition prov def parSch = go
-  where go =
+paramSchemaDefinition prov def parSch = hasDef <$> go
+  where hasDef ref = case _paramSchemaDefault parSch of
+          Just _  -> Inline (Default ref)
+          Nothing -> ref
+          
+        go =
          case (_paramSchemaType parSch) of
            Just SwaggerString -> 
              case _paramSchemaFormat parSch of
@@ -520,6 +536,7 @@ paramSchemaDefinition prov def parSch = go
                Just "password"  -> inline Password
                Just "byte"      -> inline Byte
                Just "binary"    -> inline Binary
+               Just _           -> error "Panic: unexpected string"
                Nothing ->
                  case _paramSchemaEnum parSch of
                    Nothing    -> inline Text
@@ -528,7 +545,7 @@ paramSchemaDefinition prov def parSch = go
              case _paramSchemaFormat parSch of
                Just "float"  -> inline Float
                Just "double" -> inline Double
-               _ -> undefined
+               _ -> error "TODO: swagger number"
            Just SwaggerInteger -> 
              case _paramSchemaFormat parSch of
                Just "int32" -> inline Int32
@@ -537,6 +554,7 @@ paramSchemaDefinition prov def parSch = go
            Just SwaggerBoolean -> inline Bool
            Just SwaggerArray -> arrayDefinition (_paramSchemaItems parSch)
            Just SwaggerNull -> inline Null
+           Just SwaggerFile -> inline File
            Just SwaggerObject -> error "Panic: impossible case of object in paramDefinition"
            Nothing -> inline Null
            
@@ -550,16 +568,7 @@ paramSchemaDefinition prov def parSch = go
               insertDefinition prov def tyDef
             Nothing    -> error "Panic: non string in enums"
 
-        arrayDefinition mitems = case mitems of
-          Just (SwaggerItemsPrimitive mfmt ipar) -> primitiveArrayDefinition mfmt ipar
-          Just (SwaggerItemsObject rsc) -> objectArrayDefinition rsc
-          Just (SwaggerItemsArray rscs) -> tupleDefinition rscs
-          Nothing -> error "TODO: default for array"
-
-        primitiveArrayDefinition = undefined
-        objectArrayDefinition = undefined
-        tupleDefinition = undefined
-        
+        arrayDefinition = undefined
         inline = pure . Inline
 
 sumType :: T.Text -> [(T.Text, [Ref])] -> TypeDefinition
@@ -610,23 +619,71 @@ schemaDefinition prov def sch = do
       Just SwaggerObject -> customTypeDefinition (_schemaProperties sch)
       -- NOTE: Array is handled in both schemaDefinition and paramDefinition
       --       The invariant check is not being handled now (certain arrays are special)
-      Just SwaggerArray  -> arrayDefinition (_paramSchemaItems paramSchema)
-      _                  -> paramSchemaDefinition prov def paramSchema
+      Just SwaggerArray  ->
+        arrayDefinition (_paramSchemaItems paramSchema)
+      _                  -> 
+        paramSchemaDefinition prov def paramSchema
 
-   where customTypeDefinition props = do
+   where reqType k rty =
+           case k `L.elem` _schemaRequired sch of
+             True -> case rty of
+               Inline (Default r) -> r
+               _                  -> rty
+             False -> case rty of
+               Inline (Default r) -> Inline (Default r)
+               _                  -> Inline (Maybe rty)
+         customTypeDefinition props = do
            --TODO: Additional properties not handled
            fields <- OHM.foldlWithKey' (\s k rsc -> do
                                           xs <- s
                                           x <- schemaField k rsc
-                                          pure ((k, x) : xs)
+                                          let rx = reqType k x
+                                          pure ((k, rx) : xs)
                                       ) (pure []) props
            let tyDef = productType def fields
            insertDefinition prov def tyDef
            
-         arrayDefinition = undefined         
+         arrayDefinition mitems = case mitems of
+           Just (SwaggerItemsPrimitive mfmt ipar) -> primitiveArrayDefinition mfmt ipar
+           Just (SwaggerItemsObject rsc) -> objectArrayDefinition rsc
+           Just (SwaggerItemsArray rscs) -> tupleDefinition rscs
+           Nothing -> error "TODO: default for array"
+
+         primitiveArrayDefinition :: Maybe (CollectionFormat t) -> ParamSchema t -> SwaggerGenerator Ref
+         primitiveArrayDefinition mfmt ipar = do
+           rcty <- paramSchemaDefinition (extendProvenance def prov) (def <> "ArrayContents") ipar
+           let unDefault = case rcty of
+                             Inline (Default cty) -> cty
+                             _                    -> rcty
+           let arTy = case mfmt of
+                 Nothing -> Array rcty
+                 Just CollectionCSV -> DelimitedCollection Comma unDefault
+                 Just CollectionSSV -> DelimitedCollection Space unDefault
+                 Just CollectionTSV -> DelimitedCollection SlashT unDefault
+                 Just CollectionPipes -> DelimitedCollection Pipe unDefault
+                 Just CollectionMulti -> MultiSet unDefault
+           pure (Inline arTy)
+            
+         objectArrayDefinition rsc = do
+           case rsc of
+             SW.Inline sc -> do
+               rty <- schemaDefinition (extendProvenance def prov) (def <> "ArrayContents") sc
+               pure (Inline (Array rty))
+             SW.Ref (Reference n) -> do
+               rty <- lookupGlobalDefinition n
+               pure (Inline (Array rty))
+
+         tupleDefinition rscs = do
+           rtys <- mapM (\(i, rsc) -> case rsc of
+                           SW.Inline sc -> schemaDefinition (extendProvenance def prov) (def <> "TupleContents" <> T.pack (show i)) sc
+                           SW.Ref (Reference n) -> lookupGlobalDefinition n
+                       )
+                       (zip ([0 .. ] :: [Int]) rscs)
+           pure (Inline (Tuple rtys))
+                  
          schemaField k rsc = case rsc of
-           SW.Ref (Reference name) -> do
-             lookupGlobalDefinition name
+           SW.Ref (Reference n) -> do
+             lookupGlobalDefinition n
            SW.Inline s -> do
              schemaDefinition (extendProvenance k prov) k s
          
@@ -637,6 +694,7 @@ referenceOf _ _ (Primitive ty)   = Inline ty
 extendProvenance :: DefinitionName -> Provenance -> Provenance
 extendProvenance n (Global ks)    = Global (ks ++ [n])
 extendProvenance n (Local r m ks) = Local r m (ks ++ [n])
+extendProvenance _ p = p
 
 lookupGlobalDefinition :: DefinitionName -> SwaggerGenerator Ref
 lookupGlobalDefinition defn = do
@@ -645,8 +703,8 @@ lookupGlobalDefinition defn = do
     Nothing  -> error "Panic: name not found"
     Just cty -> pure (referenceOf globalProv defn (Object cty))
 
-  where lookupDefinition defn tyDefs =
-          customHaskType <$> HM.lookup (Definition globalProv defn) tyDefs
+  where lookupDefinition defn' tyDefs =
+          customHaskType <$> HM.lookup (Definition globalProv defn') tyDefs
 
 globalProv :: Provenance
 globalProv = Global []
@@ -656,12 +714,10 @@ localProv r m = Local r m []
 
 insertOutputType :: ResponseType -> Route UnparsedPiece -> Method -> TypeDefinition -> SwaggerGenerator CustomType
 insertOutputType rt route meth tyDef = do
-  let prov = ResponseType rt route meth
   customHaskType <$> insertWithTypeMeta (ResponseType rt route meth) tyDef
 
 insertParamType :: ParamType -> Route UnparsedPiece -> Method -> TypeDefinition -> SwaggerGenerator CustomType
 insertParamType pt route meth tyDef = do
-  let prov = ParamType pt route meth
   customHaskType <$> insertWithTypeMeta (ParamType pt route meth) tyDef
 
 insertDefinition :: Provenance -> DefinitionName -> TypeDefinition -> SwaggerGenerator Ref
@@ -707,8 +763,8 @@ resolveClashes ct cs tyDef =
                ConstructorClash ctorN -> updateCustomType (updateDataConstructorName ctorN (ctorNameClashResolution ct ctorN)) curTyDef
            ) tyDef cs
 
-  where typeNameClashResolution ct n = n <> "_Ty"  <> T.pack (show ct)
-        ctorNameClashResolution ct n = n <> "_Con" <> T.pack (show ct)
+  where typeNameClashResolution ctr n = n <> "_Ty"  <> T.pack (show ctr)
+        ctorNameClashResolution ctr n = n <> "_Con" <> T.pack (show ctr)
         
 checkNameClash :: TypeDefinition -> TypeDefinition -> [TypeClash]
 checkNameClash tyl tyr =
