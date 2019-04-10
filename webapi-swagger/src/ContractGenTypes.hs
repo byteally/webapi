@@ -13,7 +13,7 @@ import Data.HashMap.Strict
 import Control.Monad.Trans.State.Strict
 import qualified Data.Map.Lazy as Map
 import Data.Hashable
-
+import SwaggerGen
 
 
 type StateConfig a = StateT (HashMap LevelInfo [TypeInfo]) IO (a)
@@ -21,21 +21,21 @@ type StateConfig a = StateT (HashMap LevelInfo [TypeInfo]) IO (a)
 
 type RouteName = String
 
-type RouteAndMethod = (RouteName, StdMethod)
+type RouteAndMethod = (RouteName, Method)
 
-data StdMethod
-    = GET
-    | POST
-    | HEAD
-    | PUT
-    | DELETE
-    | TRACE
-    | CONNECT
-    | OPTIONS
-    | PATCH
-    deriving (Show, Eq, Generic, Ord)
+-- data StdMethod
+--     = GET
+--     | POST
+--     | HEAD
+--     | PUT
+--     | DELETE
+--     | TRACE
+--     | CONNECT
+--     | OPTIONS
+--     | PATCH
+--     deriving (Show, Eq, Generic, Ord)
 
-instance Hashable StdMethod
+-- instance Hashable StdMethod
 
 
 type DerivingClass = String  
@@ -75,7 +75,7 @@ data SwPathComponent = PathPiece String | PathParamName String
 --           Add proper (appropriate) constructors for `TypeInfo`.
 
 
-data LevelInfo = Global GlobalLocalType | Local GlobalLocalType (RouteName, StdMethod)
+data LevelInfo = Global GlobalLocalType | Local GlobalLocalType (RouteName, Method)
   deriving (Eq, Show, Generic)
 
 instance Hashable LevelInfo 
@@ -86,16 +86,16 @@ data GlobalLocalType = DefinitionTy | ResponseTy | ParamTy
 instance Hashable GlobalLocalType
 
 
-data TypeInfo = ApiErrTy CreateDataType 
-              | ApiOutTy CreateDataType 
-              | FormParamTy CreateDataType  
-              | QueryParamTy CreateDataType  
-              | FileParamTy CreateDataType  
-              | HeaderInTy CreateDataType 
-              | ReqBodyTy CreateDataType 
-              | ContentTypesTy CreateDataType 
-              | HeaderOutTy CreateDataType 
-              | DefinitionType CreateDataType 
+data TypeInfo = ApiErrTy CreateDataType NamingCounter        -- Depends on Content Type : JSON/XML/PlainText (XML left out for now) Including Nested Type.
+              | ApiOutTy CreateDataType NamingCounter         -- Depends on Content Type : JSON/XML/PlainText (XML left out for now)
+              | FormParamTy CreateDataType NamingCounter      -- FromParam FormParam / ToParam FormParam  
+              | QueryParamTy CreateDataType NamingCounter     --   
+              | FileParamTy CreateDataType NamingCounter      --  
+              | HeaderInTy CreateDataType NamingCounter       --  
+              | ReqBodyTy CreateDataType NamingCounter        --
+              | ContentTypesTy CreateDataType NamingCounter   --
+              | HeaderOutTy CreateDataType NamingCounter      -- 
+              | DefinitionType CreateDataType NamingCounter   -- 
   deriving (Eq, Show, Generic)              
 
 
@@ -111,14 +111,18 @@ data TInfo = ApiErrI
            | DefinitionI
   deriving (Eq, Show, Generic)        
 
-data CreateDataType = SumType DualSumType | ProductType NewData | HNewType String String
+data CreateDataType = SumType DualSumType | ProductType NewData OgName | HNewType String String OgName
   deriving (Eq, Show, Generic)
 
+-- The original name of the types as in the Swagger Doc.
+type OgName = String
 
+type NamingCounter = Maybe Int
 
---                                                                     constructor, actual type
+--                                                                         constructor, actual type
 data DualSumType = BasicEnum String [String] [String] | ComplexSumType String [(String, String)]
   deriving (Eq, Show, Generic)
+-- TODO : Verify if we need to store OgName for the types of ComplexSumType
 
 type InnerRecords = [(String, String)]
 
@@ -141,7 +145,7 @@ data ContractDetails = ContractDetails
     routeId :: Int 
   , routeName :: String
   , routePath :: [PathComponent]
-  , methodData :: Map.Map StdMethod ApiTypeDetails
+  , methodData :: Map.Map Method ApiTypeDetails
   } deriving (Eq, Show)
 
 
