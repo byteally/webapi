@@ -107,6 +107,8 @@ updateCustomType f tyDef =
 updateTypeConstructor :: TypeConstructor -> CustomType -> CustomType
 updateTypeConstructor newTyCon (CustomType _ dcons) =
   CustomType newTyCon dcons
+updateTypeConstructor newTyCon (CustomNewType _ dcon fld ref) =
+  CustomNewType newTyCon dcon fld ref
 
 updateDataConstructorName :: DataConstructorName -> DataConstructorName -> CustomType -> CustomType
 updateDataConstructorName oldDcon newDcon (CustomType tyCon dcons) =
@@ -115,16 +117,25 @@ updateDataConstructorName oldDcon newDcon (CustomType tyCon dcons) =
                                                          False -> dcon
                      ) dcons
   in  CustomType tyCon newDcons
+updateDataConstructorName oldDcon newDcon (CustomNewType tyCon dcon fld ref) =
+  let newDcon' = case oldDcon == dcon of
+        True -> newDcon
+        _    -> dcon
+  in  CustomNewType tyCon newDcon' fld ref
+
+
 
 getTypeConstructor :: CustomType -> TypeConstructor
-getTypeConstructor (CustomType tyCon _) = tyCon
+getTypeConstructor (CustomType tyCon _)        = tyCon
+getTypeConstructor (CustomNewType tyCon _ _ _) = tyCon
 
 dataConstructorNames :: CustomType -> [DataConstructorName]
 dataConstructorNames (CustomType _ dcons) =
   map (\(DataConstructor n _) -> n) dcons
+dataConstructorNames (CustomNewType _ dcon _ _) = [dcon]
 
-data CustomType = CustomType TypeConstructor
-                             [DataConstructor]
+data CustomType = CustomType TypeConstructor    [DataConstructor]
+                | CustomNewType TypeConstructor DataConstructorName (Maybe RecordName) Ref
                 deriving (Show, Eq, Generic)
 
 data Provenance = Global [T.Text]
@@ -174,7 +185,8 @@ defaultSwaggerState = SwaggerGenState { typeState   = HM.empty
                                         , errors      = []
                                         }
 
-type TypeState      = HM.HashMap TypeMeta TypeDefinition
+type TypeState      = HM.HashMap TypeMeta   TypeDefinition
+
 type RouteState     = HM.HashMap (Route UnparsedPiece) (Route Ref)
 
 data ParamType = QueryParam
@@ -360,9 +372,9 @@ overrideParams routeRefs methRefs =
 
 globalSwaggerDefinitions :: Definitions Schema -> SwaggerGenerator ()
 globalSwaggerDefinitions defs = do
-  _ <- schemaDefinitions defs globalProv 
+  _ <- schemaDefinitions defs globalProv
   pure ()
-
+                                                  
 outputDefinitions :: Definitions Schema -> ResponseType -> Route UnparsedPiece -> Method ->
                       [(HttpStatusCode, Maybe (SW.Referenced Schema))] -> SwaggerGenerator (Maybe TypeConstructor)
 outputDefinitions _ _ _ _ []    = pure Nothing
@@ -593,7 +605,7 @@ paramSchemaDefinition prov def parSch = hasDef <$> go
              case _paramSchemaFormat parSch of
                Just "float"  -> inline Float
                Just "double" -> inline Double
-               _ -> error "TODO: swagger number"
+               _ -> inline Number
            Just SwaggerInteger -> 
              case _paramSchemaFormat parSch of
                Just "int32" -> inline Int32
@@ -626,12 +638,17 @@ sumType rawName ctors =
       ctorArgs = map (\ref -> (Nothing, ref))
   in  defaultTypeDefinition cty 
       
-
 enumType :: T.Text -> [T.Text] -> TypeDefinition
 enumType rawName rawCtors =
   let dcons = map (\ctor -> DataConstructor (mkDataConstructorName ctor) []) rawCtors
       cty   = CustomType (mkTypeConstructorName rawName) dcons
   in  defaultTypeDefinition cty 
+
+newType :: T.Text -> Maybe T.Text -> Ref -> TypeDefinition
+newType rawName rawFld ref =
+  let dconName = mkDataConstructorName rawName
+      cty = CustomNewType (mkTypeConstructorName rawName) dconName (mkRecordName <$> rawFld) ref      
+  in  defaultTypeDefinition cty
 
 productType :: T.Text -> [(T.Text, Ref)] -> TypeDefinition
 productType rawName rawFlds =
@@ -660,6 +677,18 @@ schemaDefinitions defs prov =
                         pure (x : xs)
                     ) (pure []) defs
 
+newtypeIfRoot :: Provenance -> DefinitionName -> Ref -> SwaggerGenerator Ref
+newtypeIfRoot prov n ref
+  | isGlobalRoot prov = go 
+  | otherwise         = pure ref
+
+  where isGlobalRoot (Global []) = True
+        isGlobalRoot _           = False
+
+        go = do
+          let nt = newType n Nothing ref
+          insertDefinition prov n nt
+          
 schemaDefinition :: Definitions Schema -> Provenance -> DefinitionName -> Schema -> SwaggerGenerator Ref
 schemaDefinition globalDefs prov def sch = do
   let paramSchema = _schemaParamSchema sch
@@ -673,11 +702,13 @@ schemaDefinition globalDefs prov def sch = do
       Just SwaggerObject -> customTypeDefinition (additionalProps (_schemaProperties sch) )
       -- NOTE: Array is handled in both schemaDefinition and paramDefinition
       --       The invariant check is not being handled now (certain arrays are special)
-      Just SwaggerArray  ->
-        arrayDefinition (_paramSchemaItems paramSchema)
-      _                  -> 
-        paramSchemaDefinition prov def paramSchema
-
+      Just SwaggerArray -> do
+        ref <- arrayDefinition (_paramSchemaItems paramSchema)
+        newtypeIfRoot prov def ref
+      _ -> do
+        ref <- paramSchemaDefinition prov def paramSchema
+        newtypeIfRoot prov def ref
+        
    where reqType k rty =
            case k `L.elem` _schemaRequired sch of
              True -> case rty of
