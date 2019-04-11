@@ -253,7 +253,6 @@ library
       base >=4.7 && <5
     , text
     , swagger2
-    , lens
     , aeson
     , bytestring
     , webapi
@@ -261,7 +260,6 @@ library
     , webapi-contract
     , vector
     , time
-    , multiset
     #{if webapiXmlNeeded then ", webapi-xml" else ""::String}
   default-language: Haskell2010
   ghc-options: -Wall
@@ -356,8 +354,6 @@ languageExtensionsForTypesModule =  [
 importsForTypesModule :: [String]
 importsForTypesModule = [ 
                           "Prelude ()"
-                        , "CommonTypes"
-                        , "Control.Lens"
                         ]
                         -- , "Data.Swagger.Schema"
                         -- , "Data.Swagger.Internal.Schema"
@@ -370,6 +366,7 @@ qualifiedImportsForTypesModule =
                                [
                                  ("Data.ByteString.Char8", "ASCII")
                                , ("Data.HashMap.Lazy", "HM" )
+                               , ("CommonTypes", "P")
                                , ("Data.Text", "P" )
                                , ("Data.Int", "P" )
                                , ("Data.ByteString", "P")
@@ -395,7 +392,12 @@ langExtsForContract = [
                       ]
 
 importsForContract :: [String]
-importsForContract = ["Types", "Data.Int", "Data.Text"]                               
+importsForContract = [] --["Data.Int", "Data.Text"]                               
 
 qualImportsForContract :: [(String, String)]
-qualImportsForContract = [("WebApi.Contract", "W"), ("WebApi.Param", "W")]
+qualImportsForContract = [
+                           ("WebApi.Contract", "W")
+                         , ("WebApi.Param", "W")
+                         , ("Data.Int", "P")
+                         , ("Data.Text", "P")
+                         ]

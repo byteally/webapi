@@ -53,9 +53,10 @@ runCodeGen swaggerJsonInputFilePath outputPath projectName = do
       let tyState = typeState finalStateVal
       let routeStateHM = routeState finalStateVal
       let apiContractStateHM = apiContract finalStateVal
-      createdModuleNames <- generateModulesFromTypeState tyState projectSrcDir 
-      generateContractFromContractState "SwaggerContract" apiContractStateHM routeStateHM projectFolderGenPath
-      writeCabalAndProjectFiles projectFolderGenPath projectName False (Set.toList createdModuleNames)
+      modulesWithQualNames <- generateModulesFromTypeState tyState projectSrcDir 
+      generateContractFromContractState "SwaggerContract" apiContractStateHM routeStateHM projectFolderGenPath modulesWithQualNames
+      let moduleNamesOnly =  fst $ DL.unzip $ Set.toList modulesWithQualNames
+      writeCabalAndProjectFiles projectFolderGenPath projectName False moduleNamesOnly
 
   
   -- get a list of all keys, groupBy Route to get list of routes.
@@ -68,8 +69,8 @@ runCodeGen swaggerJsonInputFilePath outputPath projectName = do
 
   -- TODO : Import all generated Types modules in Contract
 
-generateContractFromContractState :: String -> ContractState -> RouteState -> FilePath -> IO ()
-generateContractFromContractState contractName contractState routeStateHM genDirPath = do
+generateContractFromContractState :: String -> ContractState -> RouteState -> FilePath -> Set.Set (String, String) -> IO ()
+generateContractFromContractState contractName contractState routeStateHM genDirPath moduleAndQualNames = do
   let routeListUnGrouped = HMS.keys contractState
   let groupedRoutes = ( (DL.groupBy (\(route, _) (route2, _) -> route == route2 ) ) . DL.sort ) routeListUnGrouped 
   let unParsedRoutePaths = fmap selectFirstRouteFromList groupedRoutes
@@ -88,10 +89,12 @@ generateContractFromContractState contractName contractState routeStateHM genDir
 
 
   let contractLangExts = fmap languageExtension langExtsForContract
+  let routeTypeModuleImports = Set.toList moduleAndQualNames
+  let allQualImportsForContract = routeTypeModuleImports ++ qualImportsForContract
   let contractImports = 
         fmap moduleImport 
           ( (DL.zip importsForContract (cycle [(False, Nothing)]) ) 
-            ++ (fmap (\(fullModuleName, qual) ->  (fullModuleName, (True, Just $ ModuleName noSrcSpan qual)) ) qualImportsForContract) ) 
+            ++ (fmap (\(fullModuleName, qual) ->  (fullModuleName, (True, Just $ ModuleName noSrcSpan qual)) ) allQualImportsForContract) ) 
     -- TODO : Add qualified imports for all Local modules (generate from HMS key and routeState)
     
   
@@ -114,7 +117,8 @@ generateContractFromContractState contractName contractState routeStateHM genDir
 -- TODO 
 -- 1. Qual in Types
 -- 2. Import of Globals in Types modules
--- 3. Verify imports and and qualifications in contracts
+-- 3. Verify imports and qualifications in contracts
+
 -- 4. Deletion of prev Generated folder
 -- 5. Generation Path refer to RouteState for Routes
  
@@ -157,7 +161,7 @@ generateContractFromContractState contractName contractState routeStateHM genDir
           case routePiece of
             Static rPieceTxt -> T.unpack $ T.toTitle rPieceTxt
             Dynamic rPieceRef -> 
-              let (firstChar:remainingChar) = showRefTy rPieceRef
+              let (firstChar:remainingChar) = (showRefTy Nothing) rPieceRef
               in (Char.toUpper firstChar):remainingChar )
 
   generateContractTypeInsts :: [(Vector 4 String, [Vector 4 String])] 
@@ -168,7 +172,7 @@ generateContractFromContractState contractName contractState routeStateHM genDir
     let refRoute = lookupRouteInRouteState unparsedRoute
     let routeNameStr = constructRouteName refRoute
     let topLevelVector = fromMaybeSV $ SV.fromList ["W.ApiContract", contractName, qualMethodName method, routeNameStr]
-    let typeInsts = parseContractInfo routeNameStr refRoute contractInfo method 
+    let typeInsts = parseContractInfo routeNameStr unparsedRoute contractInfo method 
     (topLevelVector, typeInsts):acc
   
   fromMaybeSV :: Maybe a -> a
@@ -178,8 +182,8 @@ generateContractFromContractState contractName contractState routeStateHM genDir
 qualMethodName :: Method -> String
 qualMethodName = ("W." ++) . show
 
-parseContractInfo :: String -> Route Ref -> ContractInfo TypeConstructor -> Method -> [Vector 4 String]
-parseContractInfo routeNameStr refRoute contractInfo method = 
+parseContractInfo :: String -> Route UnparsedPiece -> ContractInfo TypeConstructor -> Method -> [Vector 4 String]
+parseContractInfo routeNameStr unpRouteInfo contractInfo method = 
   let mApiErr = fmap (\typeInfo -> constructVector "ApiErr" (insertQual typeInfo) ) (apiError contractInfo)
       mApiOut = fmap (\typeInfo -> constructVector "ApiOut" (insertQual typeInfo) ) (apiOutput contractInfo)
       mHeaderParam = fmap (\typeInfo -> constructVector "HeaderIn" (insertQual typeInfo) ) (headerParam contractInfo)
@@ -191,7 +195,8 @@ parseContractInfo routeNameStr refRoute contractInfo method =
         case requestBody contractInfo of
           [] -> Nothing
           contentAndReqBody -> 
-            let reqBodyFinalTy = "'[" ++ DL.intercalate "," (fmap (\(cTy, reqBodyTy) -> "Content [" ++ (T.unpack cTy) ++ "] " ++ (T.unpack reqBodyTy) ) contentAndReqBody) ++ "]"
+            let qualForType = getQualOfRoute (getRoute unpRouteInfo) (Just method) ++ "."
+                reqBodyFinalTy = "'[" ++ DL.intercalate "," (fmap (\(cTy, reqBodyTy) -> "Content [" ++ (T.unpack cTy) ++ "] " ++ qualForType ++ (T.unpack reqBodyTy) ) contentAndReqBody) ++ "]"
             in Just $ constructVector "RequestBody" reqBodyFinalTy 
         
       mContentTypes = 
@@ -219,19 +224,24 @@ parseContractInfo routeNameStr refRoute contractInfo method =
 
   insertQual :: T.Text -> String
   insertQual inputType = 
-    let routePieces = getRoute refRoute
-    in T.unpack $ T.toTitle $ T.pack $ DL.concat $ (fmap getRouteFirstChar routePieces) ++ [show method]
+    let routePieces = getRoute unpRouteInfo
+    in (getQualOfRoute routePieces (Just method) ) ++ "." ++ (T.unpack inputType)
     
 
-  getRouteFirstChar :: RoutePiece Ref -> String
-  getRouteFirstChar refPiece =
-    case refPiece of
-      Static txt -> 
-        let (firstChar:_) = T.unpack txt
-        in [firstChar]
-      Dynamic _ -> ""
+  -- getRouteFirstChar :: RoutePiece UnparsedPiece -> String
+  -- getRouteFirstChar unparsedPiece =
+  --   case unparsedPiece of
+  --     Static txt -> 
+  --       let (firstChar:_) = T.unpack txt
+  --       in [firstChar]
+  --     Dynamic _ -> ""
 
 
+showRoutePiece :: RoutePiece UnparsedPiece -> String
+showRoutePiece routePiece = 
+  case routePiece of
+    Static pieceTxt -> T.unpack pieceTxt
+    Dynamic unpPiece -> T.unpack unpPiece
 
 -- [((r1,POST), ContractInfo {}), ((r2, GET), ContractInfo {}), ((r3, GET), ContractInfo {}), ((r4, GET), ContractInfo {}), ((r1,GET), ContractInfo {})]
   
@@ -239,12 +249,12 @@ parseContractInfo routeNameStr refRoute contractInfo method =
 -- constructRouteNameFromRouteList :: Route UnparsedPiece -> String
 -- constructRouteNameFromRouteList = undefined
 
-generateModulesFromTypeState :: TypeState -> FilePath -> IO (Set.Set String)
-generateModulesFromTypeState tState genPath = HMS.foldlWithKey' (parseStateAndGenerateFile genPath) (pure $ Set.empty) tState
+generateModulesFromTypeState :: TypeState -> FilePath -> IO (Set.Set (String, String) )
+generateModulesFromTypeState tState genPath = HMS.foldlWithKey' (parseStateAndGenerateFile genPath) (pure (Set.empty) ) tState
  where
-  parseStateAndGenerateFile :: FilePath -> IO (Set.Set String) -> TypeMeta -> TypeDefinition -> IO (Set.Set String)
+  parseStateAndGenerateFile :: FilePath -> IO (Set.Set (String, String) ) -> TypeMeta -> TypeDefinition -> IO (Set.Set (String, String) )
   parseStateAndGenerateFile genDirPath ioModuleNames typeMeta typeDefn = do
-    moduleNames <- ioModuleNames
+    modAndQualNames <- ioModuleNames
     let (typesModuleDir, typesModuleName) = 
           case typeMeta of
             ParamType _ routeInfo methodName -> constructLocalTypeModulePath routeInfo (Just methodName) genDirPath
@@ -256,25 +266,35 @@ generateModulesFromTypeState tState genPath = HMS.foldlWithKey' (parseStateAndGe
                 Local routeInfo methodName _ ->  constructLocalTypeModulePath routeInfo (Just methodName) genDirPath
 
     tyModuleExists <- doesFileExist (typesModuleDir ++ typesModuleName) 
-    let (modName:: String) = 
+    let (modName, modQualName) = 
           case typeMeta of
-            ParamType _ routeInfo methodName -> constructLocalTypeModuleName routeInfo (Just methodName)
-            ResponseType _ routeInfo methodName -> constructLocalTypeModuleName routeInfo (Just methodName)
+            ParamType _ routeInfo methodName -> 
+              let qualName = getQualOfRoute (getRoute routeInfo) (Just methodName)  
+              in (constructLocalTypeModuleName routeInfo (Just methodName), qualName)
+            ResponseType _ routeInfo methodName -> 
+              let qualName = getQualOfRoute (getRoute routeInfo) (Just methodName)  
+              in (constructLocalTypeModuleName routeInfo (Just methodName), qualName)
             Definition provenance _ -> 
               case provenance of
-                Global _ -> globalTypesHsModuleName ++ globalDefnsModuleName
-                Local routeInfo methodName _ -> constructLocalTypeModuleName routeInfo (Just methodName)
-                RouteLocal routeInfo _ -> constructLocalTypeModuleName routeInfo Nothing
+                Global _ -> (globalTypesHsModuleName ++ globalDefnsModuleName, globalDefnsQualName)
+                Local routeInfo methodName _ -> 
+                  let qualName = getQualOfRoute (getRoute routeInfo) (Just methodName)  
+                  in (constructLocalTypeModuleName routeInfo (Just methodName), qualName)
+                RouteLocal routeInfo _ -> 
+                  let qualName = getQualOfRoute (getRoute routeInfo) Nothing
+                  in (constructLocalTypeModuleName routeInfo Nothing, qualName)
                   
+    let currentProvenance = getProvenance typeMeta
                   
     case tyModuleExists of 
       True -> do
-        let dataDecl = constructDeclFromCustomType $ customHaskType typeDefn
+        let dataDecl = constructDeclFromCustomType currentProvenance $ customHaskType typeDefn
             newContents = "\n\n" ++ prettyPrint dataDecl
         appendFile (typesModuleDir ++ typesModuleName) newContents
-        pure $ Set.insert modName moduleNames
+        pure $ Set.insert (modName, modQualName) modAndQualNames
+        -- pure (Set.insert modName moduleNames, Set.insert modQualName qualNames)
       False -> do
-        let dataDecl = constructDeclFromCustomType $ customHaskType typeDefn
+        let dataDecl = constructDeclFromCustomType currentProvenance $ customHaskType typeDefn
             newTyModuleContents = 
               prettyPrint $ 
                 Module noSrcSpan 
@@ -286,7 +306,8 @@ generateModulesFromTypeState tState genPath = HMS.foldlWithKey' (parseStateAndGe
                       [dataDecl]
         createDirectoryIfMissing True typesModuleDir
         writeFile (typesModuleDir ++ typesModuleName) newTyModuleContents
-        pure $ Set.insert modName moduleNames
+        pure $ Set.insert (modName, modQualName) modAndQualNames
+        -- pure (Set.insert modName moduleNames, Set.insert modQualName qualNames)
       
   parseRouteIntoFolderName :: Route UnparsedPiece -> String
   parseRouteIntoFolderName routeInfo =
@@ -294,11 +315,6 @@ generateModulesFromTypeState tState genPath = HMS.foldlWithKey' (parseStateAndGe
       [] -> error $ "Encountered empty Route! Expected the route to contain atleast one piece!"
       routeInfoList -> DL.intercalate "/" $ fmap (validateRouteDirectoryPath . showRoutePiece) routeInfoList
 
-  showRoutePiece :: RoutePiece UnparsedPiece -> String
-  showRoutePiece routePiece = 
-    case routePiece of
-      Static pieceTxt -> T.unpack pieceTxt
-      Dynamic unpPiece -> T.unpack unpPiece
 
   parseRouteIntoModuleName :: Route UnparsedPiece -> String
   parseRouteIntoModuleName routeInfo =
@@ -312,12 +328,6 @@ generateModulesFromTypeState tState genPath = HMS.foldlWithKey' (parseStateAndGe
     let qualImportList = qualifiedImportsForTypesModule    
     in fmap (\(fullModuleName, qual) ->  (fullModuleName, (True, Just $ ModuleName noSrcSpan qual)) ) qualImportList
 
-  validateRouteDirectoryPath :: String -> String
-  validateRouteDirectoryPath = setValidConstructorId
-
-  validateRouteModuleName :: String -> String
-  validateRouteModuleName = setValidConstructorId
- 
   constructLocalTypeModulePath :: Route UnparsedPiece -> Maybe Method -> FilePath -> (String, String)
   constructLocalTypeModulePath routeInfo mMethodName genDirPath = do
     let routePath = parseRouteIntoFolderName routeInfo
@@ -337,7 +347,11 @@ generateModulesFromTypeState tState genPath = HMS.foldlWithKey' (parseStateAndGe
         (routeLevelTypesModName routeModuleName) ++ routeLevelTypesModuleName
 
   
+validateRouteDirectoryPath :: String -> String
+validateRouteDirectoryPath = setValidConstructorId
 
+validateRouteModuleName :: String -> String
+validateRouteModuleName = setValidConstructorId
   --  where
   --   createDataDeclarations :: [(CreateDataType, NamingCounter)] -> [Decl SrcSpanInfo]
   --   createDataDeclarations = DL.foldl' createTypeDeclFromCDT []  
@@ -362,8 +376,8 @@ customTypeForComplexSumTy =
       dCons2 = DataConstructor "PendingCons" [(Nothing, Ref (Local  routeDefn GET ["Pending"]) "defName2" "AvlTyName" )]
   in CustomType "ComplexSumTy" [dCons1, dCons2]
 
-constructDeclFromCustomType :: CustomType -> Decl SrcSpanInfo
-constructDeclFromCustomType (CustomType tyConstructor dataConsList) = 
+constructDeclFromCustomType :: Provenance -> CustomType -> Decl SrcSpanInfo
+constructDeclFromCustomType currentProvenance (CustomType tyConstructor dataConsList) = 
   DataDecl noSrcSpan  
     (dataOrNewType False)
     Nothing 
@@ -388,14 +402,14 @@ constructDeclFromCustomType (CustomType tyConstructor dataConsList) =
               -- SumType or NewType 
               -- TODO : NewType not handled yet!
               [] -> 
-                let typeConsList = fmap (typeConstructor . showRefTy) $ snd $ DL.unzip mRecRefList
+                let typeConsList = fmap (typeConstructor . (showRefTy (Just currentProvenance) ) ) $ snd $ DL.unzip mRecRefList
                 in QualConDecl noSrcSpan Nothing Nothing 
                     (ConDecl noSrcSpan (nameDecl $ T.unpack dConsName) typeConsList)
 
               -- ProductType
               recVals -> do
                 -- TODO: We should check that the 2 lists are of equal lengths?
-                let typeNames = fmap showRefTy $ snd $ DL.unzip mRecRefList
+                let typeNames = fmap (showRefTy (Just currentProvenance) ) $ snd $ DL.unzip mRecRefList
                 let recordNamesWithTypes = DL.zip (fmap T.unpack recVals) typeNames
                 let fieldDecls = snd $ DL.unzip $ fmap fieldDecl recordNamesWithTypes
                 QualConDecl noSrcSpan Nothing Nothing 
@@ -416,12 +430,12 @@ constructDeclFromCustomType (CustomType tyConstructor dataConsList) =
 --         (nameDecl construcorVal) [] ) )
 
 
-showRefTy :: Ref -> String
-showRefTy (Inline prim) = showPrimitiveTy prim
-showRefTy (Ref _ _ tyCon) = T.unpack tyCon
+showRefTy :: Maybe Provenance -> Ref -> String
+showRefTy mCurrentProv (Inline prim) = showPrimitiveTy mCurrentProv prim
+showRefTy mCurrentProv (Ref provenance _ tyCon) = printWithQual provenance mCurrentProv tyCon
 
-showPrimitiveTy :: Primitive -> String
-showPrimitiveTy prim =
+showPrimitiveTy :: Maybe Provenance -> Primitive -> String
+showPrimitiveTy mCurrentProv prim =
   case prim of
     Date -> "Day"
     DateTime -> "UTCTime"
@@ -438,11 +452,11 @@ showPrimitiveTy prim =
     Bool -> "Bool"
     File -> "File"
     Null -> "()"
-    Default innerRef -> "Default " ++ (showRefTy innerRef)
-    Maybe innerRef -> "Maybe " ++ (showRefTy innerRef)
-    Array innerRef -> ("[" ++ (showRefTy innerRef) ++ "]")
-    Tuple innerRefList -> "(" ++ (DL.intercalate "," (fmap showRefTy innerRefList) ) ++ ")"
-    MultiSet innerRef -> "MultiSet " ++ (showRefTy innerRef)
+    Default innerRef -> "Default " ++ (showRefTy mCurrentProv innerRef)
+    Maybe innerRef -> "Maybe " ++ (showRefTy mCurrentProv innerRef)
+    Array innerRef -> ("[" ++ (showRefTy mCurrentProv innerRef) ++ "]")
+    Tuple innerRefList -> "(" ++ (DL.intercalate "," (fmap (showRefTy mCurrentProv) innerRefList) ) ++ ")"
+    MultiSet innerRef -> "MultiSet " ++ (showRefTy mCurrentProv innerRef)
     DelimitedCollection delimiter innerRef  -> 
       let delimChar = 
             case delimiter of
@@ -450,9 +464,38 @@ showPrimitiveTy prim =
               Space -> "\" \"" 
               Pipe -> "\"|\""
               Comma -> "\",\" "
-      in "DelimitedCollection" ++ delimChar ++ (showRefTy innerRef)
+      in "DelimitedCollection" ++ delimChar ++ (showRefTy mCurrentProv innerRef)
   
-      
+printWithQual :: Provenance -> Maybe Provenance -> T.Text -> String
+printWithQual provenance mCurrentInpProv typeTxt = 
+  case mCurrentInpProv of
+    Just prov ->
+        case isSameModule provenance prov of 
+          True -> T.unpack typeTxt
+          False ->
+              case provenance of
+                Global _ -> "Defns." ++ (T.unpack typeTxt)
+                RouteLocal unparsedRouteInfo _ -> (getQualOfRoute (getRoute unparsedRouteInfo) Nothing) ++ "." ++ (T.unpack typeTxt)
+                Local unparsedRouteInfo method _ -> (getQualOfRoute (getRoute unparsedRouteInfo) (Just method) ) ++ "." ++ (T.unpack typeTxt)
+    Nothing -> (T.unpack typeTxt)
+        
+--  where
+
+
+getQualOfRoute :: [RoutePiece UnparsedPiece] -> Maybe Method -> String
+getQualOfRoute unpRoutePieces mMethod = 
+  let methodTxt = 
+        case mMethod of
+          Just method -> show method 
+          Nothing -> ""
+      firstCharsOfRoutePaths = fmap (getFirstChar . validateRouteDirectoryPath . showRoutePiece) unpRoutePieces
+  in firstCharsOfRoutePaths ++ methodTxt
+ where
+  getFirstChar :: String -> Char
+  getFirstChar inpStr = 
+    case inpStr of
+      [] -> error $ "Encountered empty Route Piece! Debug Info: " ++ (show unpRoutePieces)
+      firstChar:_ -> firstChar
 
 
 
@@ -545,7 +588,7 @@ recursiveTypeForRoute routeComponents =
   processPathComponent refRoutePiece = 
     case refRoutePiece of
       Static staticPathPiece -> promotedType $ T.unpack staticPathPiece
-      Dynamic pType -> typeConstructor $ showRefTy pType
+      Dynamic pType -> typeConstructor $ showRefTy Nothing pType
 
 promotedType :: String -> Type SrcSpanInfo
 promotedType typeNameData = 
