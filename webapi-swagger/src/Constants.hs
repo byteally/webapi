@@ -12,7 +12,7 @@ import SwaggerGen (Method)
 
 
 globalTypesModulePath :: String
-globalTypesModulePath = "src/Types/GlobalDefinitions/"
+globalTypesModulePath = "Types/GlobalDefinitions/"
 
 globalTypesHsModuleName :: String
 globalTypesHsModuleName = "Types.GlobalDefinitions."
@@ -36,14 +36,14 @@ routeLevelTypesModuleName :: String
 routeLevelTypesModuleName = "RouteTypes"
 
 routeLevelTypesPath :: String -> String
-routeLevelTypesPath rPath = "src/Types/" ++ rPath ++ "/" 
+routeLevelTypesPath rPath = "Types/" ++ rPath ++ "/" 
 
 routeLevelTypesModName :: String -> String
 routeLevelTypesModName rPath = "Types." ++ rPath ++ "."
 
 
 localRouteMethodTypesPath :: RouteName -> Method -> String
-localRouteMethodTypesPath rName stdMethod = "src/Types/" ++ rName ++ "/" ++ (show stdMethod) ++ "/"
+localRouteMethodTypesPath rName stdMethod = "Types/" ++ rName ++ "/" ++ (show stdMethod) ++ "/"
 
 localRouteMethodTypesModName :: RouteName -> Method -> String
 localRouteMethodTypesModName rName stdMethod = "Types." ++ rName ++ "." ++ (show stdMethod) ++ "."
@@ -382,3 +382,20 @@ qualifiedImportsForTypesModule =
                                , ("Prelude", "P" )
                                ]    
                                --  , ("Data.Swagger", (True, Just $ ModuleName noSrcSpan "SW") )
+
+langExtsForContract :: [String]
+langExtsForContract = [
+                        "TypeFamilies"
+                      , "MultiParamTypeClasses"
+                      , "DeriveGeneric"
+                      , "TypeOperators"
+                      , "DataKinds"
+                      , "TypeSynonymInstances"
+                      , "FlexibleInstances"
+                      ]
+
+importsForContract :: [String]
+importsForContract = ["Types", "Data.Int", "Data.Text"]                               
+
+qualImportsForContract :: [(String, String)]
+qualImportsForContract = [("WebApi.Contract", "W"), ("WebApi.Param", "W")]

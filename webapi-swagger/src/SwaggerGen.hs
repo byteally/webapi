@@ -49,10 +49,10 @@ type Config = ()
 type UnparsedPiece = T.Text
 
 data Route a = Route { getRoute :: [RoutePiece a] }
-           deriving (Show, Eq, Generic)
+           deriving (Show, Eq, Generic, Ord)
 
 data RoutePiece a = Static T.Text | Dynamic a
-                deriving (Show, Eq, Generic)
+                deriving (Show, Eq, Generic, Ord)
 
 -- NOTE: "{foo}..{bar}" would be represented as
 --       [ PathParam foo, StaticParam "..", PathParam bar]

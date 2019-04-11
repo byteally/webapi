@@ -1,6 +1,9 @@
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE DeriveGeneric              #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE DataKinds             #-}
+
 
 module GenerationCore where
 
@@ -26,27 +29,215 @@ import Data.Yaml (decodeEither')
 import Control.Applicative ((<|>))
 import Data.Aeson (eitherDecode)
 import Control.Monad.IO.Class
-
+import qualified Data.Char as Char
+import Data.Vector.Sized as SV hiding ((++), foldM, forM, mapM)
+import Data.Finite.Internal
+import Safe
 
 
 
 
 runCodeGen :: FilePath -> FilePath -> String -> IO () 
 runCodeGen swaggerJsonInputFilePath outputPath projectName = do
+  removeDirectoryRecursive outputPath
   let projectFolderGenPath = outputPath ++ projectName ++ "/"
-  createDirectoryIfMissing True (projectFolderGenPath ++ "src/")
+  let projectSrcDir = (projectFolderGenPath ++ "src/")
+  createDirectoryIfMissing True projectSrcDir
   swaggerJSONContents <- liftIO $ BSL.readFile swaggerJsonInputFilePath
   let decodedVal = eitherDecode swaggerJSONContents <|> either (Left . show) Right (decodeEither' (BSL.toStrict swaggerJSONContents))
   case decodedVal of
     Left errMsg -> error $ errMsg -- "Panic: not a valid JSON or yaml"
     Right (swaggerData :: Swagger) -> do
       finalStateVal <- runSwaggerGenerator () (generateSwaggerState swaggerData)
-      writeFile (projectFolderGenPath ++ "src/CommonTypes.hs") commonTypesModuleContent
+      writeFile (projectSrcDir ++ "CommonTypes.hs") commonTypesModuleContent
       let tyState = typeState finalStateVal
-      createdModuleNames <- generateModulesFromTypeState tyState outputPath 
-      writeCabalAndProjectFiles outputPath projectName False (Set.toList createdModuleNames)
+      let routeStateHM = routeState finalStateVal
+      let apiContractStateHM = apiContract finalStateVal
+      createdModuleNames <- generateModulesFromTypeState tyState projectSrcDir 
+      generateContractFromContractState "SwaggerContract" apiContractStateHM routeStateHM projectFolderGenPath
+      writeCabalAndProjectFiles projectFolderGenPath projectName False (Set.toList createdModuleNames)
 
   
+  -- get a list of all keys, groupBy Route to get list of routes.
+  -- Use that list to generate route `type`s and `instance WebApi`
+
+  -- each value of the HashMap maps to one `ApiContract` instance.
+  -- construct RouteName using the same function (concat the Route pieces)
+  -- fields of ContractInfo that are `Nothing`, `type` instance should be left out 
+  -- 
+
+  -- TODO : Import all generated Types modules in Contract
+
+generateContractFromContractState :: String -> ContractState -> RouteState -> FilePath -> IO ()
+generateContractFromContractState contractName contractState routeStateHM genDirPath = do
+  let routeListUnGrouped = HMS.keys contractState
+  let groupedRoutes = ( (DL.groupBy (\(route, _) (route2, _) -> route == route2 ) ) . DL.sort ) routeListUnGrouped 
+  let unParsedRoutePaths = fmap selectFirstRouteFromList groupedRoutes
+  let refRoutePaths = fmap lookupRouteInRouteState unParsedRoutePaths
+  let routeNames = fmap (constructRouteName) refRoutePaths
+
+  let routeDecls = fmap routeDeclaration (DL.zip routeNames refRoutePaths)
+  let ppRouteDecls = "\n\n" ++ (DL.concat $ fmap prettyPrint routeDecls)
+
+  let routesWithMethods:: [(String, [Method])] = fmap getRouteAndMethod groupedRoutes
+  let webapiInstDecl = webApiInstance contractName routesWithMethods
+  let ppWebapiInstDecl = "\n\n" ++ (prettyPrint webapiInstDecl)
+  let apiInstVectorList = HMS.foldlWithKey' generateContractTypeInsts [] contractState
+  let apiContractInstDecls = fmap (\(topVector, tyVectorList) -> apiInstanceDeclaration topVector tyVectorList)   apiInstVectorList
+  let apiContractInsts = fmap (\decl -> "\n\n" ++ (prettyPrint decl) ) apiContractInstDecls 
+
+
+  let contractLangExts = fmap languageExtension langExtsForContract
+  let contractImports = 
+        fmap moduleImport 
+          ( (DL.zip importsForContract (cycle [(False, Nothing)]) ) 
+            ++ (fmap (\(fullModuleName, qual) ->  (fullModuleName, (True, Just $ ModuleName noSrcSpan qual)) ) qualImportsForContract) ) 
+    -- TODO : Add qualified imports for all Local modules (generate from HMS key and routeState)
+    
+  
+
+  let allContractDecls = 
+        [emptyDataDeclaration contractName] ++ routeDecls ++ [webapiInstDecl] ++ apiContractInstDecls
+
+
+  let finalContractModule = 
+        Module noSrcSpan 
+          (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan "Contract") Nothing Nothing)
+          (contractLangExts)
+          (contractImports)
+          (allContractDecls)
+  writeFile (genDirPath ++ "src/Contract.hs") (prettyPrint finalContractModule)
+  -- (fmap (\(topVec, innerVecList) -> 
+  --   apiInstanceDeclaration topVec innerVecList ) $ DL.concat $ fmap (constructVectorForRoute contractName) contractDetails)
+
+
+-- TODO 
+-- 1. Qual in Types
+-- 2. Import of Globals in Types modules
+-- 3. Verify imports and and qualifications in contracts
+-- 4. Deletion of prev Generated folder
+-- 5. Generation Path refer to RouteState for Routes
+ 
+
+
+ where
+  selectFirstRouteFromList :: [(Route UnparsedPiece, Method)]  -> Route UnparsedPiece
+  selectFirstRouteFromList routeList = 
+    case routeList of
+      [] -> error $ "Expected atleast one element in Route ([RoutePiece])! "
+      (firstElem, _):_ -> firstElem
+
+  constructRouteName :: Route Ref -> String
+  constructRouteName routeInfo =
+    let routePieces = getRoute routeInfo
+        routePiecesStr = prettifyRouteName routePieces
+    in routePiecesStr ++ "R"
+
+  lookupRouteInRouteState ::(Route UnparsedPiece) -> Route Ref
+  lookupRouteInRouteState unparsedRoute = 
+    case HMS.lookup unparsedRoute routeStateHM of
+      Just refRoute -> refRoute
+      Nothing -> error $ "Expected to find (Route UnparsedPiece) in RouteState HashMap! "
+
+
+  getRouteAndMethod :: [(Route UnparsedPiece, Method)] -> (String, [Method])
+  getRouteAndMethod routeList = 
+    -- case routeList of
+      -- [] -> error $ "Expected atleast one element in Route ([RoutePiece])! "
+      -- rList -> ([], [])
+    DL.foldl' (\(unparsedRoutePieceList, methodList) (currentRoutePieces, currentMethod) -> 
+                    let routeNameStr = (constructRouteName . lookupRouteInRouteState) currentRoutePieces
+                    in (routeNameStr, currentMethod:methodList)  ) ("", []) routeList
+      
+  prettifyRouteName :: [RoutePiece Ref] -> String
+  prettifyRouteName routePieces = case routePieces of
+    [] -> error "Expected atleast one RoutePiece in the route! Got an empty list!"
+    (Static ""):[] -> "BaseRoute"
+    rPieces -> DL.concat $ flip fmap rPieces (\routePiece -> 
+          case routePiece of
+            Static rPieceTxt -> T.unpack $ T.toTitle rPieceTxt
+            Dynamic rPieceRef -> 
+              let (firstChar:remainingChar) = showRefTy rPieceRef
+              in (Char.toUpper firstChar):remainingChar )
+
+  generateContractTypeInsts :: [(Vector 4 String, [Vector 4 String])] 
+                            -> ((Route UnparsedPiece), Method) 
+                            -> (ContractInfo TypeConstructor) 
+                            -> [(Vector 4 String, [Vector 4 String])]
+  generateContractTypeInsts acc (unparsedRoute, method) contractInfo = do
+    let refRoute = lookupRouteInRouteState unparsedRoute
+    let routeNameStr = constructRouteName refRoute
+    let topLevelVector = fromMaybeSV $ SV.fromList ["W.ApiContract", contractName, qualMethodName method, routeNameStr]
+    let typeInsts = parseContractInfo routeNameStr refRoute contractInfo method 
+    (topLevelVector, typeInsts):acc
+  
+  fromMaybeSV :: Maybe a -> a
+  fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
+  
+
+qualMethodName :: Method -> String
+qualMethodName = ("W." ++) . show
+
+parseContractInfo :: String -> Route Ref -> ContractInfo TypeConstructor -> Method -> [Vector 4 String]
+parseContractInfo routeNameStr refRoute contractInfo method = 
+  let mApiErr = fmap (\typeInfo -> constructVector "ApiErr" (insertQual typeInfo) ) (apiError contractInfo)
+      mApiOut = fmap (\typeInfo -> constructVector "ApiOut" (insertQual typeInfo) ) (apiOutput contractInfo)
+      mHeaderParam = fmap (\typeInfo -> constructVector "HeaderIn" (insertQual typeInfo) ) (headerParam contractInfo)
+      mFormParam = fmap (\typeInfo -> constructVector "FormParam" (insertQual typeInfo) ) (formParam contractInfo)
+      mQueryParam = fmap (\typeInfo -> constructVector "QueryParam" (insertQual typeInfo) ) (queryParam contractInfo)
+      mFileParam = fmap (\typeInfo -> constructVector "FileParam" (insertQual typeInfo) ) (fileParam contractInfo)
+      mRequestBody =
+        -- '[Content [fstElem] tyCons-sndElem ]
+        case requestBody contractInfo of
+          [] -> Nothing
+          contentAndReqBody -> 
+            let reqBodyFinalTy = "'[" ++ DL.intercalate "," (fmap (\(cTy, reqBodyTy) -> "Content [" ++ (T.unpack cTy) ++ "] " ++ (T.unpack reqBodyTy) ) contentAndReqBody) ++ "]"
+            in Just $ constructVector "RequestBody" reqBodyFinalTy 
+        
+      mContentTypes = 
+        case contentTypes contractInfo of
+          [] -> Nothing
+          _ -> 
+            let cTypes = "'[" ++ (T.unpack (T.intercalate "," (contentTypes contractInfo) ) ) ++ "]"
+            in Just $ constructVector "ContentTypes" cTypes 
+
+  in catMaybes [mApiErr, mApiOut, mHeaderParam, mFormParam, mQueryParam, mFileParam, mRequestBody, mContentTypes]
+
+
+
+-- let r1 = Route {getRoute = [(Static "somePath"),(Static "andMorePathStuff")]}
+-- let r2 = Route {getRoute = [(Static "somePathinR2"), (Static "andMorePathStuffForR2")]}
+-- let r3 = Route {getRoute = [(Static "somePathinR3"), (Static "andMorePathStuffForR3")]}
+-- let r4 = Route {getRoute = [(Static "somePathinR4"), (Static "andMorePathStuffForR4")]}
+
+
+
+ where
+  constructVector :: String -> String -> Vector 4 String
+  constructVector typeLabel typeInfo = (fromMaybeSV $ SV.fromList [typeLabel, qualMethodName method, routeNameStr, typeInfo] )
+  fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
+
+  insertQual :: T.Text -> String
+  insertQual inputType = 
+    let routePieces = getRoute refRoute
+    in T.unpack $ T.toTitle $ T.pack $ DL.concat $ (fmap getRouteFirstChar routePieces) ++ [show method]
+    
+
+  getRouteFirstChar :: RoutePiece Ref -> String
+  getRouteFirstChar refPiece =
+    case refPiece of
+      Static txt -> 
+        let (firstChar:_) = T.unpack txt
+        in [firstChar]
+      Dynamic _ -> ""
+
+
+
+-- [((r1,POST), ContractInfo {}), ((r2, GET), ContractInfo {}), ((r3, GET), ContractInfo {}), ((r4, GET), ContractInfo {}), ((r1,GET), ContractInfo {})]
+  
+
+-- constructRouteNameFromRouteList :: Route UnparsedPiece -> String
+-- constructRouteNameFromRouteList = undefined
 
 generateModulesFromTypeState :: TypeState -> FilePath -> IO (Set.Set String)
 generateModulesFromTypeState tState genPath = HMS.foldlWithKey' (parseStateAndGenerateFile genPath) (pure $ Set.empty) tState
@@ -313,3 +504,155 @@ moduleImport (moduleNameStr, (isQualified, qualifiedName) ) =
               importAs = qualifiedName,
               importSpecs = Nothing
              }
+
+
+
+routeDeclaration :: (String, Route Ref) -> Decl SrcSpanInfo
+routeDeclaration (routeNameStr, routePathComponents) = do
+  let routePieceList = getRoute routePathComponents
+  case routePieceList of
+    (Static _):[] -> 
+      TypeDecl noSrcSpan
+        (declarationHead routeNameStr)
+        (TyApp noSrcSpan
+          (typeConstructor "W.Static")
+          (recursiveTypeForRoute routePieceList) )
+    _ -> 
+      TypeDecl noSrcSpan  
+        (declarationHead routeNameStr)
+        (recursiveTypeForRoute routePieceList)
+
+
+recursiveTypeForRoute :: [RoutePiece Ref] -> Type SrcSpanInfo
+recursiveTypeForRoute routeComponents = 
+  case routeComponents of
+    [] -> error "Did not expect an empty list here! "
+    x:[] -> processPathComponent x
+    prevElem:lastElem:[] -> 
+      (TyInfix noSrcSpan 
+        (processPathComponent prevElem)
+        (unPromotedUnQualSymDecl "W.:/")
+        (processPathComponent lastElem)
+      )
+    currentRoute:remainingRoute -> 
+      (TyInfix noSrcSpan 
+        (processPathComponent currentRoute)
+        (unPromotedUnQualSymDecl "W.:/")
+        (recursiveTypeForRoute remainingRoute)
+      )   
+ where 
+  processPathComponent :: RoutePiece Ref -> Type SrcSpanInfo
+  processPathComponent refRoutePiece = 
+    case refRoutePiece of
+      Static staticPathPiece -> promotedType $ T.unpack staticPathPiece
+      Dynamic pType -> typeConstructor $ showRefTy pType
+
+promotedType :: String -> Type SrcSpanInfo
+promotedType typeNameData = 
+  (TyPromoted noSrcSpan 
+    (PromotedString noSrcSpan typeNameData typeNameData) 
+  ) 
+
+instanceHead :: String -> InstHead SrcSpanInfo
+instanceHead instName = (IHCon noSrcSpan
+                          (UnQual noSrcSpan $ nameDecl instName)
+                        ) 
+
+declarationHead :: String -> DeclHead SrcSpanInfo
+declarationHead declHeadName = (DHead noSrcSpan (Ident noSrcSpan declHeadName) )
+                        
+#if MIN_VERSION_haskell_src_exts(1,20,0)
+unPromotedUnQualSymDecl :: String -> MaybePromotedName SrcSpanInfo
+unPromotedUnQualSymDecl str =
+  (UnpromotedName noSrcSpan
+   (UnQual noSrcSpan
+    (Symbol noSrcSpan str)
+   ))
+#else
+unPromotedUnQualSymDecl :: String -> QName SrcSpanInfo
+unPromotedUnQualSymDecl = unQualSymDecl
+#endif
+
+
+webApiInstance :: String -> [(String, [Method])] -> Decl SrcSpanInfo
+webApiInstance mainTypeName routeAndMethods =
+  InstDecl noSrcSpan Nothing 
+    (IRule noSrcSpan Nothing Nothing 
+      (IHApp noSrcSpan 
+        (instanceHead "W.WebApi")
+        (typeConstructor mainTypeName) 
+      )
+    ) 
+    (Just 
+      [InsType noSrcSpan 
+        (TyApp noSrcSpan 
+          (typeConstructor "Apis")
+          (typeConstructor mainTypeName)
+        ) 
+        (TyPromoted noSrcSpan 
+          (PromotedList noSrcSpan True 
+            (fmap innerRouteInstance routeAndMethods)
+          )
+        )
+      ]
+    )
+ where
+  innerRouteInstance :: (String, [Method]) -> Type SrcSpanInfo
+  innerRouteInstance (rName, listOfMethods) =
+      TyApp noSrcSpan 
+        (TyApp noSrcSpan 
+          (typeConstructor "W.Route") 
+          (TyPromoted noSrcSpan 
+            (PromotedList noSrcSpan True 
+              (fmap (typeConstructor . qualMethod) listOfMethods)               
+            )
+          )
+        ) 
+        (typeConstructor rName)
+      
+  qualMethod :: Method -> String
+  qualMethod = ("W." ++) . show
+
+
+apiInstanceDeclaration :: Vector 4 String -> [Vector 4 String] -> Decl SrcSpanInfo
+apiInstanceDeclaration topLevelDecl innerTypesInstList = 
+  InstDecl noSrcSpan Nothing 
+    (IRule noSrcSpan Nothing Nothing
+      (IHApp noSrcSpan 
+        (IHApp noSrcSpan 
+          (IHApp noSrcSpan 
+            ( instanceHead (SV.index topLevelDecl (Finite 0) ) )
+            (typeConstructor $ SV.index topLevelDecl (Finite 1)  )
+          )
+          (typeConstructor $ SV.index topLevelDecl (Finite 2)  )
+        ) 
+        (typeConstructor $ SV.index topLevelDecl (Finite 3) )
+      ) 
+    ) (Just $ fmap apiInstanceTypeDecl innerTypesInstList)
+
+
+apiInstanceTypeDecl :: Vector 4 String -> InstDecl SrcSpanInfo 
+apiInstanceTypeDecl innerTypes =
+  InsType noSrcSpan
+    (TyApp noSrcSpan
+        (TyApp noSrcSpan
+          (typeConstructor (SV.index innerTypes (Finite 0) ) )
+          (typeConstructor (SV.index innerTypes (Finite 1) ) )
+        )
+      (typeConstructor (SV.index innerTypes (Finite 2) ) )
+    )
+    (typeConstructor (SV.index innerTypes (Finite 3) ) )
+
+
+emptyDataDeclaration :: String -> Decl SrcSpanInfo
+emptyDataDeclaration declName = 
+  DataDecl noSrcSpan 
+    (DataType noSrcSpan) 
+    Nothing
+    (declarationHead declName) 
+    []
+#if MIN_VERSION_haskell_src_exts(1,20,0)
+    []
+#else
+    Nothing
+#endif
