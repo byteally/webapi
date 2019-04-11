@@ -378,7 +378,7 @@ qualifiedImportsForTypesModule =
                               --  , ("Data.Time.Calendar", "P" )
                                  ("GHC.Generics", "P" )
                               --  , ("Data.Aeson", "P" )
-                               , ("WebApi.Param", "P" )
+                              --  , ("WebApi.Param", "P" )
                               --  , ("Data.Text.Encoding", "P" )
                                , ("Prelude", "P" )
                                ]    

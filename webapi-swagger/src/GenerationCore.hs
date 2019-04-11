@@ -49,20 +49,21 @@ parseTypeStateIntoModuleTypes tyState =
   parseTypeState accModTypes typeMeta typeDefn = 
     let provenance = getProvenance typeMeta
         importHashSet = HS.fromList $ importsForTypes (customHaskType typeDefn) 
+        finalImportHS = HS.delete (getModuleQualNameFromProvenance provenance) importHashSet
         newModuleTypes = HMS.insertWith (\(newTypes, newImps) (oldTypes, oldImps) -> (newTypes ++ oldTypes, HS.union newImps oldImps) ) 
-                                provenance ([typeDefn], importHashSet) accModTypes
+                                provenance ([typeDefn], finalImportHS) accModTypes
     in newModuleTypes
 
   importsForTypes :: CustomType -> [(String, String)]
   importsForTypes (CustomType _ dataConsList) = 
-    DL.concat $ fmap (parseDataConsRef) dataConsList 
+      DL.concat $ fmap (parseDataConsRef) dataConsList 
   importsForTypes (CustomNewType _ dConsName mRec ref) = 
     parseDataConsRef (DataConstructor dConsName [(mRec, ref)])
 
   parseDataConsRef :: DataConstructor -> [(String, String)]
   parseDataConsRef (DataConstructor _ recList) = 
-    let mImportsList = fmap (\(_, ref) -> getRefImports ref) recList
-    in catMaybes mImportsList
+    let importsList = fmap (\(_, ref) -> getRefImports ref) recList
+    in DL.concat importsList
 
 runCodeGen :: FilePath -> FilePath -> String -> IO () 
 runCodeGen swaggerJsonInputFilePath outputPath projectName = do
@@ -276,6 +277,32 @@ showRoutePiece routePiece =
 -- constructRouteNameFromRouteList :: Route UnparsedPiece -> String
 -- constructRouteNameFromRouteList = undefined
 
+getModuleQualNameFromProvenance :: Provenance -> (String, String)
+getModuleQualNameFromProvenance provenance =
+  case provenance of
+    Global _ -> (globalTypesHsModuleName ++ globalDefnsModuleName, globalDefnsQualName)
+    Local routeInfo methodName _ -> 
+      let qualName = getQualOfRoute (getRoute routeInfo) (Just methodName)  
+      in (constructLocalTypeModuleName routeInfo (Just methodName), qualName)
+    RouteLocal routeInfo _ -> 
+      let qualName = getQualOfRoute (getRoute routeInfo) Nothing
+      in (constructLocalTypeModuleName routeInfo Nothing, qualName)
+
+ where
+  constructLocalTypeModuleName :: Route UnparsedPiece -> Maybe Method -> String
+  constructLocalTypeModuleName routeInfo mMethodName = do
+    let routeModuleName = parseRouteIntoModuleName routeInfo
+    case mMethodName of
+      Just methodName -> 
+        (localRouteMethodTypesModName routeModuleName methodName) ++ localRouteMethodTypesModuleName
+      Nothing -> 
+        (routeLevelTypesModName routeModuleName) ++ routeLevelTypesModuleName
+
+  parseRouteIntoModuleName :: Route UnparsedPiece -> String
+  parseRouteIntoModuleName routeInfo =
+    case getRoute routeInfo of
+      [] -> error $ "Encountered empty Route! Expected the route to contain atleast one piece!"
+      routeInfoList -> DL.intercalate "." $ fmap (validateRouteModuleName . showRoutePiece) routeInfoList  
 
 generateModulesFromTypeState :: TypeState -> FilePath -> IO (Set.Set (String, String) )
 generateModulesFromTypeState tState genPath = do
@@ -296,15 +323,7 @@ generateModulesFromTypeState tState genPath = do
             RouteLocal routeInfo _ ->  constructLocalTypeModulePath routeInfo Nothing genPath
             Local routeInfo methodName _ ->  constructLocalTypeModulePath routeInfo (Just methodName) genPath
 
-        (modName, modQualName) = 
-          case provenance of
-            Global _ -> (globalTypesHsModuleName ++ globalDefnsModuleName, globalDefnsQualName)
-            Local routeInfo methodName _ -> 
-              let qualName = getQualOfRoute (getRoute routeInfo) (Just methodName)  
-              in (constructLocalTypeModuleName routeInfo (Just methodName), qualName)
-            RouteLocal routeInfo _ -> 
-              let qualName = getQualOfRoute (getRoute routeInfo) Nothing
-              in (constructLocalTypeModuleName routeInfo Nothing, qualName)
+        (modName, modQualName) = getModuleQualNameFromProvenance provenance
 
         hseModule = 
           Module noSrcSpan 
@@ -323,77 +342,11 @@ generateModulesFromTypeState tState genPath = do
     in newDataDecl:declAcc
 
 
-
-  -- parseStateAndGenerateFile :: FilePath -> IO (Set.Set (String, String) ) -> TypeMeta -> TypeDefinition -> IO (Set.Set (String, String) )
-  -- parseStateAndGenerateFile genDirPath ioModuleNames typeMeta typeDefn = do
-  --   modAndQualNames <- ioModuleNames
-  --   let (typesModuleDir, typesModuleName) = 
-  --         case typeMeta of
-  --           ParamType _ routeInfo methodName -> constructLocalTypeModulePath routeInfo (Just methodName) genDirPath
-  --           ResponseType _ routeInfo methodName ->  constructLocalTypeModulePath routeInfo (Just methodName) genDirPath
-  --           Definition provenance _ -> 
-  --             case provenance of
-  --               Global _ -> (genDirPath ++ globalTypesModulePath, hsModuleToFileName globalDefnsModuleName)
-  --               RouteLocal routeInfo _ ->  constructLocalTypeModulePath routeInfo Nothing genDirPath
-  --               Local routeInfo methodName _ ->  constructLocalTypeModulePath routeInfo (Just methodName) genDirPath
-
-  --   tyModuleExists <- doesFileExist (typesModuleDir ++ typesModuleName) 
-  --   let (modName, modQualName) = 
-  --         case typeMeta of
-  --           ParamType _ routeInfo methodName -> 
-  --             let qualName = getQualOfRoute (getRoute routeInfo) (Just methodName)  
-  --             in (constructLocalTypeModuleName routeInfo (Just methodName), qualName)
-  --           ResponseType _ routeInfo methodName -> 
-  --             let qualName = getQualOfRoute (getRoute routeInfo) (Just methodName)  
-  --             in (constructLocalTypeModuleName routeInfo (Just methodName), qualName)
-  --           Definition provenance _ -> 
-  --             case provenance of
-  --               Global _ -> (globalTypesHsModuleName ++ globalDefnsModuleName, globalDefnsQualName)
-  --               Local routeInfo methodName _ -> 
-  --                 let qualName = getQualOfRoute (getRoute routeInfo) (Just methodName)  
-  --                 in (constructLocalTypeModuleName routeInfo (Just methodName), qualName)
-  --               RouteLocal routeInfo _ -> 
-  --                 let qualName = getQualOfRoute (getRoute routeInfo) Nothing
-  --                 in (constructLocalTypeModuleName routeInfo Nothing, qualName)
-                  
-    -- let currentProvenance = getProvenance typeMeta
-                  
-    -- case tyModuleExists of 
-    --   True -> do
-    --     let dataDecl = constructDeclFromCustomType currentProvenance $ customHaskType typeDefn
-    --         newContents = "\n\n" ++ prettyPrint dataDecl
-    --     appendFile (typesModuleDir ++ typesModuleName) newContents
-    --     pure $ Set.insert (modName, modQualName) modAndQualNames
-    --     -- pure (Set.insert modName moduleNames, Set.insert modQualName qualNames)
-    --   False -> do
-    --     let dataDecl = constructDeclFromCustomType currentProvenance $ customHaskType typeDefn
-    --         newTyModuleContents = 
-    --           prettyPrint $ 
-    --             Module noSrcSpan 
-    --                   (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan modName) Nothing Nothing)
-    --                   (fmap languageExtension languageExtensionsForTypesModule)
-    --                   (fmap moduleImport 
-    --                     ( (DL.zip importsForTypesModule (cycle [(False, Nothing)]) ) 
-    --                       ++ qualTyModuleImports )) -- ++ ( qualifiedGlobalImports (getGlobalModuleNames moduleNames) ) ) )
-    --                   [dataDecl]
-    --     createDirectoryIfMissing True typesModuleDir
-    --     writeFile (typesModuleDir ++ typesModuleName) newTyModuleContents
-    --     pure $ Set.insert (modName, modQualName) modAndQualNames
-        -- pure (Set.insert modName moduleNames, Set.insert modQualName qualNames)
-      
   parseRouteIntoFolderName :: Route UnparsedPiece -> String
   parseRouteIntoFolderName routeInfo =
     case getRoute routeInfo of
       [] -> error $ "Encountered empty Route! Expected the route to contain atleast one piece!"
       routeInfoList -> DL.intercalate "/" $ fmap (validateRouteDirectoryPath . showRoutePiece) routeInfoList
-
-
-  parseRouteIntoModuleName :: Route UnparsedPiece -> String
-  parseRouteIntoModuleName routeInfo =
-    case getRoute routeInfo of
-      [] -> error $ "Encountered empty Route! Expected the route to contain atleast one piece!"
-      routeInfoList -> DL.intercalate "." $ fmap (validateRouteModuleName . showRoutePiece) routeInfoList      
-
 
   qualTyModuleImports :: [(String, String)] -> [(String, (Bool, Maybe (ModuleName SrcSpanInfo)))]
   qualTyModuleImports conditionalImportList =
@@ -409,14 +362,7 @@ generateModulesFromTypeState tState genPath = do
       Nothing -> 
         ( genDirPath ++ (routeLevelTypesPath routePath), hsModuleToFileName routeLevelTypesModuleName)
 
-  constructLocalTypeModuleName :: Route UnparsedPiece -> Maybe Method -> String
-  constructLocalTypeModuleName routeInfo mMethodName = do
-    let routeModuleName = parseRouteIntoModuleName routeInfo
-    case mMethodName of
-      Just methodName -> 
-        (localRouteMethodTypesModName routeModuleName methodName) ++ localRouteMethodTypesModuleName
-      Nothing -> 
-        (routeLevelTypesModName routeModuleName) ++ routeLevelTypesModuleName
+
 
   
 validateRouteDirectoryPath :: String -> String
@@ -431,34 +377,39 @@ validateRouteModuleName = setValidConstructorId
   -- getGlobalModuleNames :: [String] -> [String]
   -- getGlobalModuleNames = DL.filter (DL.isInfixOf ".GlobalDefinitions.") 
     
-getRefImports :: Ref -> Maybe (String, String)
+getRefImports :: Ref -> [(String, String)]
 getRefImports ref = 
   case ref of
     (Inline prim) -> 
       case prim of
-        Date -> Just ("Data.Time.Clock", "P")
-        DateTime -> Just ("Data.Time.Calendar", "P")
+        Date -> [("Data.Time.Calendar", "P")]
+        DateTime -> [("Data.Time.Clock", "P")]
         Password -> error "Encountered Password! Import required?"
-        Byte -> Just ("Data.ByteString", "P")
-        Binary -> Just ("Data.ByteString", "P")
-        Text -> Just ("Data.Text", "P")
-        Float -> Nothing
-        Double -> Nothing
-        Number -> Nothing
-        Int -> Nothing
-        Int32 -> Just ("Data.Int", "P")
-        Int64 -> Just ("Data.Int", "P")
-        Bool -> Nothing
-        File -> Nothing
-        Null -> Nothing
-        _ -> Nothing
+        Byte -> [("Data.ByteString", "P")]
+        Binary -> [("Data.ByteString", "P")]
+        Text -> [("Data.Text", "P")]
+        Float -> []
+        Double -> []
+        Number -> [("CommonTypes", "P")]
+        Int -> []
+        Int32 -> [("Data.Int", "P")]
+        Int64 -> [("Data.Int", "P")]
+        Bool -> []
+        File -> []
+        Null -> []
+        Default innerRef -> ("CommonTypes", "P"):(getRefImports innerRef) 
+        Maybe innerRef -> getRefImports innerRef
+        Array innerRef -> getRefImports innerRef 
+        Tuple innerRefList -> DL.concat $ fmap getRefImports innerRefList
+        MultiSet innerRef -> ("Webapi.Param","P"):getRefImports innerRef
+        DelimitedCollection _ innerRef  -> ("CommonTypes", "P"):(getRefImports innerRef) 
     (Ref prov _ _ ) -> 
       case prov of
-        Global _ -> Just ((globalTypesHsModuleName ++ globalDefnsModuleName), globalDefnsQualName)
-        RouteLocal unpRoute _ -> Nothing
+        Global _ -> [((globalTypesHsModuleName ++ globalDefnsModuleName), globalDefnsQualName)]
+        RouteLocal unpRoute _ -> []
           -- TODO : Add the import for Route Level here
           -- let routeInfoList = getRoute unpRoute
-        _ -> Nothing
+        _ -> []
 
 
 
