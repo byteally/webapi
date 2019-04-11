@@ -945,15 +945,17 @@ splitOn c s   =  cons (case break (== c) s of
     cons ~(h, t) = h : t  
 
 isSameModule :: Provenance -> Provenance -> Bool
-isSameModule p1 p2 = getModule p1 == getModule p2
-  where getModule (Global _)       = Global []
-        getModule (RouteLocal r _) = RouteLocal r []
-        getModule (Local m r _)    = Local m r []
+isSameModule p1 p2 = getModuleProv p1 == getModuleProv p2
+
+getModuleProv :: Provenance -> Provenance 
+getModuleProv (Global _)       = Global []
+getModuleProv (RouteLocal r _) = RouteLocal r []
+getModuleProv (Local m r _)    = Local m r []
         
 getProvenance :: TypeMeta -> Provenance
 getProvenance (ParamType _ m r)    = Local m r []
 getProvenance (ResponseType _ m r) = Local m r []
-getProvenance (Definition prov _)  = prov
+getProvenance (Definition prov _)  = getModuleProv prov
 
 type RouteParser = M.Parsec () T.Text
 
