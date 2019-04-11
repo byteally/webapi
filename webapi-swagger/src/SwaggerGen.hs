@@ -22,6 +22,8 @@ import qualified Data.HashMap.Strict.InsOrd as OHM
 import qualified Data.List as L
 import Data.Hashable
 import qualified Data.Aeson as A
+import qualified Text.Megaparsec as M
+import qualified Text.Megaparsec.Char as M
 
 data Ref  = Inline Primitive
           | Ref    Provenance DefinitionName TypeConstructor
@@ -167,10 +169,10 @@ data SwaggerGenState = SwaggerGenState { typeState   :: TypeState
 
 defaultSwaggerState :: SwaggerGenState
 defaultSwaggerState = SwaggerGenState { typeState   = HM.empty
-                                      , routeState  = HM.empty
-                                      , apiContract = HM.empty
-                                      , errors      = []
-                                      }
+                                        , routeState  = HM.empty
+                                        , apiContract = HM.empty
+                                        , errors      = []
+                                        }
 
 type TypeState      = HM.HashMap TypeMeta TypeDefinition
 type RouteState     = HM.HashMap (Route UnparsedPiece) (Route Ref)
@@ -275,7 +277,6 @@ generateRouteMethodState globalDefs globalParams globalResps routeRefs route met
                         -- TODO: ResponsesDefault ignored.
           opResponses = _operationResponses op
       let (pp, qp, fp, fip, hp, bp) = groupParamDefinitions globalParams opParams
-      --  <- paramDefinitions globalDefs PathParam route meth pp
       qpTycon   <- paramDefinitions globalDefs QueryParam route meth qp
       fpTycon   <- paramDefinitions globalDefs FormParam route meth fp
       fipTycon  <- paramDefinitions globalDefs FileParam route meth fip
@@ -311,7 +312,7 @@ insertContract r m qp fp fip hp bdy suc err = do
                            , fileParam   = fip
                            -- , cookieParam = ""
                            , headerParam = hp
-                           , requestBody = maybe [] (\b -> [("json", b)]) bdy
+                           , requestBody = maybe [] (\b -> [("JSON", b)]) bdy
                            , apiOutput   = suc
                            , apiError    = err
                            , contentTypes = []
@@ -662,8 +663,14 @@ schemaDefinitions defs prov =
 schemaDefinition :: Definitions Schema -> Provenance -> DefinitionName -> Schema -> SwaggerGenerator Ref
 schemaDefinition globalDefs prov def sch = do
   let paramSchema = _schemaParamSchema sch
+      additionalProps props = case OHM.null props of
+        True -> case _schemaAdditionalProperties sch of
+                 Nothing -> props
+                 Just (AdditionalPropertiesAllowed _) -> props
+                 Just (AdditionalPropertiesSchema _) -> props
+        False -> props
   case (_paramSchemaType paramSchema) of
-      Just SwaggerObject -> customTypeDefinition (_schemaProperties sch)
+      Just SwaggerObject -> customTypeDefinition (additionalProps (_schemaProperties sch) )
       -- NOTE: Array is handled in both schemaDefinition and paramDefinition
       --       The invariant check is not being handled now (certain arrays are special)
       Just SwaggerArray  ->
@@ -885,9 +892,9 @@ typedRouteParamPiece (Route rps) ppRefs =
            ) (ppRefs, []) rps
   
 parsePathParam :: UnparsedPiece -> [PathParamPieceUntyped]
-parsePathParam piece =
-  -- NOTE: need a parser to properly parse this out
-  [ DynParamPiece (T.tail (T.init piece)) ]
+parsePathParam piece = case routeParser piece of
+  Just xs -> xs
+  Nothing -> error "Panic: error in parsing route"
 
 isDynParamPiece :: PathParamPiece a -> Bool
 isDynParamPiece (DynParamPiece _) = True
@@ -916,3 +923,23 @@ getProvenance :: TypeMeta -> Provenance
 getProvenance (ParamType _ m r)    = Local m r []
 getProvenance (ResponseType _ m r) = Local m r []
 getProvenance (Definition prov _)  = prov
+
+type RouteParser = M.Parsec () T.Text
+
+routeParser :: UnparsedPiece -> Maybe [PathParamPiece T.Text]
+routeParser = either (const Nothing) Just . M.parse go "ROUTE"
+
+  where go :: RouteParser [PathParamPiece T.Text]
+        go = do
+          x <- (Left <$> M.eof) M.<|> (Right <$> M.anySingle)
+          case x of
+            Right '{' -> do
+              piece <- M.some (M.anySingleBut '}')
+              _ <- M.char '}'
+              ((:) (DynParamPiece (T.pack piece))) <$> go
+            Right v -> do
+              piece <- M.some (M.anySingleBut '{')
+              ((:) (StaticParamPiece (T.pack (v : piece)))) <$> go
+            Left _ -> pure []
+              
+  
