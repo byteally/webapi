@@ -114,8 +114,6 @@ generateContractFromContractState contractName contractState routeStateHM genDir
   let apiInstVectorList = HMS.foldlWithKey' generateContractTypeInsts [] contractState
   let apiContractInstDecls = fmap (\(topVector, tyVectorList) -> apiInstanceDeclaration topVector tyVectorList)   apiInstVectorList
   -- let apiContractInsts = fmap (\decl -> "\n\n" ++ (prettyPrint decl) ) apiContractInstDecls 
-
-
   let contractLangExts = fmap languageExtension langExtsForContract
   let routeTypeModuleImports = Set.toList moduleAndQualNames
   let allQualImportsForContract = routeTypeModuleImports ++ qualImportsForContract
@@ -123,10 +121,6 @@ generateContractFromContractState contractName contractState routeStateHM genDir
         fmap moduleImport 
           ( (DL.zip importsForContract (cycle [(False, Nothing)]) ) 
             ++ (fmap (\(fullModuleName, qual) ->  (fullModuleName, (True, Just $ ModuleName noSrcSpan qual)) ) allQualImportsForContract) ) 
-    -- TODO : Add qualified imports for all Local modules (generate from HMS key and routeState)
-    
-  
-
   let allContractDecls = 
         [emptyDataDeclaration contractName] ++ routeDecls ++ [webapiInstDecl] ++ apiContractInstDecls
 
@@ -138,20 +132,6 @@ generateContractFromContractState contractName contractState routeStateHM genDir
           (contractImports)
           (allContractDecls)
   writeFile (genDirPath ++ "src/Contract.hs") (prettyPrint finalContractModule)
-  -- (fmap (\(topVec, innerVecList) -> 
-  --   apiInstanceDeclaration topVec innerVecList ) $ DL.concat $ fmap (constructVectorForRoute contractName) contractDetails)
-
-
--- TODO 
--- 1. Qual in Types
--- 2. Import of Globals in Types modules
--- 3. Verify imports and qualifications in contracts
-
--- 4. Deletion of prev Generated folder
--- 5. Generation Path refer to RouteState for Routes
- 
-
-
  where
   selectFirstRouteFromList :: [(Route UnparsedPiece, Method)]  -> Route UnparsedPiece
   selectFirstRouteFromList routeList = 
@@ -196,12 +176,12 @@ generateContractFromContractState contractName contractState routeStateHM genDir
                             -> ((Route UnparsedPiece), Method) 
                             -> (ContractInfo TypeConstructor) 
                             -> [(Vector 4 String, [Vector 4 String])]
-  generateContractTypeInsts acc (unparsedRoute, method) contractInfo = do
+  generateContractTypeInsts acc (unparsedRoute, method) contractInfo = 
     let refRoute = lookupRouteInRouteState unparsedRoute
-    let routeNameStr = constructRouteName refRoute
-    let topLevelVector = fromMaybeSV $ SV.fromList ["W.ApiContract", contractName, qualMethodName method, routeNameStr]
-    let typeInsts = parseContractInfo routeNameStr unparsedRoute contractInfo method 
-    (topLevelVector, typeInsts):acc
+        routeNameStr = constructRouteName refRoute
+        topLevelVector = fromMaybeSV $ SV.fromList ["W.ApiContract", contractName, qualMethodName method, routeNameStr]
+        typeInsts = parseContractInfo routeNameStr unparsedRoute contractInfo method 
+    in (topLevelVector, typeInsts):acc
   
   fromMaybeSV :: Maybe a -> a
   fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
@@ -290,13 +270,14 @@ getModuleQualNameFromProvenance provenance =
 
  where
   constructLocalTypeModuleName :: Route UnparsedPiece -> Maybe Method -> String
-  constructLocalTypeModuleName routeInfo mMethodName = do
+  constructLocalTypeModuleName routeInfo mMethodName =
     let routeModuleName = parseRouteIntoModuleName routeInfo
-    case mMethodName of
-      Just methodName -> 
-        (localRouteMethodTypesModName routeModuleName methodName) ++ localRouteMethodTypesModuleName
-      Nothing -> 
-        (routeLevelTypesModName routeModuleName) ++ routeLevelTypesModuleName
+    in 
+      case mMethodName of
+        Just methodName -> 
+          (localRouteMethodTypesModName routeModuleName methodName) ++ localRouteMethodTypesModuleName
+        Nothing -> 
+          (routeLevelTypesModName routeModuleName) ++ routeLevelTypesModuleName
 
   parseRouteIntoModuleName :: Route UnparsedPiece -> String
   parseRouteIntoModuleName routeInfo =
@@ -354,13 +335,14 @@ generateModulesFromTypeState tState genPath = do
     in fmap (\(fullModuleName, qual) ->  (fullModuleName, (True, Just $ ModuleName noSrcSpan qual)) ) qualImportList
 
   constructLocalTypeModulePath :: Route UnparsedPiece -> Maybe Method -> FilePath -> (String, String)
-  constructLocalTypeModulePath routeInfo mMethodName genDirPath = do
+  constructLocalTypeModulePath routeInfo mMethodName genDirPath =
     let routePath = parseRouteIntoFolderName routeInfo
-    case mMethodName of
-      Just methodName -> 
-        ( genDirPath ++ (localRouteMethodTypesPath routePath methodName), hsModuleToFileName localRouteMethodTypesModuleName)
-      Nothing -> 
-        ( genDirPath ++ (routeLevelTypesPath routePath), hsModuleToFileName routeLevelTypesModuleName)
+    in 
+      case mMethodName of
+        Just methodName -> 
+          ( genDirPath ++ (localRouteMethodTypesPath routePath methodName), hsModuleToFileName localRouteMethodTypesModuleName)
+        Nothing -> 
+          ( genDirPath ++ (routeLevelTypesPath routePath), hsModuleToFileName routeLevelTypesModuleName)
 
 
 
@@ -470,24 +452,24 @@ constructDeclFromCustomType prov customTy =
                             (ConDecl noSrcSpan (nameDecl $ T.unpack dConsName) typeConsList)
 
                       -- ProductType
-                      recVals -> do
+                      recVals -> 
                         -- TODO: We should check that the 2 lists are of equal lengths?
                         let typeNames = fmap (showRefTyWithQual (Just currentProv) ) $ snd $ DL.unzip mRecRefList
-                        let recordNamesWithTypes = DL.zip (fmap T.unpack recVals) typeNames
-                        let fieldDecls = snd $ DL.unzip $ fmap fieldDecl recordNamesWithTypes
-                        QualConDecl noSrcSpan Nothing Nothing 
-                          (RecDecl noSrcSpan (nameDecl $ T.unpack dConsName) fieldDecls)                
+                            recordNamesWithTypes = DL.zip (fmap T.unpack recVals) typeNames
+                            fieldDecls = snd $ DL.unzip $ fmap fieldDecl recordNamesWithTypes
+                        in QualConDecl noSrcSpan Nothing Nothing 
+                              (RecDecl noSrcSpan (nameDecl $ T.unpack dConsName) fieldDecls)                
             ) dataConsList
-      Right (dConsTxt, mRecName, refTy) -> do 
+      Right (dConsTxt, mRecName, refTy) ->  
         let recTy = showRefTyWithQual (Just currentProv) refTy
-        case mRecName of
-          Just recName ->
-            [QualConDecl noSrcSpan Nothing Nothing 
-                  (RecDecl noSrcSpan (nameDecl $ T.unpack dConsTxt) [snd $ fieldDecl (T.unpack recName, recTy)] )]
-          Nothing ->
-            let tyCons = typeConstructor recTy
-            in [QualConDecl noSrcSpan Nothing Nothing 
-                (ConDecl noSrcSpan (nameDecl $ T.unpack dConsTxt) [tyCons])]
+        in case mRecName of
+              Just recName ->
+                [QualConDecl noSrcSpan Nothing Nothing 
+                      (RecDecl noSrcSpan (nameDecl $ T.unpack dConsTxt) [snd $ fieldDecl (T.unpack recName, recTy)] )]
+              Nothing ->
+                let tyCons = typeConstructor recTy
+                in [QualConDecl noSrcSpan Nothing Nothing 
+                    (ConDecl noSrcSpan (nameDecl $ T.unpack dConsTxt) [tyCons])]
 
   
 
@@ -603,14 +585,14 @@ typeConstructor typeConName = (TyCon noSrcSpan
                               )
 
 fieldDecl :: (String, String) -> (Maybe (String, String), FieldDecl SrcSpanInfo)
-fieldDecl (fieldName, fieldType) = do
+fieldDecl (fieldName, fieldType) = 
   let (isChanged, fName) = setValidFieldName fieldName
-  let mModRecord = 
+      mModRecord = 
         case isChanged of
           True -> Just (fieldName, fName)
           False -> Nothing
-  let fDecl = FieldDecl noSrcSpan [nameDecl fName] (TyCon noSrcSpan (UnQual noSrcSpan (nameDecl fieldType)))
-  (mModRecord, fDecl)
+      fDecl = FieldDecl noSrcSpan [nameDecl fName] (TyCon noSrcSpan (UnQual noSrcSpan (nameDecl fieldType)))
+  in (mModRecord, fDecl)
 
 languageExtension :: String -> ModulePragma SrcSpanInfo
 languageExtension langExtName = LanguagePragma noSrcSpan [nameDecl langExtName]
@@ -632,19 +614,20 @@ moduleImport (moduleNameStr, (isQualified, qualifiedName) ) =
 
 
 routeDeclaration :: (String, Route Ref) -> Decl SrcSpanInfo
-routeDeclaration (routeNameStr, routePathComponents) = do
+routeDeclaration (routeNameStr, routePathComponents) = 
   let routePieceList = getRoute routePathComponents
-  case routePieceList of
-    (Static _):[] -> 
-      TypeDecl noSrcSpan
-        (declarationHead routeNameStr)
-        (TyApp noSrcSpan
-          (typeConstructor "W.Static")
-          (recursiveTypeForRoute routePieceList) )
-    _ -> 
-      TypeDecl noSrcSpan  
-        (declarationHead routeNameStr)
-        (recursiveTypeForRoute routePieceList)
+  in 
+    case routePieceList of
+      (Static _):[] -> 
+        TypeDecl noSrcSpan
+          (declarationHead routeNameStr)
+          (TyApp noSrcSpan
+            (typeConstructor "W.Static")
+            (recursiveTypeForRoute routePieceList) )
+      _ -> 
+        TypeDecl noSrcSpan  
+          (declarationHead routeNameStr)
+          (recursiveTypeForRoute routePieceList)
 
 
 recursiveTypeForRoute :: [RoutePiece Ref] -> Type SrcSpanInfo
