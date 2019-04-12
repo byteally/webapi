@@ -396,13 +396,13 @@ langExtsForContract = [
                       ]
 
 importsForContract :: [String]
-importsForContract = [] --["Data.Int", "Data.Text"]                               
+importsForContract = ["Prelude ()"] --["Data.Int", "Data.Text"]                               
 
 qualImportsForContract :: [(String, String)]
 qualImportsForContract = [
                            ("WebApi.Contract", "W")
                          , ("WebApi.Param", "W")
                          , ("WebApi.ContentTypes", "W")
-                         , ("Data.Int", "P")
+                         , ("Prelude", "P")
                          , ("Data.Text", "P")
                          ]
