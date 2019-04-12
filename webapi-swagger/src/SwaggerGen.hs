@@ -691,6 +691,9 @@ newtypeIfRoot prov n ref
           
 schemaDefinition :: Definitions Schema -> Provenance -> DefinitionName -> Schema -> SwaggerGenerator Ref
 schemaDefinition globalDefs prov def sch = do
+  case def == "SSLSupportMethod" of
+    True -> liftIO $ print (prov, def, sch)
+    False -> pure ()
   let paramSchema = _schemaParamSchema sch
       additionalProps props = case OHM.null props of
         True -> case _schemaAdditionalProperties sch of
@@ -854,7 +857,7 @@ insertWithTypeMeta tyMeta = go 0
                               , errors      = errors sws
                               }
                   )
-          liftIO $ print $ "insertDefinition" ++ show (tyMeta, getTypeConstructor (customHaskType val))
+          -- liftIO $ print $ "insertDefinition" ++ show (tyMeta, getTypeConstructor (customHaskType val))
           pure val
           
 data TypeClash = TypeNameClash
@@ -876,7 +879,7 @@ resolveClashes ct cs tyDef =
         
 checkNameClash :: TypeMeta -> TypeMeta -> TypeDefinition -> TypeDefinition -> [TypeClash]
 checkNameClash pl pr tyl tyr
-  | isSameModule (getProvenance pl) (getProvenance pr) =
+  | isSameModule (getProvenance pl) (getProvenance pr) && not (pl == pr) =
        let clashes = typeNameClash (getTypeConstructor l)
                                    (getTypeConstructor r) ++
                      constructorNameClashes (dataConstructorNames l)
