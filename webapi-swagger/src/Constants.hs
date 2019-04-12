@@ -402,6 +402,7 @@ qualImportsForContract :: [(String, String)]
 qualImportsForContract = [
                            ("WebApi.Contract", "W")
                          , ("WebApi.Param", "W")
+                         , ("WebApi.ContentTypes", "W")
                          , ("Data.Int", "P")
                          , ("Data.Text", "P")
                          ]
