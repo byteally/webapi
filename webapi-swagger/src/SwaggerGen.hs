@@ -626,9 +626,9 @@ paramSchemaDefinition prov def parSch = hasDef <$> go
           case mtyDef of
             Just tyDef ->
               insertDefinition prov def tyDef
-            Nothing    -> error "Panic: non string in enums"
+            Nothing    -> error "TODO: non string in enums"
 
-        arrayDefinition = undefined
+        arrayDefinition = error "TODO: array in param"
         inline = pure . Inline
 
 sumType :: T.Text -> [(T.Text, [Ref])] -> TypeDefinition
