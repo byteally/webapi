@@ -185,6 +185,9 @@ instance DecodeParam SwaggerNumber where
           Just y -> Just $ DoubleFormat y
           Nothing -> error $ "Expected SwaggerNumber to coerce into either Integer or Double!"
             ++ "\\nInput param is : " ++ (show bs)
+
+newtype Default a = Default { getDefault :: a} 
+                  deriving (Show)           
 |]
 
 
@@ -254,6 +257,7 @@ library
     , text
     , swagger2
     , aeson
+    , lens
     , bytestring
     , webapi
     , unordered-containers
@@ -364,18 +368,18 @@ importsForTypesModule = [
 qualifiedImportsForTypesModule :: [(String, String)]  
 qualifiedImportsForTypesModule = 
                                [
-                                 ("Data.ByteString.Char8", "ASCII")
-                               , ("Data.HashMap.Lazy", "HM" )
-                               , ("CommonTypes", "P")
-                               , ("Data.Text", "P" )
-                               , ("Data.Int", "P" )
-                               , ("Data.ByteString", "P")
-                               , ("Data.Time.Clock", "P" )
-                               , ("Data.Time.Calendar", "P" )
-                               , ("GHC.Generics", "P" )
-                               , ("Data.Aeson", "P" )
-                               , ("WebApi.Param", "P" )
-                               , ("Data.Text.Encoding", "P" )
+                                --  ("Data.ByteString.Char8", "ASCII")
+                              --  , ("Data.HashMap.Lazy", "HM" )
+                              --  , ("CommonTypes", "P")
+                              --  , ("Data.Text", "P" )
+                              --  , ("Data.Int", "P" )
+                              --  , ("Data.ByteString", "P")
+                              --  , ("Data.Time.Clock", "P" )
+                              --  , ("Data.Time.Calendar", "P" )
+                                 ("GHC.Generics", "P" )
+                              --  , ("Data.Aeson", "P" )
+                              --  , ("WebApi.Param", "P" )
+                              --  , ("Data.Text.Encoding", "P" )
                                , ("Prelude", "P" )
                                ]    
                                --  , ("Data.Swagger", (True, Just $ ModuleName noSrcSpan "SW") )
@@ -398,6 +402,7 @@ qualImportsForContract :: [(String, String)]
 qualImportsForContract = [
                            ("WebApi.Contract", "W")
                          , ("WebApi.Param", "W")
+                         , ("WebApi.ContentTypes", "W")
                          , ("Data.Int", "P")
                          , ("Data.Text", "P")
                          ]
