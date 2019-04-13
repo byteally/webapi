@@ -24,6 +24,8 @@ import Data.Hashable
 import qualified Data.Aeson as A
 import qualified Text.Megaparsec as M
 import qualified Text.Megaparsec.Char as M
+import qualified Data.HashSet as HS
+import qualified Data.Char as C
 
 data Ref  = Inline Primitive
           | Ref    Provenance DefinitionName TypeConstructor
@@ -138,9 +140,16 @@ data CustomType = CustomType TypeConstructor    [DataConstructor]
                 | CustomNewType TypeConstructor DataConstructorName (Maybe RecordName) Ref
                 deriving (Show, Eq, Generic)
 
-data Provenance = Global [T.Text]
-                | RouteLocal (Route UnparsedPiece) [T.Text]
-                | Local  (Route UnparsedPiece) Method [T.Text]
+data Provenance = Provenance Module [T.Text]
+                deriving (Show, Eq, Generic)
+
+data Module = Global
+            | RouteLocal (Route UnparsedPiece)
+            | Local (Route UnparsedPiece) Method
+            deriving (Show, Eq, Generic)
+
+data HaskModule = HaskModule [T.Text] T.Text
+                -- ^ (components, qualification)
                 deriving (Show, Eq, Generic)
 
 type TypeConstructor     = T.Text
@@ -175,6 +184,7 @@ data Instance = GenericInstance  ConstraintName
 data SwaggerGenState = SwaggerGenState { typeState   :: TypeState
                                        , routeState  :: RouteState
                                        , apiContract :: ContractState
+                                       , modules     :: ModuleState
                                        , errors      :: [ErrorMessage]
                                        } deriving (Show, Eq, Generic)
 
@@ -182,6 +192,7 @@ defaultSwaggerState :: SwaggerGenState
 defaultSwaggerState = SwaggerGenState { typeState   = HM.empty
                                         , routeState  = HM.empty
                                         , apiContract = HM.empty
+                                        , modules     = HM.empty
                                         , errors      = []
                                         }
 
@@ -214,9 +225,12 @@ instance Hashable Method
 instance Hashable Provenance
 instance Hashable ResponseType
 instance Hashable ParamType
+instance Hashable Module
 
 type DefinitionName = T.Text
 
+type ModuleState   = HM.HashMap Module
+                                HaskModule 
 type ContractState = HM.HashMap ((Route UnparsedPiece), Method)
                                 (ContractInfo TypeConstructor)
 
@@ -242,20 +256,110 @@ runSwaggerGenerator :: Config -> SwaggerGenerator () -> IO SwaggerGenState
 runSwaggerGenerator cfg (SwaggerGenerator rsio) = 
   snd <$> runStateT (runReaderT rsio cfg) defaultSwaggerState 
 
+moduleComponents :: Module -> [T.Text]
+moduleComponents Global             = [ "Types", "GlobalDefinitions", "TypeDefinitions"]
+moduleComponents (RouteLocal route) = routeComponents route ++ [ "Types" ]
+moduleComponents (Local r m)        = routeComponents r ++ [ methodComponent m, "Types" ]
+
+methodComponent :: Method -> T.Text
+methodComponent = T.pack . show
+
+routeComponents :: Route UnparsedPiece -> [T.Text]
+routeComponents (Route pieces) =
+  map (\piece -> case piece of
+          Static x -> T.toTitle (replacePuncts x)
+          Dynamic x -> T.toTitle (replacePuncts x)
+      ) pieces
+
+  where replacePuncts = T.map replacePunct
+        replacePunct x | C.isAlphaNum x = x
+                       | otherwise      = '_'
+
+moduleQualification :: [T.Text] -> T.Text
+moduleQualification =
+  T.pack . map thead
+
+  where thead x = case T.null x of
+          True -> error "Panic: unexpected empty component of module"
+          False -> T.head x
+
+haskModuleComponents :: HaskModule -> [T.Text]
+haskModuleComponents (HaskModule cs _) = cs
+
+haskModuleQual :: HaskModule -> T.Text
+haskModuleQual (HaskModule _ qual) = qual
+
+resolveClashes' :: (Eq k, Hashable k) => (Int -> k -> k) -> HS.HashSet k -> k -> k
+resolveClashes' f set k = go Nothing
+  where go (Just ctr) =
+          let resk = f ctr k
+          in case HS.member resk set of
+               True  -> go (Just (ctr + 1))
+               False -> resk
+        go Nothing =
+          case HS.member k set of
+            True  -> go (Just 0)
+            False -> k
+
+resolveModuleClashes :: HS.HashSet [T.Text] -> HS.HashSet T.Text -> [T.Text] -> T.Text -> HaskModule
+resolveModuleClashes seenImps seenQuals modCmps modQual =
+  let newModCmps = resolveModClashes seenImps modCmps
+      newModQual = resolveQualClashes seenQuals modQual
+  in  HaskModule newModCmps newModQual
+
+resolveModClashes :: HS.HashSet [T.Text] -> [T.Text] -> [T.Text]
+resolveModClashes = resolveClashes' resolveModClash
+  where resolveModClash ctr ks = case reverse ks of
+          (x : xs) -> reverse (x <> "_" <> T.pack (show ctr) : xs)
+          [] -> error "Panic: import components cannot be empty"
+
+resolveQualClashes :: HS.HashSet T.Text -> T.Text -> T.Text
+resolveQualClashes = resolveClashes' resolveQualClash
+  where resolveQualClash ctr k = k <> "_" <> T.pack (show ctr)
+
+mkModuleState :: [((Route UnparsedPiece), Method)] -> ModuleState
+mkModuleState rms =
+  let (imps, _, _) =
+        L.foldl' (\(mods, seenImpComps, seenQuals) (r, m) ->
+                       let routeMod      = RouteLocal r
+                           rmMod         = Local r m
+                           routeModCmps  = moduleComponents routeMod
+                           rmModCmps     = moduleComponents rmMod
+                           haskRouteMod  = resolveModuleClashes seenImpComps seenQuals routeModCmps (moduleQualification routeModCmps)
+                           haskRMMod     = resolveModuleClashes seenImpComps seenQuals rmModCmps (moduleQualification rmModCmps)
+                           newMods       = HM.insertWith (flip const) routeMod haskRouteMod $
+                                             HM.insert rmMod haskRMMod mods                           
+                       in   (newMods
+                            , HS.insert (haskModuleComponents haskRouteMod) $
+                                       HS.insert (haskModuleComponents haskRMMod) seenImpComps
+                            , HS.insert (haskModuleQual haskRouteMod) $
+                                       HS.insert (haskModuleQual haskRMMod)
+                                       seenQuals
+                            )
+               ) (HM.empty, HS.empty, HS.empty) rms
+      
+  in imps
+            
 
 generateSwaggerState :: Swagger -> SwaggerGenerator ()
 generateSwaggerState sw = do
   globalSwaggerDefinitions (_swaggerDefinitions sw)
-  generateRoutesState (_swaggerDefinitions sw) (_swaggerParameters sw) (_swaggerResponses sw) (_swaggerPaths sw) 
+  generateRoutesState (_swaggerParameters sw) (_swaggerResponses sw) (_swaggerPaths sw)
+  moduleState
 
-generateRoutesState :: Definitions Schema -> Definitions Param -> Definitions Response -> OHM.InsOrdHashMap FilePath PathItem -> SwaggerGenerator ()
-generateRoutesState globalDefs globalParams globalResps pItems = do
+moduleState :: SwaggerGenerator ()
+moduleState = do
+  rms <- gets (HM.keys . apiContract)
+  modify' (\s -> s { modules = mkModuleState rms })
+
+generateRoutesState :: Definitions Param -> Definitions Response -> OHM.InsOrdHashMap FilePath PathItem -> SwaggerGenerator ()
+generateRoutesState globalParams globalResps pItems = do
   OHM.foldlWithKey' updatePathItems (pure ()) pItems
 
   where updatePathItems :: SwaggerGenerator () -> FilePath -> PathItem -> SwaggerGenerator ()
         updatePathItems sws routeStr pItem = do
           let route = parseRoute routeStr
-              updState = generateRouteMethodState globalDefs globalParams globalResps (_pathItemParameters pItem) route
+              updState = generateRouteMethodState globalParams globalResps (_pathItemParameters pItem) route
           sws
           ppG   <- updState GET (_pathItemGet pItem)
           ppP   <- updState PUT (_pathItemPut pItem)
@@ -263,7 +367,7 @@ generateRoutesState globalDefs globalParams globalResps pItems = do
           ppDel <- updState DELETE (_pathItemDelete pItem)
           ppOpt <- updState OPTIONS (_pathItemOptions pItem)
           ppPat <- updState PATCH (_pathItemPatch pItem)
-          routeRef <- parseRouteType globalDefs route (groupByParamName [ppG, ppP, ppPT, ppDel, ppOpt, ppPat])
+          routeRef <- parseRouteType route (groupByParamName [ppG, ppP, ppPT, ppDel, ppOpt, ppPat])
           insertRoute route routeRef
           pure ()
 
@@ -280,8 +384,8 @@ generateRoutesState globalDefs globalParams globalResps pItems = do
                                     ) methPars
             in  methParsNamed
             
-generateRouteMethodState :: Definitions Schema -> Definitions Param -> Definitions Response -> [SW.Referenced Param] -> Route UnparsedPiece -> Method -> Maybe Operation -> SwaggerGenerator (Method, [Param])
-generateRouteMethodState globalDefs globalParams globalResps routeRefs route meth mOp =
+generateRouteMethodState :: Definitions Param -> Definitions Response -> [SW.Referenced Param] -> Route UnparsedPiece -> Method -> Maybe Operation -> SwaggerGenerator (Method, [Param])
+generateRouteMethodState globalParams globalResps routeRefs route meth mOp =
   case mOp of
     Nothing -> pure (meth, [])
     Just op -> do
@@ -289,14 +393,14 @@ generateRouteMethodState globalDefs globalParams globalResps routeRefs route met
                         -- TODO: ResponsesDefault ignored.
           opResponses = _operationResponses op
       let (pp, qp, fp, fip, hp, bp) = groupParamDefinitions globalParams opParams
-      qpTycon   <- paramDefinitions globalDefs QueryParam route meth qp
-      fpTycon   <- paramDefinitions globalDefs FormParam route meth fp
-      fipTycon  <- paramDefinitions globalDefs FileParam route meth fip
-      hpTycon   <- paramDefinitions globalDefs HeaderParam route meth hp
-      bodyTycon <- paramDefinitions globalDefs BodyParam route meth bp
+      qpTycon   <- paramDefinitions QueryParam route meth qp
+      fpTycon   <- paramDefinitions FormParam route meth fp
+      fipTycon  <- paramDefinitions FileParam route meth fip
+      hpTycon   <- paramDefinitions HeaderParam route meth hp
+      bodyTycon <- paramDefinitions BodyParam route meth bp
       let (sucs, fails, _headers) = groupOutputDefinitions globalResps opResponses
-      succTycon <- outputDefinitions globalDefs ApiOutput route meth sucs
-      errTycon <- outputDefinitions globalDefs ApiError route meth fails
+      succTycon <- outputDefinitions ApiOutput route meth sucs
+      errTycon <- outputDefinitions ApiError route meth fails
       insertContract route meth qpTycon fpTycon fipTycon hpTycon bodyTycon succTycon errTycon
       pure (meth, pp)
 
@@ -333,10 +437,10 @@ insertContract r m qp fp fip hp bdy suc err = do
                            }
   modify' (\s -> s { apiContract = HM.insert (r, m) cInfo (apiContract s) })
       
-parseRouteType :: Definitions Schema -> Route UnparsedPiece ->
+parseRouteType :: Route UnparsedPiece ->
                   [(T.Text, [(Method, Param)])] ->
                   SwaggerGenerator (Route Ref)
-parseRouteType globalDefs rt params = do
+parseRouteType rt params = do
   let pps = routePathParamPiece rt
       unDynParamPiece = map (\d -> case d of
                                 DynParamPiece x -> x
@@ -355,7 +459,7 @@ parseRouteType globalDefs rt params = do
         singlePP pp = do
               case L.lookup pp params of
                 Just methAndPars -> do
-                  pathParamDefinition globalDefs rt pp methAndPars
+                  pathParamDefinition rt pp methAndPars
                 Nothing          -> error ("Panic: route param not found: " ++ show (pp, map fst params))
         go1 [pp] = singlePP pp
         go1 pps  = do
@@ -372,13 +476,13 @@ overrideParams routeRefs methRefs =
 
 globalSwaggerDefinitions :: Definitions Schema -> SwaggerGenerator ()
 globalSwaggerDefinitions defs = do
-  _ <- schemaDefinitions defs globalProv
+  _ <- schemaDefinitions (lookupGlobalDefinitionOrGenerate defs) globalProv defs
   pure ()
                                                   
-outputDefinitions :: Definitions Schema -> ResponseType -> Route UnparsedPiece -> Method ->
+outputDefinitions :: ResponseType -> Route UnparsedPiece -> Method ->
                       [(HttpStatusCode, Maybe (SW.Referenced Schema))] -> SwaggerGenerator (Maybe TypeConstructor)
-outputDefinitions _ _ _ _ []    = pure Nothing
-outputDefinitions globalDefs rType r m rs = Just <$> do
+outputDefinitions _ _ _ []    = pure Nothing
+outputDefinitions rType r m rs = Just <$> do
   tyRefs <- mapM (uncurry outputDefinition) rs
   let tyDef = sumType (responseTypeName rType)
                       (map (\(code, refT) ->
@@ -397,7 +501,7 @@ outputDefinitions globalDefs rType r m rs = Just <$> do
             --       To handle this, verify that all keys under this route/meth
             --       do not have this name
             let n = responseName code
-            refT <- schemaDefinition globalDefs (localProv r m) n sc
+            refT <- schemaDefinition lookupGlobalDefinition (localProv r m) n sc
             pure (code, refT)
         responseName code = "Response" <> T.pack (show code)
 
@@ -504,11 +608,11 @@ isFileOrFormParam par =
       _             -> Nothing
     _ -> Nothing
 
-paramDefinitions :: Definitions Schema -> ParamType -> Route UnparsedPiece -> Method -> [Param] -> SwaggerGenerator (Maybe TypeConstructor)
-paramDefinitions globalDefs pType rt method params
+paramDefinitions :: ParamType -> Route UnparsedPiece -> Method -> [Param] -> SwaggerGenerator (Maybe TypeConstructor)
+paramDefinitions pType rt method params
   | params == [] = pure Nothing
   | otherwise   = do      
-      ptys <- mapM (paramDefinition globalDefs rt method) params
+      ptys <- mapM (paramDefinition rt method) params
       let tyDef = productType (paramTypeName pType)
                               (map (\pty -> ( paramName pty
                                            , paramType pty
@@ -536,17 +640,17 @@ data ParamTypeInfo = ParamTypeInfo { paramType       :: Ref
                                    , paramName       :: DefinitionName
                                    } deriving (Show, Eq, Generic)
 
-pathParamDefinition :: Definitions Schema -> Route UnparsedPiece -> T.Text -> [(Method, Param)] -> SwaggerGenerator Ref
-pathParamDefinition globalDefs r parN pars = do
+pathParamDefinition :: Route UnparsedPiece -> T.Text -> [(Method, Param)] -> SwaggerGenerator Ref
+pathParamDefinition r parN pars = do
   let nubedPars = L.nubBy (\a b -> snd a == snd b) pars
       updParamName p m = p { _paramName = _paramName p <> "PathParam" <> T.pack (show m) }
       pathParamConName m = parN <> "PathParamCon" <> T.pack (show m)
   case nubedPars of
     [(_, p)] -> do
-      paramType <$> paramDefinition' globalDefs (routeLocalProv r) p
+      paramType <$> paramDefinition' (routeLocalProv r) p
     xs       -> do
       tyRefs <- mapM (\(m, p) -> do
-                        tyRef <- paramType <$> paramDefinition' globalDefs (routeLocalProv r) (updParamName p m)
+                        tyRef <- paramType <$> paramDefinition' (routeLocalProv r) (updParamName p m)
                         pure (m, tyRef)
                     ) xs
       let tyDef = sumType parN
@@ -556,18 +660,18 @@ pathParamDefinition globalDefs r parN pars = do
       cty <- insertDefinition (routeLocalProv r) parN tyDef
       pure cty
       
-paramDefinition :: Definitions Schema -> Route UnparsedPiece -> Method -> Param -> SwaggerGenerator ParamTypeInfo
-paramDefinition globalDefs r m = paramDefinition' globalDefs (localProv r m)
+paramDefinition :: Route UnparsedPiece -> Method -> Param -> SwaggerGenerator ParamTypeInfo
+paramDefinition r m = paramDefinition' (localProv r m)
 
-paramDefinition' :: Definitions Schema -> Provenance -> Param -> SwaggerGenerator ParamTypeInfo
-paramDefinition' globalDefs prov par = do
+paramDefinition' :: Provenance -> Param -> SwaggerGenerator ParamTypeInfo
+paramDefinition' prov par = do
   let parName = _paramName par
       req  = case _paramRequired par of
         Nothing -> False
         Just t  -> t
   paramTypeRef <- case _paramSchema par of
                    ParamBody (SW.Inline sch) -> do
-                     schemaDefinition globalDefs prov parName sch
+                     schemaDefinition lookupGlobalDefinition prov parName sch
                    ParamBody (SW.Ref (Reference n)) ->
                      lookupGlobalDefinition n
                    ParamOther pOth           -> 
@@ -669,11 +773,11 @@ mkDataConstructorName = T.toTitle
 mkTypeConstructorName :: T.Text -> T.Text
 mkTypeConstructorName = T.toTitle
 
-schemaDefinitions :: Definitions Schema -> Provenance -> SwaggerGenerator [Ref]
-schemaDefinitions defs prov =
+schemaDefinitions :: (DefinitionName -> SwaggerGenerator Ref) -> Provenance -> Definitions Schema -> SwaggerGenerator [Ref]
+schemaDefinitions defLookup prov defs =
   OHM.foldlWithKey' (\s k sc -> do
                         xs <- s
-                        x <- schemaDefinition defs prov k sc
+                        x <- schemaDefinition defLookup prov k sc
                         pure (x : xs)
                     ) (pure []) defs
 
@@ -682,18 +786,15 @@ newtypeIfRoot prov n ref
   | isGlobalRoot prov = go 
   | otherwise         = pure ref
 
-  where isGlobalRoot (Global []) = True
-        isGlobalRoot _           = False
+  where isGlobalRoot (Provenance Global []) = True
+        isGlobalRoot _                      = False
 
         go = do
           let nt = newType n Nothing ref
           insertDefinition prov n nt
           
-schemaDefinition :: Definitions Schema -> Provenance -> DefinitionName -> Schema -> SwaggerGenerator Ref
-schemaDefinition globalDefs prov def sch = do
-  case def == "SSLSupportMethod" of
-    True -> liftIO $ print (prov, def, sch)
-    False -> pure ()
+schemaDefinition :: (DefinitionName -> SwaggerGenerator Ref) -> Provenance -> DefinitionName -> Schema -> SwaggerGenerator Ref
+schemaDefinition defLookup prov def sch = do
   let paramSchema = _schemaParamSchema sch
       additionalProps props = case OHM.null props of
         True -> case _schemaAdditionalProperties sch of
@@ -755,36 +856,34 @@ schemaDefinition globalDefs prov def sch = do
          objectArrayDefinition rsc = do
            case rsc of
              SW.Inline sc -> do
-               rty <- schemaDefinition globalDefs (extendProvenance def prov) (def <> "ArrayContents") sc
+               rty <- schemaDefinition defLookup (extendProvenance def prov) (def <> "ArrayContents") sc
                pure (Inline (Array rty))
              SW.Ref (Reference n) -> do
-               rty <- lookupGlobalDefinitionOrGenerate globalDefs n
+               rty <- defLookup n
                pure (Inline (Array rty))
 
          tupleDefinition rscs = do
            rtys <- mapM (\(i, rsc) -> case rsc of
-                           SW.Inline sc -> schemaDefinition globalDefs
+                           SW.Inline sc -> schemaDefinition defLookup
                                           (extendProvenance def prov)
                                           (def <> "TupleContents" <> T.pack (show i)) sc
-                           SW.Ref (Reference n) -> lookupGlobalDefinitionOrGenerate globalDefs n
+                           SW.Ref (Reference n) -> defLookup n
                        )
                        (zip ([0 .. ] :: [Int]) rscs)
            pure (Inline (Tuple rtys))
                   
          schemaField k rsc = case rsc of
            SW.Ref (Reference n) -> do
-             lookupGlobalDefinitionOrGenerate globalDefs n
+             defLookup n
            SW.Inline s -> do
-             schemaDefinition globalDefs (extendProvenance def prov) k s
+             schemaDefinition defLookup (extendProvenance def prov) k s
          
 referenceOf :: Provenance -> DefinitionName -> SwaggerHaskType -> Ref
 referenceOf prv defn (Object ct) = Ref prv defn (getTypeConstructor ct)
 referenceOf _ _ (Primitive ty)   = Inline ty
 
 extendProvenance :: DefinitionName -> Provenance -> Provenance
-extendProvenance n (Global ks)    = Global (ks ++ [n])
-extendProvenance n (Local r m ks) = Local r m (ks ++ [n])
-extendProvenance _ p = p
+extendProvenance n (Provenance m ks) = Provenance m (ks ++ [n])
 
 lookupGlobalDefinitionOrGenerate :: Definitions Schema -> DefinitionName -> SwaggerGenerator Ref
 lookupGlobalDefinitionOrGenerate schs defn = do
@@ -793,7 +892,7 @@ lookupGlobalDefinitionOrGenerate schs defn = do
     Nothing  -> do
       case OHM.lookup defn schs of
         Just k -> do
-          schemaDefinition schs globalProv defn k
+          schemaDefinition lookupGlobalDefinition globalProv defn k
         Nothing -> error "Panic: key not found"
     Just cty -> pure (referenceOf globalProv defn (Object cty))
 
@@ -813,13 +912,13 @@ lookupGlobalDefinition defn = do
           customHaskType <$> HM.lookup (Definition globalProv defn') tyDefs
 
 globalProv :: Provenance
-globalProv = Global []
+globalProv = Provenance Global []
 
 localProv :: Route UnparsedPiece -> Method -> Provenance
-localProv r m = Local r m []
+localProv r m = Provenance (Local r m) []
 
 routeLocalProv :: Route UnparsedPiece -> Provenance
-routeLocalProv r = RouteLocal r []
+routeLocalProv r = Provenance (RouteLocal r) []
 
 insertOutputType :: ResponseType -> Route UnparsedPiece -> Method -> TypeDefinition -> SwaggerGenerator CustomType
 insertOutputType rt rte meth tyDef = do
@@ -857,7 +956,6 @@ insertWithTypeMeta tyMeta = go 0
                               , errors      = errors sws
                               }
                   )
-          -- liftIO $ print $ "insertDefinition" ++ show (tyMeta, getTypeConstructor (customHaskType val))
           pure val
           
 data TypeClash = TypeNameClash
@@ -879,7 +977,7 @@ resolveClashes ct cs tyDef =
         
 checkNameClash :: TypeMeta -> TypeMeta -> TypeDefinition -> TypeDefinition -> [TypeClash]
 checkNameClash pl pr tyl tyr
-  | isSameModule (getProvenance pl) (getProvenance pr) && not (pl == pr) =
+  | isSameModule (getProvenanceModule pl) (getProvenanceModule pr) && not (pl == pr) =
        let clashes = typeNameClash (getTypeConstructor l)
                                    (getTypeConstructor r) ++
                      constructorNameClashes (dataConstructorNames l)
@@ -947,18 +1045,14 @@ splitOn c s   =  cons (case break (== c) s of
   where
     cons ~(h, t) = h : t  
 
-isSameModule :: Provenance -> Provenance -> Bool
-isSameModule p1 p2 = getModuleProv p1 == getModuleProv p2
+isSameModule :: Module -> Module -> Bool
+isSameModule p1 p2 = p1 == p2
 
-getModuleProv :: Provenance -> Provenance 
-getModuleProv (Global _)       = Global []
-getModuleProv (RouteLocal r _) = RouteLocal r []
-getModuleProv (Local m r _)    = Local m r []
-        
-getProvenance :: TypeMeta -> Provenance
-getProvenance (ParamType _ m r)    = Local m r []
-getProvenance (ResponseType _ m r) = Local m r []
-getProvenance (Definition prov _)  = getModuleProv prov
+getProvenanceModule :: TypeMeta -> Module
+getProvenanceModule (ParamType _ m r)    = Local m r
+getProvenanceModule (ResponseType _ m r) = Local m r
+getProvenanceModule (Definition prov _)  = go prov
+  where go (Provenance m _) = m
 
 type RouteParser = M.Parsec () T.Text
 
