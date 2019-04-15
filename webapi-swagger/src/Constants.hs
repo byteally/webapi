@@ -376,11 +376,11 @@ qualifiedImportsForTypesModule =
                               --  , ("Data.ByteString", "P")
                               --  , ("Data.Time.Clock", "P" )
                               --  , ("Data.Time.Calendar", "P" )
-                                 ("GHC.Generics", "P" )
+                                --  ("GHC.Generics", "P" )
                               --  , ("Data.Aeson", "P" )
                               --  , ("WebApi.Param", "P" )
                               --  , ("Data.Text.Encoding", "P" )
-                               , ("Prelude", "P" )
+                              --  , ("Prelude", "P" )
                                ]    
                                --  , ("Data.Swagger", (True, Just $ ModuleName noSrcSpan "SW") )
 
@@ -401,8 +401,8 @@ importsForContract = ["Prelude ()"] --["Data.Int", "Data.Text"]
 qualImportsForContract :: [(String, String)]
 qualImportsForContract = [
                            ("WebApi.Contract", "W")
-                         , ("WebApi.Param", "W")
+                        --  , ("WebApi.Param", "W")
                          , ("WebApi.ContentTypes", "W")
-                         , ("Prelude", "P")
-                         , ("Data.Text", "P")
+                        --  , ("Prelude", "P")
+                        --  , ("Data.Text", "P")
                          ]

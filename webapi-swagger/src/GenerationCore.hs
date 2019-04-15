@@ -158,7 +158,7 @@ generateContractFromContractState contractName contractState routeStateHM genDir
 
   getRouteAndMethod :: [(Route UnparsedPiece, Method)] -> (String, [Method])
   getRouteAndMethod routeList = 
-    DL.foldl' (\(unparsedRoutePieceList, methodList) (currentRoutePieces, currentMethod) -> 
+    DL.foldl' (\(_, methodList) (currentRoutePieces, currentMethod) -> 
                     let routeNameStr = (constructRouteName . lookupRouteInRouteState) currentRoutePieces
                     in (routeNameStr, currentMethod:methodList)  ) ("", []) routeList
       
@@ -230,8 +230,7 @@ parseContractInfo routeNameStr unpRouteInfo contractInfo method importsHM =
 
   insertQual :: T.Text -> String
   insertQual inputType = 
-    let routePieces = getRoute unpRouteInfo
-        prov = localProv unpRouteInfo method
+    let prov = localProv unpRouteInfo method
         (moduleName, _) = getModuleQualNameFromProvenance prov
         modQualFromImportsHM = 
           case HMS.lookup moduleName importsHM of
@@ -406,17 +405,17 @@ getRefImports ref =
         Byte -> [("Data.ByteString", "P")]
         Binary -> [("Data.ByteString", "P")]
         Text -> [("Data.Text", "P")]
-        Float -> []
-        Double -> []
+        Float -> [("Prelude","P")]
+        Double -> [("Prelude","P")]
         Number -> [("CommonTypes", "P")]
-        Int -> []
+        Int -> [("Prelude","P")]
         Int32 -> [("Data.Int", "P")]
         Int64 -> [("Data.Int", "P")]
-        Bool -> []
+        Bool -> [("Prelude","P")]
         File -> []
         Null -> []
         Default innerRef -> ("CommonTypes", "P"):(getRefImports innerRef) 
-        Maybe innerRef -> getRefImports innerRef
+        Maybe innerRef -> ("Prelude","P"):getRefImports innerRef
         Array innerRef -> getRefImports innerRef 
         Tuple innerRefList -> DL.concat $ fmap getRefImports innerRefList
         MultiSet innerRef -> ("Webapi.Param","P"):getRefImports innerRef
