@@ -351,7 +351,7 @@ generateModulesFromTypeState tState genPath = do
     
   provAndTypesToHSEModule :: Provenance -> Imports -> [Decl SrcSpanInfo] -> TypeDefinition -> [Decl SrcSpanInfo]
   provAndTypesToHSEModule prov importsHM declAcc tyDefn = 
-    let newDataDecl =  constructDeclFromCustomType prov (customHaskType tyDefn) importsHM
+    let newDataDecl =  constructDeclFromCustomType prov tyDefn importsHM
     in newDataDecl:declAcc
 
 
@@ -439,24 +439,26 @@ customTypeForComplexSumTy =
       dCons2 = DataConstructor "PendingCons" [(Nothing, Ref (Local  routeDefn GET ["Pending"]) "defName2" "AvlTyName" )]
   in CustomType "ComplexSumTy" [dCons1, dCons2]
 
-constructDeclFromCustomType :: Provenance -> CustomType -> Imports -> Decl SrcSpanInfo
-constructDeclFromCustomType prov customTy importsHM = 
-  case customTy of
-    CustomType tyConstructor dataConsList -> 
-      DataDecl noSrcSpan  
-        (dataOrNewType False)
-        Nothing 
-        (declHead $ setValidConstructorId $ T.unpack tyConstructor)
-        (qualConDecls prov (Left dataConsList) )
-        []
-    CustomNewType tyConstructor dConsName mRec ref  ->
-      DataDecl noSrcSpan  
-        (dataOrNewType True)
-        Nothing 
-        (declHead $ setValidConstructorId $ T.unpack tyConstructor)
-        (qualConDecls prov (Right (dConsName, mRec, ref) ))
-        []
- where
+constructDeclFromCustomType :: Provenance -> TypeDefinition -> Imports -> Decl SrcSpanInfo
+constructDeclFromCustomType prov typeDefn importsHM = 
+  let customTy = customHaskType typeDefn
+      derivingList = fmap (T.unpack) $ derivingConstraints typeDefn 
+  in case customTy of
+      CustomType tyConstructor dataConsList -> 
+        DataDecl noSrcSpan  
+          (dataOrNewType False)
+          Nothing 
+          (declHead $ setValidConstructorId (show customTy) $ T.unpack tyConstructor)
+          (qualConDecls prov (Left dataConsList) )
+          (derivingDecl derivingList)
+      CustomNewType tyConstructor dConsName mRec ref  ->
+        DataDecl noSrcSpan  
+          (dataOrNewType True)
+          Nothing 
+          (declHead $ setValidConstructorId (show customTy) $ T.unpack tyConstructor)
+          (qualConDecls prov (Right (dConsName, mRec, ref) ))
+          (derivingDecl derivingList)
+ where 
   dataOrNewType :: Bool -> DataOrNew SrcSpanInfo
   dataOrNewType isNewType =
     if isNewType
@@ -790,6 +792,19 @@ apiInstanceTypeDecl innerTypes =
       (typeConstructor (SV.index innerTypes (Finite 2) ) )
     )
     (typeConstructor (SV.index innerTypes (Finite 3) ) )
+
+
+#if MIN_VERSION_haskell_src_exts(1,20,0)
+derivingDecl :: [String] -> [Deriving SrcSpanInfo]
+derivingDecl derivingList = [Deriving noSrcSpan Nothing $ fmap iRule derivingList]
+
+#else
+derivingDecl :: [String] -> Maybe (Deriving SrcSpanInfo)
+derivingDecl derivingList = Just $ Deriving noSrcSpan $ fmap iRule derivingList
+#endif
+ where 
+  iRule :: String -> InstRule SrcSpanInfo
+  iRule tClass = IRule noSrcSpan Nothing Nothing (IHCon noSrcSpan (UnQual noSrcSpan (nameDecl tClass)))
 
 
 emptyDataDeclaration :: String -> Decl SrcSpanInfo
