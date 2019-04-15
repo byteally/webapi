@@ -22,10 +22,11 @@ import qualified Data.HashMap.Strict.InsOrd as OHM
 import qualified Data.List as L
 import Data.Hashable
 import qualified Data.Aeson as A
-import qualified Text.Megaparsec as M
-import qualified Text.Megaparsec.Char as M
+-- import qualified Text.Megaparsec as M
+-- import qualified Text.Megaparsec.Char as M
 import qualified Data.HashSet as HS
 import qualified Data.Char as C
+import qualified Dhall as D
 
 data Ref  = Inline Primitive
           | Ref    Provenance DefinitionName TypeConstructor
@@ -102,8 +103,6 @@ data CustomTypeWithProv = CustomTypeWithProv { typeProv       :: Provenance
 updateCustomType :: (CustomType -> CustomType) -> TypeDefinition -> TypeDefinition
 updateCustomType f tyDef =
   tyDef { customHaskType = f (customHaskType tyDef)
-        , derivingConstraints = derivingConstraints tyDef
-        , genericInstances = genericInstances tyDef
         }
 
 updateTypeConstructor :: TypeConstructor -> CustomType -> CustomType
@@ -165,21 +164,18 @@ data Delimiter = SlashT | Space | Pipe | Comma
 
 data TypeDefinition = TypeDefinition { customHaskType      :: CustomType
                                      , derivingConstraints :: [ConstraintName]
-                                     , genericInstances    :: [Instance]
+                                     , template            :: [Template]
                                      } deriving (Show, Eq, Generic)
 
 defaultTypeDefinition :: CustomType -> TypeDefinition
 defaultTypeDefinition cty =
-  TypeDefinition { customHaskType = cty
+  TypeDefinition { customHaskType      = cty
                  , derivingConstraints = []
-                 , genericInstances = []
+                 , template            = []
                  }
 
 type ConstraintName = T.Text
-
-data Instance = GenericInstance  ConstraintName
-              | ExplicitInstance
-              deriving (Show, Eq, Generic)
+type InstanceBody   = T.Text
 
 data SwaggerGenState = SwaggerGenState { typeState   :: TypeState
                                        , routeState  :: RouteState
@@ -288,6 +284,14 @@ haskModuleComponents (HaskModule cs _) = cs
 
 haskModuleQual :: HaskModule -> T.Text
 haskModuleQual (HaskModule _ qual) = qual
+
+newDefinitionName :: Provenance -> T.Text -> HS.HashSet TypeMeta -> DefinitionName
+newDefinitionName prov n hs = getDefnName (resolveClashes' defResolver hs (Definition prov n))
+  where defResolver i (Definition p defn) = Definition p (defn <> "_" <> T.pack (show i))
+        defResolver _ _ = error "Panic: impossible case - only definitions can clash"
+
+        getDefnName (Definition _ defn) = defn
+        getDefnName _                   = error "Panic: impossible case - only definitions can occur"
 
 resolveClashes' :: (Eq k, Hashable k) => (Int -> k -> k) -> HS.HashSet k -> k -> k
 resolveClashes' f set k = go Nothing
@@ -465,7 +469,8 @@ parseRouteType rt params = do
         go1 pps  = do
           ppTys <- mapM singlePP pps
           let typeName = T.concat pps
-          let ppProdTy = productType typeName
+          let ppProdTy = productType (Just (InputTemplate "PathParam"))
+                                     typeName
                                      (zip pps ppTys)
           cty <- insertDefinition (routeLocalProv rt) typeName ppProdTy
           pure cty
@@ -476,7 +481,7 @@ overrideParams routeRefs methRefs =
 
 globalSwaggerDefinitions :: Definitions Schema -> SwaggerGenerator ()
 globalSwaggerDefinitions defs = do
-  _ <- schemaDefinitions (lookupGlobalDefinitionOrGenerate defs) globalProv defs
+  _ <- schemaDefinitions (lookupGlobalDefinitionOrGenerate defs) Nothing globalProv defs
   pure ()
                                                   
 outputDefinitions :: ResponseType -> Route UnparsedPiece -> Method ->
@@ -484,7 +489,8 @@ outputDefinitions :: ResponseType -> Route UnparsedPiece -> Method ->
 outputDefinitions _ _ _ []    = pure Nothing
 outputDefinitions rType r m rs = Just <$> do
   tyRefs <- mapM (uncurry outputDefinition) rs
-  let tyDef = sumType (responseTypeName rType)
+  let tyDef = sumType undefined
+                      (responseTypeName rType)
                       (map (\(code, refT) ->
                               (responseDataConName rType code, [refT])) tyRefs)
   cty <- insertOutputType rType r m tyDef
@@ -501,7 +507,7 @@ outputDefinitions rType r m rs = Just <$> do
             --       To handle this, verify that all keys under this route/meth
             --       do not have this name
             let n = responseName code
-            refT <- schemaDefinition lookupGlobalDefinition (localProv r m) n sc
+            refT <- schemaDefinition lookupGlobalDefinition undefined (localProv r m) n sc
             pure (code, refT)
         responseName code = "Response" <> T.pack (show code)
 
@@ -613,7 +619,8 @@ paramDefinitions pType rt method params
   | params == [] = pure Nothing
   | otherwise   = do      
       ptys <- mapM (paramDefinition rt method) params
-      let tyDef = productType (paramTypeName pType)
+      let tyDef = productType undefined
+                              (paramTypeName pType)
                               (map (\pty -> ( paramName pty
                                            , paramType pty
                                            )
@@ -653,7 +660,7 @@ pathParamDefinition r parN pars = do
                         tyRef <- paramType <$> paramDefinition' (routeLocalProv r) (updParamName p m)
                         pure (m, tyRef)
                     ) xs
-      let tyDef = sumType parN
+      let tyDef = sumType undefined parN
                   (map (\(meth, refT) ->
                            (pathParamConName meth, [refT])) tyRefs)
       
@@ -671,7 +678,7 @@ paramDefinition' prov par = do
         Just t  -> t
   paramTypeRef <- case _paramSchema par of
                    ParamBody (SW.Inline sch) -> do
-                     schemaDefinition lookupGlobalDefinition prov parName sch
+                     schemaDefinition lookupGlobalDefinition undefined prov parName sch
                    ParamBody (SW.Ref (Reference n)) ->
                      lookupGlobalDefinition n
                    ParamOther pOth           -> 
@@ -723,7 +730,7 @@ paramSchemaDefinition prov def parSch = hasDef <$> go
            Nothing -> inline Null
            
         enumDefinition enumVals = do
-          let mtyDef = enumType def <$> menums
+          let mtyDef = enumType undefined def <$> menums
               menums = traverse (\v -> case v of
                                    A.String t -> Just t
                                    _          -> Nothing) enumVals
@@ -735,34 +742,39 @@ paramSchemaDefinition prov def parSch = hasDef <$> go
         arrayDefinition = error "TODO: array in param"
         inline = pure . Inline
 
-sumType :: T.Text -> [(T.Text, [Ref])] -> TypeDefinition
-sumType rawName ctors =
+singleton :: a -> [a]
+singleton a = [a]
+
+sumType :: Maybe Template -> T.Text -> [(T.Text, [Ref])] -> TypeDefinition
+sumType mtpl rawName ctors =
   let dcons    = map (\(ctorN, args) -> DataConstructor (mkDataConstructorName ctorN) (ctorArgs args)) ctors
       cty      = CustomType (mkTypeConstructorName rawName) dcons
       ctorArgs = map (\ref -> (Nothing, ref))
-  in  defaultTypeDefinition cty 
+  in  (defaultTypeDefinition cty) { template = maybe [] singleton mtpl }
       
-enumType :: T.Text -> [T.Text] -> TypeDefinition
-enumType rawName rawCtors =
+enumType :: Maybe Template -> T.Text -> [T.Text] -> TypeDefinition
+enumType mtpl rawName rawCtors =
   let dcons = map (\ctor -> DataConstructor (mkDataConstructorName ctor) []) rawCtors
       cty   = CustomType (mkTypeConstructorName rawName) dcons
-  in  defaultTypeDefinition cty 
+      
+  in  (defaultTypeDefinition cty) { template = maybe [] singleton mtpl }
 
-newType :: T.Text -> Maybe T.Text -> Ref -> TypeDefinition
-newType rawName rawFld ref =
+newType :: Maybe Template -> T.Text -> Maybe T.Text -> Ref -> TypeDefinition
+newType mtpl rawName rawFld ref =
   let dconName = mkDataConstructorName rawName
-      cty = CustomNewType (mkTypeConstructorName rawName) dconName (mkRecordName <$> rawFld) ref      
-  in  defaultTypeDefinition cty
+      cty = CustomNewType (mkTypeConstructorName rawName) dconName (mkRecordName <$> rawFld) ref
+      
+  in  (defaultTypeDefinition cty) { template = maybe [] singleton mtpl }
 
-productType :: T.Text -> [(T.Text, Ref)] -> TypeDefinition
-productType rawName rawFlds =
+productType :: Maybe Template -> T.Text -> [(T.Text, Ref)] -> TypeDefinition
+productType mtpl rawName rawFlds =
   let dcon = DataConstructor
              (mkDataConstructorName rawName)
              fields
       fields = map (\(fld, ref) -> (Just (mkRecordName fld), ref)) rawFlds
       cty = CustomType (mkTypeConstructorName rawName) [dcon]
       
-  in  defaultTypeDefinition cty
+  in  (defaultTypeDefinition cty) { template = maybe [] singleton mtpl }
 
 mkRecordName :: T.Text -> T.Text
 mkRecordName = T.toLower
@@ -773,11 +785,11 @@ mkDataConstructorName = T.toTitle
 mkTypeConstructorName :: T.Text -> T.Text
 mkTypeConstructorName = T.toTitle
 
-schemaDefinitions :: (DefinitionName -> SwaggerGenerator Ref) -> Provenance -> Definitions Schema -> SwaggerGenerator [Ref]
-schemaDefinitions defLookup prov defs =
+schemaDefinitions :: (DefinitionName -> SwaggerGenerator Ref) -> Maybe Template -> Provenance -> Definitions Schema -> SwaggerGenerator [Ref]
+schemaDefinitions defLookup mtpl prov defs =
   OHM.foldlWithKey' (\s k sc -> do
                         xs <- s
-                        x <- schemaDefinition defLookup prov k sc
+                        x <- schemaDefinition defLookup mtpl prov k sc
                         pure (x : xs)
                     ) (pure []) defs
 
@@ -790,11 +802,11 @@ newtypeIfRoot prov n ref
         isGlobalRoot _                      = False
 
         go = do
-          let nt = newType n Nothing ref
+          let nt = newType undefined n Nothing ref
           insertDefinition prov n nt
           
-schemaDefinition :: (DefinitionName -> SwaggerGenerator Ref) -> Provenance -> DefinitionName -> Schema -> SwaggerGenerator Ref
-schemaDefinition defLookup prov def sch = do
+schemaDefinition :: (DefinitionName -> SwaggerGenerator Ref) -> Maybe Template -> Provenance -> DefinitionName -> Schema -> SwaggerGenerator Ref
+schemaDefinition defLookup mtpl prov def sch = do
   let paramSchema = _schemaParamSchema sch
       additionalProps props = case OHM.null props of
         True -> case _schemaAdditionalProperties sch of
@@ -829,7 +841,7 @@ schemaDefinition defLookup prov def sch = do
                                           let rx = reqType k x
                                           pure ((k, rx) : xs)
                                       ) (pure []) props
-           let tyDef = productType def fields
+           let tyDef = productType mtpl def fields
            insertDefinition prov def tyDef
            
          arrayDefinition mitems = case mitems of
@@ -840,15 +852,18 @@ schemaDefinition defLookup prov def sch = do
 
          primitiveArrayDefinition :: Maybe (CollectionFormat t) -> ParamSchema t -> SwaggerGenerator Ref
          primitiveArrayDefinition mfmt ipar = do
-           rcty <- paramSchemaDefinition (extendProvenance def prov) (def <> "ArrayContents") ipar
+           typeKeys <- getTypeStateKeys           
+           let arrCtsDef = newDefinitionName prov (def <> "ArrayContents") typeKeys
+               extProv   = extendProvenance def prov
+           rcty <- paramSchemaDefinition extProv arrCtsDef ipar
            let unDefault = case rcty of
                              Inline (Default cty) -> cty
                              _                    -> rcty
            let arTy = case mfmt of
-                 Nothing -> Array rcty
-                 Just CollectionCSV -> DelimitedCollection Comma unDefault
-                 Just CollectionSSV -> DelimitedCollection Space unDefault
-                 Just CollectionTSV -> DelimitedCollection SlashT unDefault
+                 Nothing              -> Array rcty
+                 Just CollectionCSV   -> DelimitedCollection Comma unDefault
+                 Just CollectionSSV   -> DelimitedCollection Space unDefault
+                 Just CollectionTSV   -> DelimitedCollection SlashT unDefault
                  Just CollectionPipes -> DelimitedCollection Pipe unDefault
                  Just CollectionMulti -> MultiSet unDefault
            pure (Inline arTy)
@@ -856,7 +871,10 @@ schemaDefinition defLookup prov def sch = do
          objectArrayDefinition rsc = do
            case rsc of
              SW.Inline sc -> do
-               rty <- schemaDefinition defLookup (extendProvenance def prov) (def <> "ArrayContents") sc
+               typeKeys <- getTypeStateKeys
+               let arrCtsDef = newDefinitionName prov (def <> "ArrayContents") typeKeys
+                   extProv   = extendProvenance def prov
+               rty <- schemaDefinition defLookup undefined extProv arrCtsDef sc
                pure (Inline (Array rty))
              SW.Ref (Reference n) -> do
                rty <- defLookup n
@@ -864,9 +882,14 @@ schemaDefinition defLookup prov def sch = do
 
          tupleDefinition rscs = do
            rtys <- mapM (\(i, rsc) -> case rsc of
-                           SW.Inline sc -> schemaDefinition defLookup
-                                          (extendProvenance def prov)
-                                          (def <> "TupleContents" <> T.pack (show i)) sc
+                           SW.Inline sc -> do
+                             typeKeys <- getTypeStateKeys
+                             let tupCtsDef = newDefinitionName prov (def <> "TupleContents" <> T.pack (show i)) typeKeys 
+                                 extProv   = extendProvenance def prov
+                             schemaDefinition defLookup
+                                          undefined
+                                          extProv
+                                          tupCtsDef sc
                            SW.Ref (Reference n) -> defLookup n
                        )
                        (zip ([0 .. ] :: [Int]) rscs)
@@ -876,7 +899,10 @@ schemaDefinition defLookup prov def sch = do
            SW.Ref (Reference n) -> do
              defLookup n
            SW.Inline s -> do
-             schemaDefinition defLookup (extendProvenance def prov) k s
+             schemaDefinition defLookup undefined (extendProvenance def prov) k s
+
+getTypeStateKeys :: SwaggerGenerator (HS.HashSet TypeMeta)
+getTypeStateKeys = gets (HS.fromList . HM.keys . typeState)
          
 referenceOf :: Provenance -> DefinitionName -> SwaggerHaskType -> Ref
 referenceOf prv defn (Object ct) = Ref prv defn (getTypeConstructor ct)
@@ -892,7 +918,7 @@ lookupGlobalDefinitionOrGenerate schs defn = do
     Nothing  -> do
       case OHM.lookup defn schs of
         Just k -> do
-          schemaDefinition lookupGlobalDefinition globalProv defn k
+          schemaDefinition lookupGlobalDefinition undefined globalProv defn k
         Nothing -> error "Panic: key not found"
     Just cty -> pure (referenceOf globalProv defn (Object cty))
 
@@ -1054,11 +1080,12 @@ getProvenanceModule (ResponseType _ m r) = Local m r
 getProvenanceModule (Definition prov _)  = go prov
   where go (Provenance m _) = m
 
-type RouteParser = M.Parsec () T.Text
+-- type RouteParser = M.Parsec () T.Text
 
 routeParser :: UnparsedPiece -> Maybe [PathParamPiece T.Text]
-routeParser = either (const Nothing) Just . M.parse go "ROUTE"
+routeParser = undefined -- either (const Nothing) Just . M.parse go "ROUTE"
 
+{-
   where go :: RouteParser [PathParamPiece T.Text]
         go = do
           x <- (Left <$> M.eof) M.<|> (Right <$> M.anySingle)
@@ -1071,5 +1098,52 @@ routeParser = either (const Nothing) Just . M.parse go "ROUTE"
               piece <- M.some (M.anySingleBut '{')
               ((:) (StaticParamPiece (T.pack (v : piece)))) <$> go
             Left _ -> pure []
-              
-  
+{
+field = \def field v -> "${v} :. ${def}"
+ctor  = \def ctor -> "${ctor}"
+}
+
+-}
+
+
+data InstanceTemplate = InstanceTemplate
+  { templateType :: Template
+  , className    :: T.Text
+  , methods      :: [MethodTemplate]
+  } deriving (Generic)
+
+data MethodTemplate = MethodTemplate
+  { fieldTemplate   :: T.Text -> T.Text -> T.Text -> T.Text
+                      -- def, field, var 
+  , ctorTemplate    :: T.Text -> T.Text -> T.Text
+                      -- def, Ctor
+  , fieldCombinator :: T.Text
+  , body            :: T.Text
+  , methodName      :: T.Text
+  } deriving (Generic)
+
+data Template = InputTemplate  T.Text
+              | OutputTemplate T.Text
+              deriving (Show, Generic, Eq)
+
+instance D.Interpret InstanceTemplate
+instance D.Interpret MethodTemplate
+instance D.Interpret Template
+
+{-
+test :: IO ()
+test = do
+    x <- D.input D.auto "/tmp/config"
+    let ctor = "Foo"
+        var = "v"
+        fields = [("x", "X"), ("y", "Y")]
+        code = body instTmp
+                    <> " \\" <> var <> " -> "
+                    <> T.intercalate (" " <> fieldCombinator instTmp
+                                          <> " ")
+                                     ( ctorTemplate instTmp ctor ctor :
+                                       map (\(x, y) -> fieldTemplate instTmp x y var) fields
+                                     )
+        instTmp = x :: InstanceTemplate
+    putStrLn (T.unpack code)
+-}
