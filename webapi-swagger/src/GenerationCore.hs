@@ -7,7 +7,7 @@
 
 module GenerationCore where
 
-import SwaggerGen
+import SwaggerGen as SG
 
 -- import GHC.Generics
 -- import qualified Data.HashMap.Strict as HM
@@ -35,9 +35,13 @@ import Data.Finite.Internal
 import Safe
 import Debug.Trace
 
-type ModuleTypes = HMS.HashMap Provenance ([TypeDefinition], Imports)
+type ModuleTypes = HMS.HashMap SG.Module ([TypeDefinition], Imports)
 
 type Imports = HMS.HashMap String String
+
+getModuleFromProvenance :: Provenance -> Module
+getModuleFromProvenance (Provenance mod _ ) = mod
+
 
 parseTypeStateIntoModuleTypes :: TypeState -> ModuleTypes
 parseTypeStateIntoModuleTypes tyState = 
@@ -46,12 +50,12 @@ parseTypeStateIntoModuleTypes tyState =
  where
   parseTypeState :: ModuleTypes -> TypeMeta -> TypeDefinition -> ModuleTypes
   parseTypeState accModTypes typeMeta typeDefn = 
-    let provenance = getProvenance typeMeta
+    let provenanceMod = getProvenanceModule typeMeta
         importList = importsForTypes (customHaskType typeDefn) 
         importsHM = constructImportsHMFromList importList
-        finalImportHM = HMS.delete (fst $ getModuleQualNameFromProvenance provenance) importsHM
+        finalImportHM = HMS.delete (fst $ getModuleQualNameFromProvenance provenanceMod) importsHM
         newModuleTypes = HMS.insertWith (\(newTypes, newImps) (oldTypes, oldImps) -> (newTypes ++ oldTypes, HMS.union newImps oldImps) ) 
-                                provenance ([typeDefn], finalImportHM) accModTypes
+                                provenanceMod ([typeDefn], finalImportHM) accModTypes
     in newModuleTypes
 
   importsForTypes :: CustomType -> [(String, String)]
@@ -94,7 +98,7 @@ generateContractFromContractState contractName contractState routeStateHM genDir
   let refRoutePaths = fmap lookupRouteInRouteState unParsedRoutePaths
   let routeNames = fmap (constructRouteName) refRoutePaths
 
-  let moduleQualNames = fmap (\(route, method) -> getModuleQualNameFromProvenance $ localProv route method ) routeListUnGrouped
+  let moduleQualNames = fmap (\(route, method) -> getModuleQualNameFromProvenance $ getModuleFromProvenance $ localProv route method ) routeListUnGrouped
   let otherModuleNames = DL.concat $ fmap (getModuleImportsForRouteState . getRoute) $ HMS.elems routeStateHM 
   let importsHM = constructImportsHMFromList (moduleQualNames ++ otherModuleNames)
 
@@ -231,7 +235,7 @@ parseContractInfo routeNameStr unpRouteInfo contractInfo method importsHM =
   insertQual :: T.Text -> String
   insertQual inputType = 
     let prov = localProv unpRouteInfo method
-        (moduleName, _) = getModuleQualNameFromProvenance prov
+        (moduleName, _) = getModuleQualNameFromProvenance $ getModuleFromProvenance prov
         modQualFromImportsHM = 
           case HMS.lookup moduleName importsHM of
             Just qual -> qual
@@ -285,14 +289,14 @@ showRoutePiece routePiece =
 -- constructRouteNameFromRouteList :: Route UnparsedPiece -> String
 -- constructRouteNameFromRouteList = undefined
 
-getModuleQualNameFromProvenance :: Provenance -> (String, String)
-getModuleQualNameFromProvenance provenance =
-  case provenance of
-    Global _ -> (globalTypesHsModuleName ++ globalDefnsModuleName, globalDefnsQualName)
-    Local routeInfo methodName _ -> 
-      let qualName = getQualOfRoute (getRoute routeInfo) (Just methodName)  
-      in (constructLocalTypeModuleName routeInfo (Just methodName), qualName)
-    RouteLocal routeInfo _ -> 
+getModuleQualNameFromProvenance :: SG.Module -> (String, String)
+getModuleQualNameFromProvenance provenanceMod =
+  case provenanceMod of
+    Global -> (globalTypesHsModuleName ++ globalDefnsModuleName, globalDefnsQualName)
+    Local routeInfo stdMethodName -> 
+      let qualName = getQualOfRoute (getRoute routeInfo) (Just stdMethodName)  
+      in (constructLocalTypeModuleName routeInfo (Just stdMethodName), qualName)
+    RouteLocal routeInfo -> 
       let qualName = getQualOfRoute (getRoute routeInfo) Nothing
       in (constructLocalTypeModuleName routeInfo Nothing, qualName)
 
@@ -302,8 +306,8 @@ getModuleQualNameFromProvenance provenance =
     let routeModuleName = parseRouteIntoModuleName routeInfo
     in 
       case mMethodName of
-        Just methodName -> 
-          (localRouteMethodTypesModName routeModuleName methodName) ++ localRouteMethodTypesModuleName
+        Just stdMethodName -> 
+          (localRouteMethodTypesModName routeModuleName stdMethodName) ++ localRouteMethodTypesModuleName
         Nothing -> 
           (routeLevelTypesModName routeModuleName) ++ routeLevelTypesModuleName
 
@@ -323,15 +327,15 @@ generateModulesFromTypeState tState genPath = do
   pure $ Set.fromList importsList
 
  where
-  parseSingleModuleTypes :: (Provenance, ([TypeDefinition], Imports) ) -> (Module SrcSpanInfo, (String, String), (String, String) )
-  parseSingleModuleTypes (provenance, (typeDefnsList, importsHM) ) = 
+  parseSingleModuleTypes :: (SG.Module, ([TypeDefinition], Imports) ) -> (LHE.Module SrcSpanInfo, (String, String), (String, String) )
+  parseSingleModuleTypes (sgModule, (typeDefnsList, importsHM) ) = 
     let (typesModuleDir, typesModuleName) = 
-          case provenance of
-            Global _ -> (genPath ++ globalTypesModulePath, hsModuleToFileName globalDefnsModuleName)
-            RouteLocal routeInfo _ ->  constructLocalTypeModulePath routeInfo Nothing genPath
-            Local routeInfo methodName _ ->  constructLocalTypeModulePath routeInfo (Just methodName) genPath
+          case sgModule of
+            Global -> (genPath ++ globalTypesModulePath, hsModuleToFileName globalDefnsModuleName)
+            RouteLocal routeInfo ->  constructLocalTypeModulePath routeInfo Nothing genPath
+            Local routeInfo stdMethodName ->  constructLocalTypeModulePath routeInfo (Just stdMethodName) genPath
 
-        (modName, _) = getModuleQualNameFromProvenance provenance
+        (modName, _) = getModuleQualNameFromProvenance sgModule
         modQualName = 
           case HMS.lookup modName importsHM of
             Just qualName -> qualName
@@ -345,13 +349,13 @@ generateModulesFromTypeState tState genPath = do
             (fmap moduleImport 
               ( (DL.zip importsForTypesModule (cycle [(False, Nothing)]) ) 
                 ++ (qualTyModuleImports (HMS.toList importsHM) ) )) 
-            (DL.foldl' (provAndTypesToHSEModule provenance importsHM) [] typeDefnsList)
+            (DL.foldl' (modAndTypesToHSEModule sgModule importsHM) [] typeDefnsList)
     in (hseModule, (modName, modQualName), (typesModuleDir, typesModuleName))
     
     
-  provAndTypesToHSEModule :: Provenance -> Imports -> [Decl SrcSpanInfo] -> TypeDefinition -> [Decl SrcSpanInfo]
-  provAndTypesToHSEModule prov importsHM declAcc tyDefn = 
-    let newDataDecl =  constructDeclFromCustomType prov tyDefn importsHM
+  modAndTypesToHSEModule :: SG.Module -> Imports -> [Decl SrcSpanInfo] -> TypeDefinition -> [Decl SrcSpanInfo]
+  modAndTypesToHSEModule sgModule importsHM declAcc tyDefn = 
+    let newDataDecl =  constructDeclFromCustomType sgModule tyDefn importsHM
     in newDataDecl:declAcc
 
 
@@ -371,8 +375,8 @@ generateModulesFromTypeState tState genPath = do
     let routePath = parseRouteIntoFolderName routeInfo
     in 
       case mMethodName of
-        Just methodName -> 
-          ( genDirPath ++ (localRouteMethodTypesPath routePath methodName), hsModuleToFileName localRouteMethodTypesModuleName)
+        Just stdMethodName -> 
+          ( genDirPath ++ (localRouteMethodTypesPath routePath stdMethodName), hsModuleToFileName localRouteMethodTypesModuleName)
         Nothing -> 
           ( genDirPath ++ (routeLevelTypesPath routePath), hsModuleToFileName routeLevelTypesModuleName)
 
@@ -420,27 +424,27 @@ getRefImports ref =
         Tuple innerRefList -> DL.concat $ fmap getRefImports innerRefList
         MultiSet innerRef -> ("Webapi.Param","P"):getRefImports innerRef
         DelimitedCollection _ innerRef  -> ("CommonTypes", "P"):(getRefImports innerRef) 
-    (Ref prov _ _ ) -> [getModuleQualNameFromProvenance prov]
+    (Ref sgMod _ _ ) -> [getModuleQualNameFromProvenance $ getModuleFromProvenance sgMod]
 
 
 
-customTypeForProdTy :: CustomType
-customTypeForProdTy =
-  CustomType "Foo" [DataConstructor "Foo" [(Just "rec1", Inline Text), (Just "rec2",Inline Bool)] ]
+-- customTypeForProdTy :: CustomType
+-- customTypeForProdTy =
+--   CustomType "Foo" [DataConstructor "Foo" [(Just "rec1", Inline Text), (Just "rec2",Inline Bool)] ]
 
-customTypeForEnum :: CustomType
-customTypeForEnum =
-    CustomType "SomeFooEnum" [DataConstructor "Available" [] , DataConstructor "Pending" [], DataConstructor "Cancelled" []]
+-- customTypeForEnum :: CustomType
+-- customTypeForEnum =
+--     CustomType "SomeFooEnum" [DataConstructor "Available" [] , DataConstructor "Pending" [], DataConstructor "Cancelled" []]
 
-customTypeForComplexSumTy :: CustomType
-customTypeForComplexSumTy = 
-  let routeDefn = Route {getRoute = [Static "getStatus", Dynamic "withCons"]}
-      dCons1 = DataConstructor "AvailableCons" [(Nothing, Ref (Local  routeDefn GET ["Available"]) "defName1" "AvlTyName" )]
-      dCons2 = DataConstructor "PendingCons" [(Nothing, Ref (Local  routeDefn GET ["Pending"]) "defName2" "AvlTyName" )]
-  in CustomType "ComplexSumTy" [dCons1, dCons2]
+-- customTypeForComplexSumTy :: CustomType
+-- customTypeForComplexSumTy = 
+--   let routeDefn = Route {getRoute = [Static "getStatus", Dynamic "withCons"]}
+--       dCons1 = DataConstructor "AvailableCons" [(Nothing, Ref (Local  routeDefn GET ["Available"]) "defName1" "AvlTyName" )]
+--       dCons2 = DataConstructor "PendingCons" [(Nothing, Ref (Local  routeDefn GET ["Pending"]) "defName2" "AvlTyName" )]
+--   in CustomType "ComplexSumTy" [dCons1, dCons2]
 
-constructDeclFromCustomType :: Provenance -> TypeDefinition -> Imports -> Decl SrcSpanInfo
-constructDeclFromCustomType prov typeDefn importsHM = 
+constructDeclFromCustomType :: SG.Module -> TypeDefinition -> Imports -> Decl SrcSpanInfo
+constructDeclFromCustomType sgModule typeDefn importsHM = 
   let customTy = customHaskType typeDefn
       derivingList = fmap (T.unpack) $ derivingConstraints typeDefn 
   in case customTy of
@@ -448,15 +452,15 @@ constructDeclFromCustomType prov typeDefn importsHM =
         DataDecl noSrcSpan  
           (dataOrNewType False)
           Nothing 
-          (declHead $ setValidConstructorId (show customTy) $ T.unpack tyConstructor)
-          (qualConDecls prov (Left dataConsList) )
+          (declHead $ setValidConstructorId $ T.unpack tyConstructor)
+          (qualConDecls sgModule (Left dataConsList) )
           (derivingDecl derivingList)
       CustomNewType tyConstructor dConsName mRec ref  ->
         DataDecl noSrcSpan  
           (dataOrNewType True)
           Nothing 
-          (declHead $ setValidConstructorId (show customTy) $ T.unpack tyConstructor)
-          (qualConDecls prov (Right (dConsName, mRec, ref) ))
+          (declHead $ setValidConstructorId $ T.unpack tyConstructor)
+          (qualConDecls sgModule (Right (dConsName, mRec, ref) ))
           (derivingDecl derivingList)
  where 
   dataOrNewType :: Bool -> DataOrNew SrcSpanInfo
@@ -468,7 +472,7 @@ constructDeclFromCustomType prov typeDefn importsHM =
   declHead :: String -> DeclHead SrcSpanInfo
   declHead declHeadName = DHead noSrcSpan (nameDecl declHeadName) 
 
-  qualConDecls :: Provenance -> Either [DataConstructor] (T.Text, Maybe RecordName, Ref) -> [QualConDecl SrcSpanInfo]
+  qualConDecls :: SG.Module -> Either [DataConstructor] (T.Text, Maybe RecordName, Ref) -> [QualConDecl SrcSpanInfo]
   qualConDecls currentProv dataCons = 
     case dataCons of
       Left dataConsList ->  
@@ -517,19 +521,19 @@ constructDeclFromCustomType prov typeDefn importsHM =
 --       (ConDecl noSrcSpan 
 --         (nameDecl construcorVal) [] ) )
 
-showRefTyWithQual :: Imports -> Maybe Provenance -> Ref -> String
-showRefTyWithQual importsHM mCurrentProv (Inline prim) = 
-  let (qual, ty) = showPrimitiveTy (Just importsHM) mCurrentProv prim
+showRefTyWithQual :: Imports -> Maybe SG.Module -> Ref -> String
+showRefTyWithQual importsHM mModule (Inline prim) = 
+  let (qual, ty) = showPrimitiveTy (Just importsHM) mModule prim
   in qual ++ ty
-showRefTyWithQual importsHM mCurrentProv (Ref provenance _ tyCon) = printRefWithQual importsHM provenance mCurrentProv tyCon
+showRefTyWithQual importsHM mModule (Ref provenance _ tyCon) = printRefWithQual importsHM (getModuleFromProvenance provenance) mModule tyCon
 
 
-showRefTy :: Maybe Provenance -> Ref -> String
-showRefTy mCurrentProv (Inline prim) = snd $ showPrimitiveTy Nothing mCurrentProv prim
+showRefTy :: Maybe SG.Module -> Ref -> String
+showRefTy mModule (Inline prim) = snd $ showPrimitiveTy Nothing mModule prim
 showRefTy _ (Ref _ _ tyCon) = printRef tyCon
 
-showPrimitiveTy :: Maybe Imports -> Maybe Provenance -> Primitive -> (String, String)
-showPrimitiveTy mImportsHM mCurrentProv prim =
+showPrimitiveTy :: Maybe Imports -> Maybe SG.Module -> Primitive -> (String, String)
+showPrimitiveTy mImportsHM mModule prim =
   case prim of
     Date -> ("P.", "Day")
     DateTime -> ("P.", "UTCTime")
@@ -547,11 +551,11 @@ showPrimitiveTy mImportsHM mCurrentProv prim =
     File -> ("P.", "File")
     Null -> ("","()")
     -- TODO: What to do about qual of inner types? i.e. P. qual
-    Default innerRef -> ("P.","Default " ++ (maybe (showRefTy mCurrentProv innerRef) (\impHM -> showRefTyWithQual impHM mCurrentProv innerRef) mImportsHM) )
-    Maybe innerRef -> ("P." ,"Maybe " ++ (maybe (showRefTy mCurrentProv innerRef) (\impHM -> showRefTyWithQual impHM mCurrentProv innerRef) mImportsHM) )
-    Array innerRef -> ("","[" ++ (maybe (showRefTy mCurrentProv innerRef) (\impHM -> showRefTyWithQual impHM mCurrentProv innerRef) mImportsHM) ++ "]")
-    Tuple innerRefList -> ("","(" ++ (DL.intercalate "," (fmap (\iRef -> maybe (showRefTy mCurrentProv iRef) (\impHM -> showRefTyWithQual impHM mCurrentProv iRef) mImportsHM) innerRefList) ) ++ ")")
-    MultiSet innerRef -> ("P.","MultiSet " ++ (maybe (showRefTy mCurrentProv innerRef) (\impHM -> showRefTyWithQual impHM mCurrentProv innerRef) mImportsHM) )
+    Default innerRef -> ("P.","Default " ++ (maybe (showRefTy mModule innerRef) (\impHM -> showRefTyWithQual impHM mModule innerRef) mImportsHM) )
+    Maybe innerRef -> ("P." ,"Maybe " ++ (maybe (showRefTy mModule innerRef) (\impHM -> showRefTyWithQual impHM mModule innerRef) mImportsHM) )
+    Array innerRef -> ("","[" ++ (maybe (showRefTy mModule innerRef) (\impHM -> showRefTyWithQual impHM mModule innerRef) mImportsHM) ++ "]")
+    Tuple innerRefList -> ("","(" ++ (DL.intercalate "," (fmap (\iRef -> maybe (showRefTy mModule iRef) (\impHM -> showRefTyWithQual impHM mModule iRef) mImportsHM) innerRefList) ) ++ ")")
+    MultiSet innerRef -> ("P.","MultiSet " ++ (maybe (showRefTy mModule innerRef) (\impHM -> showRefTyWithQual impHM mModule innerRef) mImportsHM) )
     DelimitedCollection delimiter innerRef  -> 
       let delimChar = 
             case delimiter of
@@ -559,23 +563,23 @@ showPrimitiveTy mImportsHM mCurrentProv prim =
               Space -> "\" \"" 
               Pipe -> "\"|\""
               Comma -> "\",\" "
-      in ("P.","DelimitedCollection" ++ delimChar ++ (showRefTy mCurrentProv innerRef))
+      in ("P.","DelimitedCollection" ++ delimChar ++ (showRefTy mModule innerRef))
   
 
 printRef :: T.Text -> String
 printRef typeTxt = setValidConstructorId $ T.unpack typeTxt 
     
-printRefWithQual :: Imports -> Provenance -> Maybe Provenance -> T.Text -> String
-printRefWithQual importsHM provenance mCurrentInpProv typeTxt = 
-  case mCurrentInpProv of
-    Just prov ->
-        case isSameModule provenance prov of 
+printRefWithQual :: Imports -> SG.Module -> Maybe SG.Module -> T.Text -> String
+printRefWithQual importsHM sgModule mCurrentSgModule typeTxt = 
+  case mCurrentSgModule of
+    Just sgMod ->
+        case isSameModule sgModule sgMod of 
           True -> setValidConstructorId $ T.unpack typeTxt
           False ->
-            let (modName, _) = getModuleQualNameFromProvenance provenance 
+            let (modName, _) = getModuleQualNameFromProvenance sgModule 
             in (getQualFromImportsHM modName importsHM) ++ "." ++ (printRef typeTxt)
     Nothing -> 
-      let (modName, _) = getModuleQualNameFromProvenance provenance 
+      let (modName, _) = getModuleQualNameFromProvenance sgModule 
       in (getQualFromImportsHM modName importsHM) ++ "." ++ (printRef typeTxt)
       
  where
@@ -675,8 +679,8 @@ routeDeclaration importsHM (routeNameStr, routePathComponents) =
 
  where
   recursiveTypeForRoute :: [RoutePiece Ref] -> Type SrcSpanInfo
-  recursiveTypeForRoute routeComponents = 
-    case routeComponents of
+  recursiveTypeForRoute routeRefComponents = 
+    case routeRefComponents of
       [] -> error "Did not expect an empty list here! "
       x:[] -> processPathComponent x
       prevElem:lastElem:[] -> 
