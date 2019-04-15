@@ -22,11 +22,11 @@ import qualified Data.HashMap.Strict.InsOrd as OHM
 import qualified Data.List as L
 import Data.Hashable
 import qualified Data.Aeson as A
--- import qualified Text.Megaparsec as M
--- import qualified Text.Megaparsec.Char as M
+import qualified Text.Megaparsec as M
+import qualified Text.Megaparsec.Char as M
 import qualified Data.HashSet as HS
 import qualified Data.Char as C
-import qualified Dhall as D
+-- import qualified Dhall as D
 
 data Ref  = Inline Primitive
           | Ref    Provenance DefinitionName TypeConstructor
@@ -746,28 +746,32 @@ singleton :: a -> [a]
 singleton a = [a]
 
 sumType :: Maybe Template -> T.Text -> [(T.Text, [Ref])] -> TypeDefinition
-sumType mtpl rawName ctors =
+sumType _ rawName ctors =
   let dcons    = map (\(ctorN, args) -> DataConstructor (mkDataConstructorName ctorN) (ctorArgs args)) ctors
       cty      = CustomType (mkTypeConstructorName rawName) dcons
       ctorArgs = map (\ref -> (Nothing, ref))
   in  (defaultTypeDefinition cty) { template = maybe [] singleton mtpl }
-      
+
+  where mtpl = Nothing
+  
 enumType :: Maybe Template -> T.Text -> [T.Text] -> TypeDefinition
-enumType mtpl rawName rawCtors =
+enumType _ rawName rawCtors =
   let dcons = map (\ctor -> DataConstructor (mkDataConstructorName ctor) []) rawCtors
       cty   = CustomType (mkTypeConstructorName rawName) dcons
-      
   in  (defaultTypeDefinition cty) { template = maybe [] singleton mtpl }
+
+  where mtpl = Nothing
 
 newType :: Maybe Template -> T.Text -> Maybe T.Text -> Ref -> TypeDefinition
-newType mtpl rawName rawFld ref =
+newType _ rawName rawFld ref =
   let dconName = mkDataConstructorName rawName
       cty = CustomNewType (mkTypeConstructorName rawName) dconName (mkRecordName <$> rawFld) ref
-      
   in  (defaultTypeDefinition cty) { template = maybe [] singleton mtpl }
 
+  where mtpl = Nothing
+  
 productType :: Maybe Template -> T.Text -> [(T.Text, Ref)] -> TypeDefinition
-productType mtpl rawName rawFlds =
+productType _ rawName rawFlds =
   let dcon = DataConstructor
              (mkDataConstructorName rawName)
              fields
@@ -776,6 +780,8 @@ productType mtpl rawName rawFlds =
       
   in  (defaultTypeDefinition cty) { template = maybe [] singleton mtpl }
 
+  where mtpl = Nothing
+  
 mkRecordName :: T.Text -> T.Text
 mkRecordName = T.toLower
 
@@ -972,7 +978,7 @@ insertWithTypeMeta tyMeta = go 0
           case clss of
             [] -> insertDef tyDef
             _  -> go (ct + 1) (resolveClashes ct clss tyDef)
-                                                  
+
         insertDef val = do
           let key = tyMeta
           modify' (\sws -> sws { typeState   = HM.insertWith (flip const)
@@ -1080,12 +1086,11 @@ getProvenanceModule (ResponseType _ m r) = Local m r
 getProvenanceModule (Definition prov _)  = go prov
   where go (Provenance m _) = m
 
--- type RouteParser = M.Parsec () T.Text
+type RouteParser = M.Parsec () T.Text
 
 routeParser :: UnparsedPiece -> Maybe [PathParamPiece T.Text]
-routeParser = undefined -- either (const Nothing) Just . M.parse go "ROUTE"
+routeParser = either (const Nothing) Just . M.parse go "ROUTE"
 
-{-
   where go :: RouteParser [PathParamPiece T.Text]
         go = do
           x <- (Left <$> M.eof) M.<|> (Right <$> M.anySingle)
@@ -1098,13 +1103,13 @@ routeParser = undefined -- either (const Nothing) Just . M.parse go "ROUTE"
               piece <- M.some (M.anySingleBut '{')
               ((:) (StaticParamPiece (T.pack (v : piece)))) <$> go
             Left _ -> pure []
+
+{-
 {
 field = \def field v -> "${v} :. ${def}"
 ctor  = \def ctor -> "${ctor}"
 }
-
 -}
-
 
 data InstanceTemplate = InstanceTemplate
   { templateType :: Template
@@ -1126,9 +1131,11 @@ data Template = InputTemplate  T.Text
               | OutputTemplate T.Text
               deriving (Show, Generic, Eq)
 
+{-
 instance D.Interpret InstanceTemplate
 instance D.Interpret MethodTemplate
 instance D.Interpret Template
+-}
 
 {-
 test :: IO ()
