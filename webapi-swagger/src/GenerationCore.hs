@@ -570,11 +570,11 @@ printRefWithQual moduleStateHM sgModule mCurrentSgModule typeTxt =
         case isSameModule sgModule sgMod of 
           True -> setValidConstructorId $ T.unpack typeTxt
           False ->
-            let (fullModuleName, _) = getModQualInfoModuleState moduleStateHM sgModule
-            in fullModuleName ++ "." ++ (printRef typeTxt)
+            let (_, modQualName) = getModQualInfoModuleState moduleStateHM sgModule
+            in modQualName ++ "." ++ (printRef typeTxt)
     Nothing -> 
-      let (fullModuleName, _) = getModQualInfoModuleState moduleStateHM sgModule
-      in  fullModuleName ++ "." ++ (printRef typeTxt)
+      let (_, modQualName) = getModQualInfoModuleState moduleStateHM sgModule
+      in  modQualName ++ "." ++ (printRef typeTxt)
       
 
 
