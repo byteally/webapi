@@ -52,6 +52,7 @@ library
     , hashable
     , mtl
     , megaparsec                >= 7.0   && < 7.1
+    , http-media
     -- , dhall                     >= 1.20  && < 2
     
   default-language: Haskell2010

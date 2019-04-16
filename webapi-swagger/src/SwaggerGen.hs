@@ -27,6 +27,8 @@ import qualified Text.Megaparsec as M
 import qualified Text.Megaparsec.Char as M
 import qualified Data.HashSet as HS
 import qualified Data.Char as C
+import Network.HTTP.Media.MediaType (MediaType)
+import Data.Maybe 
 -- import qualified Dhall as D
 
 data Ref  = Inline Primitive
@@ -48,7 +50,8 @@ data Method =
     | PATCH
     deriving (Show, Eq, Generic, Ord)
 
-type Config = ()
+data Config = Config { instanceTemplates :: [InstanceTemplate] }
+            deriving (Generic)
 
 type UnparsedPiece = T.Text
 
@@ -165,14 +168,14 @@ data Delimiter = SlashT | Space | Pipe | Comma
 
 data TypeDefinition = TypeDefinition { customHaskType      :: CustomType
                                      , derivingConstraints :: [ConstraintName]
-                                     , template            :: [Template]
+                                     , instances           :: [Instance]
                                      } deriving (Show, Eq, Generic)
 
 defaultTypeDefinition :: CustomType -> TypeDefinition
 defaultTypeDefinition cty =
   TypeDefinition { customHaskType      = cty
                  , derivingConstraints = []
-                 , template            = []
+                 , instances           = []
                  }
 
 type ConstraintName = T.Text
@@ -197,17 +200,17 @@ type TypeState      = HM.HashMap TypeMeta   TypeDefinition
 
 type RouteState     = HM.HashMap (Route UnparsedPiece) (Route Ref)
 
-data ParamType = QueryParam
-               | FormParam
-               | PathParam
-               | FileParam
-               | HeaderParam
-               | BodyParam
-               deriving (Show, Eq, Generic)
+data ParamType a = QueryParam
+                 | FormParam
+                 | PathParam
+                 | FileParam
+                 | HeaderParam
+                 | BodyParam [a]
+                 deriving (Show, Eq, Generic)
 
-data ResponseType = ApiOutput
-                  | ApiError
-                  | HeaderOutput
+data ResponseType a = ApiOutput [a]
+                    | ApiError [a]
+                    | HeaderOutput
                   deriving (Show, Eq, Generic)
 
 data TypeMeta = Definition Provenance DefinitionName
@@ -218,8 +221,6 @@ instance Hashable TypeMeta
 instance Hashable (Route UnparsedPiece)
 instance Hashable Method
 instance Hashable Provenance
-instance Hashable ResponseType
-instance Hashable ParamType
 instance Hashable Module
 
 type DefinitionName = T.Text
@@ -407,20 +408,25 @@ generateRouteMethodState globalParams globalResps routeRefs route meth mOp =
       fpTy   <- paramDefinitions FormParam route meth fp
       fipTy  <- paramDefinitions FileParam route meth fip
       hpTy   <- paramDefinitions HeaderParam route meth hp
-      bodyTy <- paramDefinitions BodyParam route meth bp
+      bodyTy <- paramDefinitions (BodyParam []) route meth bp
       let (sucs, fails, _headers) = groupOutputDefinitions globalResps opResponses
-      succTy <- outputDefinitions ApiOutput route meth sucs
-      errTy <- outputDefinitions ApiError route meth fails
+      succTy <- outputDefinitions (ApiOutput []) route meth sucs
+      errTy <- outputDefinitions (ApiError []) route meth fails
       insertContract route meth qpTy fpTy fipTy hpTy bodyTy succTy errTy
       pure (meth, pp)
 
 insertRoute :: Route UnparsedPiece ->
                Route Ref           ->
                SwaggerGenerator ()
-insertRoute k v =
+insertRoute k v = do
   modify' (\sw -> sw { routeState = HM.insert k v (routeState sw) })
+  mapM_ (updateTypeDefinitionRec (addInputInstance PathParam)) routeRefs
 
-
+  where routeRefs = case v of
+          Route ps -> catMaybes $ map (\x -> case x of
+                                         Static{} -> Nothing
+                                         Dynamic r -> Just r
+                         ) ps
 insertContract :: Route UnparsedPiece ->
                    Method ->
                   Maybe Ref ->
@@ -475,8 +481,7 @@ parseRouteType rt params = do
         go1 pps  = do
           ppTys <- mapM singlePP pps
           let typeName = T.concat pps
-          let ppProdTy = productType (Just (InputTemplate "PathParam"))
-                                     typeName
+          let ppProdTy = productType typeName
                                      (zip pps ppTys)
           cty <- insertDefinition (routeLocalProv rt) typeName ppProdTy
           pure cty
@@ -487,16 +492,15 @@ overrideParams routeRefs methRefs =
 
 globalSwaggerDefinitions :: Definitions Schema -> SwaggerGenerator ()
 globalSwaggerDefinitions defs = do
-  _ <- schemaDefinitions (lookupGlobalDefinitionOrGenerate defs) Nothing globalProv defs
+  _ <- schemaDefinitions (lookupGlobalDefinitionOrGenerate defs) globalProv defs
   pure ()
                                                   
-outputDefinitions :: ResponseType -> Route UnparsedPiece -> Method ->
+outputDefinitions :: ResponseType MediaType -> Route UnparsedPiece -> Method ->
                       [(HttpStatusCode, Maybe (SW.Referenced Schema))] -> SwaggerGenerator (Maybe Ref)
 outputDefinitions _ _ _ []    = pure Nothing
 outputDefinitions rType r m rs = Just <$> do
   tyRefs <- mapM (uncurry outputDefinition) rs
-  let tyDef = sumType undefined
-                      (responseTypeName rType)
+  let tyDef = sumType (responseTypeName rType)
                       (map (\(code, refT) ->
                               (responseDataConName rType code, [refT])) tyRefs)
   insertOutputType rType r m tyDef
@@ -512,7 +516,7 @@ outputDefinitions rType r m rs = Just <$> do
             --       To handle this, verify that all keys under this route/meth
             --       do not have this name
             let n = responseName code
-            refT <- schemaDefinition lookupGlobalDefinition undefined (localProv r m) n sc
+            refT <- schemaDefinition lookupGlobalDefinition (localProv r m) n sc
             pure (code, refT)
         responseName code = "Response" <> T.pack (show code)
 
@@ -619,13 +623,12 @@ isFileOrFormParam par =
       _             -> Nothing
     _ -> Nothing
 
-paramDefinitions :: ParamType -> Route UnparsedPiece -> Method -> [Param] -> SwaggerGenerator (Maybe Ref)
+paramDefinitions :: ParamType MediaType -> Route UnparsedPiece -> Method -> [Param] -> SwaggerGenerator (Maybe Ref)
 paramDefinitions pType rt method params
   | params == [] = pure Nothing
   | otherwise   = do      
       ptys <- mapM (paramDefinition rt method) params
-      let tyDef = productType undefined
-                              (paramTypeName pType)
+      let tyDef = productType (paramTypeName pType)
                               (map (\pty -> ( paramName pty
                                            , paramType pty
                                            )
@@ -633,15 +636,16 @@ paramDefinitions pType rt method params
                               )
       Just <$> insertParamType pType rt method tyDef
 
-  -- where -- updateInstance = const (pure ())
+paramTypeName :: (Show a) => ParamType a -> T.Text
+paramTypeName (BodyParam _) = "BodyParam"
+paramTypeName pt            = T.pack . show $ pt
 
-paramTypeName :: ParamType -> T.Text
-paramTypeName = T.pack . show
+responseTypeName :: ResponseType a -> T.Text
+responseTypeName (ApiOutput _)     = "ApiOutput"
+responseTypeName (ApiError _)      = "ApiError"
+responseTypeName HeaderOutput      = "HeaderOutput"
 
-responseTypeName :: ResponseType -> T.Text
-responseTypeName = T.pack . show
-
-responseDataConName :: ResponseType -> Int -> T.Text
+responseDataConName :: ResponseType a -> Int -> T.Text
 responseDataConName rt s =
   responseTypeName rt <>
   T.pack (show s)
@@ -663,7 +667,7 @@ pathParamDefinition r parN pars = do
                         tyRef <- paramType <$> paramDefinition' (routeLocalProv r) (updParamName p m)
                         pure (m, tyRef)
                     ) xs
-      let tyDef = sumType undefined parN
+      let tyDef = sumType parN
                   (map (\(meth, refT) ->
                            (pathParamConName meth, [refT])) tyRefs)
       
@@ -681,7 +685,7 @@ paramDefinition' prov par = do
         Just t  -> t
   paramTypeRef <- case _paramSchema par of
                    ParamBody (SW.Inline sch) -> do
-                     schemaDefinition lookupGlobalDefinition undefined prov parName sch
+                     schemaDefinition lookupGlobalDefinition prov parName sch
                    ParamBody (SW.Ref (Reference n)) ->
                      lookupGlobalDefinition n
                    ParamOther pOth           -> 
@@ -733,7 +737,7 @@ paramSchemaDefinition prov def parSch = hasDef <$> go
            Nothing -> inline Null
            
         enumDefinition enumVals = do
-          let mtyDef = enumType undefined def <$> menums
+          let mtyDef = enumType def <$> menums
               menums = traverse (\v -> case v of
                                    A.String t -> Just t
                                    _          -> Nothing) enumVals
@@ -748,42 +752,34 @@ paramSchemaDefinition prov def parSch = hasDef <$> go
 singleton :: a -> [a]
 singleton a = [a]
 
-sumType :: Maybe Template -> T.Text -> [(T.Text, [Ref])] -> TypeDefinition
-sumType _ rawName ctors =
+sumType :: T.Text -> [(T.Text, [Ref])] -> TypeDefinition
+sumType rawName ctors =
   let dcons    = map (\(ctorN, args) -> DataConstructor (mkDataConstructorName ctorN) (ctorArgs args)) ctors
       cty      = CustomType (mkTypeConstructorName rawName) dcons
       ctorArgs = map (\ref -> (Nothing, ref))
-  in  (defaultTypeDefinition cty) { template = maybe [] singleton mtpl }
-
-  where mtpl = Nothing
+  in  defaultTypeDefinition cty
   
-enumType :: Maybe Template -> T.Text -> [T.Text] -> TypeDefinition
-enumType _ rawName rawCtors =
+enumType :: T.Text -> [T.Text] -> TypeDefinition
+enumType rawName rawCtors =
   let dcons = map (\ctor -> DataConstructor (mkDataConstructorName ctor) []) rawCtors
       cty   = CustomType (mkTypeConstructorName rawName) dcons
-  in  (defaultTypeDefinition cty) { template = maybe [] singleton mtpl }
+  in  defaultTypeDefinition cty
 
-  where mtpl = Nothing
-
-newType :: Maybe Template -> T.Text -> Maybe T.Text -> Ref -> TypeDefinition
-newType _ rawName rawFld ref =
+newType :: T.Text -> Maybe T.Text -> Ref -> TypeDefinition
+newType rawName rawFld ref =
   let dconName = mkDataConstructorName rawName
       cty = CustomNewType (mkTypeConstructorName rawName) dconName (mkRecordName <$> rawFld) ref
-  in  (defaultTypeDefinition cty) { template = maybe [] singleton mtpl }
-
-  where mtpl = Nothing
+  in  defaultTypeDefinition cty
   
-productType :: Maybe Template -> T.Text -> [(T.Text, Ref)] -> TypeDefinition
-productType _ rawName rawFlds =
+productType :: T.Text -> [(T.Text, Ref)] -> TypeDefinition
+productType rawName rawFlds =
   let dcon = DataConstructor
              (mkDataConstructorName rawName)
              fields
       fields = map (\(fld, ref) -> (Just (mkRecordName fld), ref)) rawFlds
       cty = CustomType (mkTypeConstructorName rawName) [dcon]
       
-  in  (defaultTypeDefinition cty) { template = maybe [] singleton mtpl }
-
-  where mtpl = Nothing
+  in  defaultTypeDefinition cty
   
 mkRecordName :: T.Text -> T.Text
 mkRecordName = T.toLower
@@ -794,11 +790,11 @@ mkDataConstructorName = T.toTitle
 mkTypeConstructorName :: T.Text -> T.Text
 mkTypeConstructorName = T.toTitle
 
-schemaDefinitions :: (DefinitionName -> SwaggerGenerator Ref) -> Maybe Template -> Provenance -> Definitions Schema -> SwaggerGenerator [Ref]
-schemaDefinitions defLookup mtpl prov defs =
+schemaDefinitions :: (DefinitionName -> SwaggerGenerator Ref) -> Provenance -> Definitions Schema -> SwaggerGenerator [Ref]
+schemaDefinitions defLookup prov defs =
   OHM.foldlWithKey' (\s k sc -> do
                         xs <- s
-                        x <- schemaDefinition defLookup mtpl prov k sc
+                        x <- schemaDefinition defLookup prov k sc
                         pure (x : xs)
                     ) (pure []) defs
 
@@ -811,11 +807,11 @@ newtypeIfRoot prov n ref
         isGlobalRoot _                      = False
 
         go = do
-          let nt = newType undefined n Nothing ref
+          let nt = newType n Nothing ref
           insertDefinition prov n nt
           
-schemaDefinition :: (DefinitionName -> SwaggerGenerator Ref) -> Maybe Template -> Provenance -> DefinitionName -> Schema -> SwaggerGenerator Ref
-schemaDefinition defLookup mtpl prov def sch = do
+schemaDefinition :: (DefinitionName -> SwaggerGenerator Ref) -> Provenance -> DefinitionName -> Schema -> SwaggerGenerator Ref
+schemaDefinition defLookup prov def sch = do
   liftIO $ putStrLn $ "Schema definition: " ++ show def
   let paramSchema = _schemaParamSchema sch
       additionalProps props = case OHM.null props of
@@ -851,7 +847,7 @@ schemaDefinition defLookup mtpl prov def sch = do
                                           let rx = reqType k x
                                           pure ((k, rx) : xs)
                                       ) (pure []) props
-           let tyDef = productType mtpl def fields
+           let tyDef = productType def fields
            insertDefinition prov def tyDef
            
          arrayDefinition mitems = case mitems of
@@ -881,10 +877,10 @@ schemaDefinition defLookup mtpl prov def sch = do
          objectArrayDefinition rsc = do
            case rsc of
              SW.Inline sc -> do
-               typeKeys <- getTypeStateKeys
-               let arrCtsDef = newDefinitionName prov (def <> "ArrayContents") typeKeys
-                   extProv   = extendProvenance def prov
-               rty <- schemaDefinition defLookup undefined extProv arrCtsDef sc
+               arrCtsDef <- mkDefinitionName prov
+                           (def <> "ArrayContents")
+               let extProv   = extendProvenance def prov
+               rty <- schemaDefinition defLookup extProv arrCtsDef sc
                pure (Inline (Array rty))
              SW.Ref (Reference n) -> do
                rty <- defLookup n
@@ -893,11 +889,10 @@ schemaDefinition defLookup mtpl prov def sch = do
          tupleDefinition rscs = do
            rtys <- mapM (\(i, rsc) -> case rsc of
                            SW.Inline sc -> do
-                             typeKeys <- getTypeStateKeys
-                             let tupCtsDef = newDefinitionName prov (def <> "TupleContents" <> T.pack (show i)) typeKeys 
-                                 extProv   = extendProvenance def prov
+                             tupCtsDef <- mkDefinitionName prov
+                                          (def <> "TupleContents" <> T.pack (show i))
+                             let extProv = extendProvenance def prov
                              schemaDefinition defLookup
-                                          undefined
                                           extProv
                                           tupCtsDef sc
                            SW.Ref (Reference n) -> defLookup n
@@ -909,7 +904,7 @@ schemaDefinition defLookup mtpl prov def sch = do
            SW.Ref (Reference n) -> do
              defLookup n
            SW.Inline s -> do
-             schemaDefinition defLookup undefined (extendProvenance def prov) k s
+             schemaDefinition defLookup (extendProvenance def prov) k s
 
 getTypeStateKeys :: SwaggerGenerator (HS.HashSet TypeMeta)
 getTypeStateKeys = gets (HS.fromList . HM.keys . typeState)
@@ -928,7 +923,7 @@ lookupGlobalDefinitionOrGenerate schs defn = do
     Nothing  -> do
       case OHM.lookup defn schs of
         Just k -> do
-          schemaDefinition (lookupGlobalDefinitionOrGenerate schs) undefined globalProv defn k
+          schemaDefinition (lookupGlobalDefinitionOrGenerate schs) globalProv defn k
         Nothing -> error "Panic: key not found"
     Just cty -> pure (definitionRef globalProv defn (Object cty))
 
@@ -956,19 +951,23 @@ localProv r m = Provenance (Local r m) []
 routeLocalProv :: Route UnparsedPiece -> Provenance
 routeLocalProv r = Provenance (RouteLocal r) []
 
-insertOutputType :: ResponseType -> Route UnparsedPiece -> Method -> TypeDefinition -> SwaggerGenerator Ref
+insertOutputType :: ResponseType MediaType -> Route UnparsedPiece -> Method -> TypeDefinition -> SwaggerGenerator Ref
 insertOutputType rt rte meth tyDef = do
   let prov = localProv rte meth
   def <- mkDefinitionName prov (responseTypeName rt)
-  val <- insertWithTypeMeta (Definition prov def) tyDef  
-  pure (definitionRef prov def (Object (customHaskType val)))
-
-insertParamType :: ParamType -> Route UnparsedPiece -> Method -> TypeDefinition -> SwaggerGenerator Ref
+  val <- insertWithTypeMeta (Definition prov def) tyDef
+  let ref = definitionRef prov def (Object (customHaskType val))
+  updateTypeDefinitionRec (addResponseInstance rt) ref
+  pure ref
+  
+insertParamType :: ParamType MediaType -> Route UnparsedPiece -> Method -> TypeDefinition -> SwaggerGenerator Ref
 insertParamType pt rt meth tyDef = do
   let prov = localProv rt meth
   def <- mkDefinitionName prov (paramTypeName pt)
-  val <- insertWithTypeMeta (Definition prov def) tyDef  
-  pure (definitionRef prov def (Object (customHaskType val)))
+  val <- insertWithTypeMeta (Definition prov def) tyDef
+  let ref = definitionRef prov def (Object (customHaskType val))
+  updateTypeDefinitionRec (addInputInstance pt) ref  
+  pure ref
 
 insertDefinition :: Provenance -> DefinitionName -> TypeDefinition -> SwaggerGenerator Ref
 insertDefinition prov def tyDef = do
@@ -1124,7 +1123,7 @@ ctor  = \def ctor -> "${ctor}"
 -}
 
 data InstanceTemplate = InstanceTemplate
-  { templateType :: Template
+  { instanceType :: Instance
   , className    :: T.Text
   , methods      :: [MethodTemplate]
   } deriving (Generic)
@@ -1139,8 +1138,8 @@ data MethodTemplate = MethodTemplate
   , methodName      :: T.Text
   } deriving (Generic)
 
-data Template = InputTemplate  T.Text
-              | OutputTemplate T.Text
+data Instance = OutputInstance (ResponseType MediaType)
+              | ParamInstance  (ParamType MediaType)
               deriving (Show, Generic, Eq)
 
 {-
@@ -1196,9 +1195,49 @@ resolveTypeClashes = do
                                                              ) : kvs
                                                             )
 
+lookupTypeDefinition :: TypeMeta -> TypeState -> TypeDefinition
+lookupTypeDefinition r ts =
+  case HM.lookup r ts of
+    Nothing -> error $ "Panic: type definition not found: " ++ show r
+    Just v  -> v
+
+updateTypeDefinition :: (TypeDefinition -> TypeDefinition) -> TypeMeta -> TypeState -> TypeState
+updateTypeDefinition f r ts = HM.adjust f r ts
+
+innerTypeRefs :: CustomType -> [Ref]
+innerTypeRefs (CustomType _ dcons) = concatMap getRefTy dcons
+  where getRefTy (DataConstructor _ xs) = map snd xs
+innerTypeRefs (CustomNewType _ _ _ ref) = [ref]
+
+addInputInstance :: ParamType MediaType -> TypeDefinition -> TypeDefinition
+addInputInstance pt tyDef =
+  tyDef { instances = ParamInstance pt : instances tyDef }
+
+addResponseInstance :: ResponseType MediaType -> TypeDefinition -> TypeDefinition
+addResponseInstance pt tyDef =
+  tyDef { instances = OutputInstance pt : instances tyDef }
+
+updateTypeDefinitionRec :: (TypeDefinition -> TypeDefinition) -> Ref -> SwaggerGenerator ()
+updateTypeDefinitionRec tyFun ref = do
+  modify' (\x -> x { typeState = go tyFun ref (typeState x) })
+
+  where go f (Ref r) !ts = 
+          let rTyDef  = lookupTypeDefinition r ts
+              ityRefs = innerTypeRefs (customHaskType rTyDef)
+          in updateTypeDefinition f r (L.foldl' (\ !acc ir -> go f ir acc) ts ityRefs)
+        go f (Inline (Default r)) ts = go f r ts
+        go f (Inline (Maybe r)) ts   = go f r ts
+        go f (Inline (Array r)) ts   = go f r ts
+        go f (Inline (Tuple rs)) !ts  =
+          L.foldl' (\ !acc r -> go f r acc) ts rs
+        go f (Inline (MultiSet r)) ts = go f r ts
+        go f (Inline (DelimitedCollection _ r)) ts =
+          go f r ts
+        go _ _ ts = ts
+             
 
 
-                                              
+              
                                               
                                               
               
