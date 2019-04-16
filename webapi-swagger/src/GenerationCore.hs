@@ -43,14 +43,45 @@ type Imports = HMS.HashMap String String
 getModuleFromProvenance :: Provenance -> SG.Module
 getModuleFromProvenance (Provenance sgMod _ ) = sgMod
 
-getModQualInfoModuleState :: ModuleState -> SG.Module -> (String, String)
-getModQualInfoModuleState moduleStateHM sgModule =
+getModQualInfoModuleState :: ModuleState -> SG.Module -> Bool -> (String, String)
+getModQualInfoModuleState moduleStateHM sgModule forPathDir =
   case HMS.lookup sgModule moduleStateHM of
     Just (HaskModule fullModNameList modQual) -> 
-      (T.unpack $ T.intercalate "." fullModNameList, T.unpack modQual)
+      let separationChar = 
+            case forPathDir of
+              True -> "/"
+              False -> "."
+      in (T.unpack $ T.intercalate separationChar (trace ("Full Mod Name List : " ++ (show fullModNameList)) fullModNameList), T.unpack modQual) 
+      
     Nothing -> error $ "The impossible happened! Did not find mapping for Module in ModuleState!" 
                 ++ "Debug Info: \nModule: " ++ (show sgModule) ++ "\nModuleState: " ++ (show moduleStateHM)
 
+
+-- getModuleQualFromRef :: ModuleState -> TypeState -> Ref -> String
+-- getModuleQualFromRef moduleState typeState ref =
+--   case ref of
+--     Inline prim -> undefined
+--     Ref typeMeta -> 
+--       case HMS.lookup typeMeta typeState of
+--         Just typeDefn ->
+--           let customTy = customHaskType typeDefn
+
+--         Nothing -> error $ "The impossible happened! Could not find TypeMeta in TypeState HM!"
+--                     ++ "\nTypeMeta: " ++ (show typeMeta)
+--                     ++ "\nTypeState: " ++ (show typeState)
+
+
+
+getModuleFromTypeMeta :: TypeMeta -> SG.Module
+getModuleFromTypeMeta (Definition (Provenance sgMod _) _) = sgMod
+
+lookupTypeStateGetCustomHaskType :: TypeMeta -> TypeState -> CustomType 
+lookupTypeStateGetCustomHaskType typeMeta typeStateHM = 
+  case HMS.lookup typeMeta typeStateHM of
+    Just typeDefn -> customHaskType typeDefn
+    Nothing -> error $ "The impossible happened! Could not find TypeMeta in TypeState HM!"
+                        ++ "\nTypeMeta: " ++ (show typeMeta)
+                        ++ "\nTypeState: " ++ (show typeStateHM)
 
 ---------------------------------------------------------------------------------------------------------------------              
 
@@ -65,7 +96,7 @@ parseTypeStateIntoModuleTypes tyState moduleStateHM =
     let provenanceMod = getProvenanceModule typeMeta
         importList = importsForTypes (customHaskType typeDefn) 
         importsHM = constructImportsHMFromList importList
-        finalImportHM = HMS.delete (fst $ getModQualInfoModuleState moduleStateHM provenanceMod) importsHM
+        finalImportHM = HMS.delete (fst $ getModQualInfoModuleState moduleStateHM provenanceMod False) importsHM
         newModuleTypes = HMS.insertWith (\(newTypes, newImps) (oldTypes, oldImps) -> (newTypes ++ oldTypes, HMS.union newImps oldImps) ) 
                                 provenanceMod ([typeDefn], finalImportHM) accModTypes
     in newModuleTypes
@@ -92,30 +123,30 @@ runCodeGen swaggerJsonInputFilePath outputPath projectName = do
   case decodedVal of
     Left errMsg -> error $ errMsg -- "Panic: not a valid JSON or yaml"
     Right (swaggerData :: Swagger) -> do
-      finalStateVal <- runSwaggerGenerator () (generateSwaggerState swaggerData)
+      finalStateVal <- runSwaggerGenerator (Config []) (generateSwaggerState swaggerData)
       writeFile (projectSrcDir ++ "CommonTypes.hs") commonTypesModuleContent
       let tyState = typeState finalStateVal
       let routeStateHM = routeState finalStateVal
       let apiContractStateHM = apiContract finalStateVal
       let moduleStateHM = modules finalStateVal
       modulesWithQualNames <- generateModulesFromTypeState tyState projectSrcDir moduleStateHM
-      generateContractFromContractState "SwaggerContract" apiContractStateHM routeStateHM projectFolderGenPath moduleStateHM
+      generateContractFromContractState "SwaggerContract" apiContractStateHM routeStateHM projectFolderGenPath moduleStateHM tyState
       let moduleNamesOnly =  fst $ DL.unzip $ Set.toList modulesWithQualNames
       writeCabalAndProjectFiles projectFolderGenPath projectName False moduleNamesOnly
 
-generateContractFromContractState :: String -> ContractState -> RouteState -> FilePath -> ModuleState -> IO ()
-generateContractFromContractState contractName contractState routeStateHM genDirPath moduleStateHM = do
+generateContractFromContractState :: String -> ContractState -> RouteState -> FilePath -> ModuleState -> TypeState -> IO ()
+generateContractFromContractState contractName contractState routeStateHM genDirPath moduleStateHM typeStateHM = do
   let routeListUnGrouped = HMS.keys contractState
   let groupedRoutes = ( (DL.groupBy (\(route, _) (route2, _) -> route == route2 ) ) . DL.sort ) routeListUnGrouped 
   let unParsedRoutePaths = fmap selectFirstRouteFromList groupedRoutes
   let refRoutePaths = fmap lookupRouteInRouteState unParsedRoutePaths
   let routeNames = fmap (constructRouteName) refRoutePaths
 
-  let moduleQualNames = fmap (\(route, method) -> getModQualInfoModuleState moduleStateHM $ getModuleFromProvenance $ localProv route method ) routeListUnGrouped
+  let moduleQualNames = fmap (\(route, method) -> getModQualInfoModuleState moduleStateHM (getModuleFromProvenance $ localProv route method) False ) routeListUnGrouped
   let otherModuleNames = DL.concat $ fmap (getModuleImportsForRouteState . getRoute) $ HMS.elems routeStateHM 
   let importsHM = constructImportsHMFromList (moduleQualNames ++ otherModuleNames)
 
-  let routeDecls = fmap (routeDeclaration moduleStateHM) (DL.zip routeNames refRoutePaths)
+  let routeDecls = fmap (routeDeclaration moduleStateHM typeStateHM) (DL.zip routeNames refRoutePaths)
   -- let ppRouteDecls = "\n\n" ++ (DL.concat $ fmap prettyPrint routeDecls)
 
   let routesWithMethods:: [(String, [Method])] = fmap getRouteAndMethod groupedRoutes
@@ -187,19 +218,19 @@ generateContractFromContractState contractName contractState routeStateHM genDir
           case routePiece of
             Static rPieceTxt -> T.unpack $ T.toTitle rPieceTxt
             Dynamic rPieceRef -> 
-              let (firstChar:remainingChar) = (showRefTy Nothing) rPieceRef
+              let (firstChar:remainingChar) = (showRefTy Nothing (Just typeStateHM) ) rPieceRef
               in (Char.toUpper firstChar):remainingChar )
 
   generateContractTypeInsts :: ModuleState
                             -> [(Vector 4 String, [Vector 4 String])] 
                             -> ((Route UnparsedPiece), Method) 
-                            -> (ContractInfo TypeConstructor) 
+                            -> (ContractInfo Ref) 
                             -> [(Vector 4 String, [Vector 4 String])]
   generateContractTypeInsts modStateHM acc (unparsedRoute, method) contractInfo = 
     let refRoute = lookupRouteInRouteState unparsedRoute
         routeNameStr = constructRouteName refRoute
         topLevelVector = fromMaybeSV $ SV.fromList ["W.ApiContract", contractName, qualMethodName method, routeNameStr]
-        typeInsts = parseContractInfo routeNameStr unparsedRoute contractInfo method modStateHM
+        typeInsts = parseContractInfo routeNameStr unparsedRoute contractInfo method modStateHM typeStateHM
     in (topLevelVector, typeInsts):acc
   
   fromMaybeSV :: Maybe a -> a
@@ -209,8 +240,14 @@ generateContractFromContractState contractName contractState routeStateHM genDir
 qualMethodName :: Method -> String
 qualMethodName = ("W." ++) . show
 
-parseContractInfo :: String -> Route UnparsedPiece -> ContractInfo TypeConstructor -> Method -> ModuleState -> [Vector 4 String]
-parseContractInfo routeNameStr unpRouteInfo contractInfo method moduleStateHM = 
+parseContractInfo :: String 
+                  -> Route UnparsedPiece 
+                  -> ContractInfo Ref 
+                  -> Method 
+                  -> ModuleState 
+                  -> TypeState 
+                  -> [Vector 4 String]
+parseContractInfo routeNameStr unpRouteInfo contractInfo method moduleStateHM typeStateHM = 
   let mApiErr = fmap (\typeInfo -> constructVector "ApiErr" (insertQual typeInfo) ) (apiError contractInfo)
       mApiOut = fmap (\typeInfo -> constructVector "ApiOut" (insertQual typeInfo) ) (apiOutput contractInfo)
       mHeaderParam = fmap (\typeInfo -> constructVector "HeaderIn" (insertQual typeInfo) ) (headerParam contractInfo)
@@ -245,11 +282,14 @@ parseContractInfo routeNameStr unpRouteInfo contractInfo method moduleStateHM =
   constructVector typeLabel typeInfo = (fromMaybeSV $ SV.fromList [typeLabel, qualMethodName method, routeNameStr, typeInfo] )
   fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
 
-  insertQual :: T.Text -> String
-  insertQual inputType = 
+  insertQual :: Ref -> String
+  insertQual inputRef = 
     let prov = localProv unpRouteInfo method
-        (_, modQualName) = getModQualInfoModuleState moduleStateHM (getModuleFromProvenance prov)
-    in modQualName ++ "." ++ (T.unpack inputType)
+        sgMod = getModuleFromProvenance prov
+    in showRefTyWithQual moduleStateHM typeStateHM (Just sgMod) inputRef
+        
+    --     (_, modQualName) = getModQualInfoModuleState sgMod moduleStateHM  False
+    -- in modQualName ++ "." ++ (T.unpack inputType)
     
 
 constructImportsHMFromList :: [(String, String)] -> Imports
@@ -328,13 +368,9 @@ generateModulesFromTypeState tState genPath moduleStateHM = do
  where
   parseSingleModuleTypes :: (SG.Module, ([TypeDefinition], Imports) ) -> (LHE.Module SrcSpanInfo, (String, String), (String, String) )
   parseSingleModuleTypes (sgModule, (typeDefnsList, importsHM) ) = 
-    let (typesModuleDir, typesModuleName) = 
-          case sgModule of
-            Global -> (genPath ++ globalTypesModulePath, hsModuleToFileName globalDefnsModuleName)
-            RouteLocal routeInfo ->  constructLocalTypeModulePath routeInfo Nothing genPath
-            Local routeInfo stdMethodName ->  constructLocalTypeModulePath routeInfo (Just stdMethodName) genPath
-
-        (modName, modQualName) = getModQualInfoModuleState moduleStateHM sgModule
+    let (relativeModulePath, typesModuleName) = getModQualInfoModuleState moduleStateHM sgModule True
+        typesModuleDir = genPath ++ relativeModulePath
+        (modName, modQualName) = getModQualInfoModuleState moduleStateHM sgModule False
 
         hseModule = 
           Module noSrcSpan 
@@ -349,30 +385,30 @@ generateModulesFromTypeState tState genPath moduleStateHM = do
     
   modAndTypesToHSEModule :: SG.Module -> ModuleState -> [Decl SrcSpanInfo] -> TypeDefinition -> [Decl SrcSpanInfo]
   modAndTypesToHSEModule sgModule modState declAcc tyDefn = 
-    let newDataDecl =  constructDeclFromCustomType sgModule tyDefn modState
+    let newDataDecl =  constructDeclFromCustomType sgModule tyDefn modState tState
     in newDataDecl:declAcc
 
 
-  parseRouteIntoFolderName :: Route UnparsedPiece -> String
-  parseRouteIntoFolderName routeInfo =
-    case getRoute routeInfo of
-      [] -> error $ "Encountered empty Route! Expected the route to contain atleast one piece!"
-      routeInfoList -> DL.intercalate "/" $ fmap (validateRouteDirectoryPath . showRoutePiece) routeInfoList
+  -- parseRouteIntoFolderName :: Route UnparsedPiece -> String
+  -- parseRouteIntoFolderName routeInfo =
+  --   case getRoute routeInfo of
+  --     [] -> error $ "Encountered empty Route! Expected the route to contain atleast one piece!"
+  --     routeInfoList -> DL.intercalate "/" $ fmap (validateRouteDirectoryPath . showRoutePiece) routeInfoList
 
   qualTyModuleImports :: [(String, String)] -> [(String, (Bool, Maybe (ModuleName SrcSpanInfo)))]
   qualTyModuleImports conditionalImportList =
     let qualImportList = qualifiedImportsForTypesModule ++ conditionalImportList
     in fmap (\(fullModuleName, qual) ->  (fullModuleName, (True, Just $ ModuleName noSrcSpan qual)) ) qualImportList
 
-  constructLocalTypeModulePath :: Route UnparsedPiece -> Maybe Method -> FilePath -> (String, String)
-  constructLocalTypeModulePath routeInfo mMethodName genDirPath =
-    let routePath = parseRouteIntoFolderName routeInfo
-    in 
-      case mMethodName of
-        Just stdMethodName -> 
-          ( genDirPath ++ (localRouteMethodTypesPath routePath stdMethodName), hsModuleToFileName localRouteMethodTypesModuleName)
-        Nothing -> 
-          ( genDirPath ++ (routeLevelTypesPath routePath), hsModuleToFileName routeLevelTypesModuleName)
+  -- constructLocalTypeModulePath :: Route UnparsedPiece -> Maybe Method -> FilePath -> (String, String)
+  -- constructLocalTypeModulePath routeInfo mMethodName genDirPath =
+  --   let routePath = parseRouteIntoFolderName routeInfo
+  --   in 
+  --     case mMethodName of
+  --       Just stdMethodName -> 
+  --         ( genDirPath ++ (localRouteMethodTypesPath routePath stdMethodName), hsModuleToFileName localRouteMethodTypesModuleName)
+  --       Nothing -> 
+  --         ( genDirPath ++ (routeLevelTypesPath routePath), hsModuleToFileName routeLevelTypesModuleName)
 
 
   
@@ -418,7 +454,9 @@ getRefImports ref moduleStateHM =
         Tuple innerRefList -> DL.concat $ fmap (\inRef -> getRefImports inRef moduleStateHM) innerRefList 
         MultiSet innerRef -> ("Webapi.Param","P"):getRefImports innerRef moduleStateHM
         DelimitedCollection _ innerRef  -> ("CommonTypes", "P"):(getRefImports innerRef moduleStateHM) 
-    (Ref sgMod _ _ ) -> [getModQualInfoModuleState moduleStateHM (getModuleFromProvenance sgMod)]
+    (Ref typeMeta ) -> 
+      let sgMod = getModuleFromTypeMeta typeMeta
+      in [getModQualInfoModuleState moduleStateHM sgMod False]
 
 
 
@@ -437,8 +475,8 @@ getRefImports ref moduleStateHM =
 --       dCons2 = DataConstructor "PendingCons" [(Nothing, Ref (Local  routeDefn GET ["Pending"]) "defName2" "AvlTyName" )]
 --   in CustomType "ComplexSumTy" [dCons1, dCons2]
 
-constructDeclFromCustomType :: SG.Module -> TypeDefinition -> ModuleState -> Decl SrcSpanInfo
-constructDeclFromCustomType sgModule typeDefn moduleStateHM = 
+constructDeclFromCustomType :: SG.Module -> TypeDefinition -> ModuleState -> TypeState -> Decl SrcSpanInfo
+constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM = 
   let customTy = customHaskType typeDefn
       derivingList = fmap (T.unpack) $ derivingConstraints typeDefn 
   in case customTy of
@@ -476,21 +514,21 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM =
                     case catMaybes mRecList of
                       -- SumType
                       [] -> 
-                        let typeConsList = fmap (typeConstructor . (showRefTyWithQual moduleStateHM (Just currentModuleInfo) ) ) $ snd $ DL.unzip mRecRefList
+                        let typeConsList = fmap (typeConstructor . (showRefTyWithQual moduleStateHM typeStateHM (Just currentModuleInfo) ) ) $ snd $ DL.unzip mRecRefList
                         in QualConDecl noSrcSpan Nothing Nothing 
                             (ConDecl noSrcSpan (nameDecl $ setValidConstructorId $ T.unpack dConsName) typeConsList)
 
                       -- ProductType
                       recVals -> 
                         -- TODO: We should check that the 2 lists are of equal lengths?
-                        let typeNames = fmap (showRefTyWithQual moduleStateHM (Just currentModuleInfo)) $ snd $ DL.unzip mRecRefList
+                        let typeNames = fmap (showRefTyWithQual moduleStateHM typeStateHM (Just currentModuleInfo)) $ snd $ DL.unzip mRecRefList
                             recordNamesWithTypes = DL.zip (fmap (snd . setValidFieldName . T.unpack) recVals) typeNames
                             fieldDecls = snd $ DL.unzip $ fmap fieldDecl recordNamesWithTypes
                         in QualConDecl noSrcSpan Nothing Nothing 
                               (RecDecl noSrcSpan (nameDecl $ setValidConstructorId $ T.unpack dConsName) fieldDecls)                
             ) dataConsList
       Right (dConsTxt, mRecName, refTy) ->  
-        let recTy = showRefTyWithQual moduleStateHM (Just currentModuleInfo) refTy
+        let recTy = showRefTyWithQual moduleStateHM typeStateHM (Just currentModuleInfo) refTy
         in case mRecName of
               Just recName ->
                 [QualConDecl noSrcSpan Nothing Nothing 
@@ -515,19 +553,23 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM =
 --       (ConDecl noSrcSpan 
 --         (nameDecl construcorVal) [] ) )
 
-showRefTyWithQual :: ModuleState -> Maybe SG.Module -> Ref -> String
-showRefTyWithQual moduleStateHM mModule (Inline prim) = 
-  let (qual, ty) = showPrimitiveTy (Just moduleStateHM) mModule prim
+showRefTyWithQual :: ModuleState -> TypeState -> Maybe SG.Module -> Ref -> String
+showRefTyWithQual moduleStateHM typeStateHM mModule (Inline prim) = 
+  let (qual, ty) = showPrimitiveTy (Just moduleStateHM) (Just typeStateHM) mModule prim
   in qual ++ ty
-showRefTyWithQual moduleStateHM mModule (Ref provenance _ tyCon) = printRefWithQual moduleStateHM (getModuleFromProvenance provenance) mModule tyCon
+showRefTyWithQual moduleStateHM typeStateHM mModule (Ref typeMeta) = 
+  let sgModule = getModuleFromTypeMeta typeMeta
+      tyCon = getTypeConstructor $ lookupTypeStateGetCustomHaskType typeMeta typeStateHM
+  in printRefWithQual moduleStateHM sgModule mModule tyCon
 
+showRefTy :: Maybe SG.Module -> Maybe TypeState -> Ref -> String
+showRefTy mModule mTyState (Inline prim) = snd $ showPrimitiveTy Nothing mTyState mModule prim
+showRefTy _ mTyState (Ref typeMeta) = 
+  let typeStateHM = fromJustNote ("Expected a TypeState but got a Nothing! Type Meta: " ++ (show typeMeta) ) mTyState
+  in printRef (getTypeConstructor $ lookupTypeStateGetCustomHaskType typeMeta typeStateHM)
 
-showRefTy :: Maybe SG.Module -> Ref -> String
-showRefTy mModule (Inline prim) = snd $ showPrimitiveTy Nothing mModule prim
-showRefTy _ (Ref _ _ tyCon) = printRef tyCon
-
-showPrimitiveTy :: Maybe ModuleState -> Maybe SG.Module -> Primitive -> (String, String)
-showPrimitiveTy mModuleState mModule prim =
+showPrimitiveTy :: Maybe ModuleState -> Maybe TypeState -> Maybe SG.Module -> Primitive -> (String, String)
+showPrimitiveTy mModuleState mTypeState mModule prim =
   case prim of
     Date -> ("P.", "Day")
     DateTime -> ("P.", "UTCTime")
@@ -545,11 +587,11 @@ showPrimitiveTy mModuleState mModule prim =
     File -> ("P.", "File")
     Null -> ("","()")
     -- TODO: What to do about qual of inner types? i.e. P. qual
-    Default innerRef -> ("P.","Default " ++ (maybe (showRefTy mModule innerRef) (\modState -> showRefTyWithQual modState mModule innerRef) mModuleState) )
-    Maybe innerRef -> ("P." ,"Maybe " ++ (maybe (showRefTy mModule innerRef) (\modState -> showRefTyWithQual modState mModule innerRef) mModuleState) )
-    Array innerRef -> ("","[" ++ (maybe (showRefTy mModule innerRef) (\modState -> showRefTyWithQual modState mModule innerRef) mModuleState) ++ "]")
-    Tuple innerRefList -> ("","(" ++ (DL.intercalate "," (fmap (\iRef -> maybe (showRefTy mModule iRef) (\modState -> showRefTyWithQual modState mModule iRef) mModuleState) innerRefList) ) ++ ")")
-    MultiSet innerRef -> ("P.","MultiSet " ++ (maybe (showRefTy mModule innerRef) (\modState -> showRefTyWithQual modState mModule innerRef) mModuleState) )
+    Default innerRef -> ("P.","Default " ++ (getRefOrRefWithQual mModuleState mTypeState mModule innerRef) ) -- (maybe (showRefTy mModule innerRef) (\modState -> showRefTyWithQual modState mModule innerRef) mModuleState) )
+    Maybe innerRef -> ("P." ,"Maybe " ++ (getRefOrRefWithQual mModuleState mTypeState mModule innerRef) )
+    Array innerRef -> ("","[" ++ (getRefOrRefWithQual mModuleState mTypeState mModule innerRef) )
+    Tuple innerRefList -> ("","(" ++ (DL.intercalate "," (fmap (\iRef -> getRefOrRefWithQual mModuleState mTypeState mModule iRef) innerRefList) ) ++ ")")
+    MultiSet innerRef -> ("P.","MultiSet " ++ (getRefOrRefWithQual mModuleState mTypeState mModule innerRef) )
     DelimitedCollection delimiter innerRef  -> 
       let delimChar = 
             case delimiter of
@@ -557,7 +599,18 @@ showPrimitiveTy mModuleState mModule prim =
               Space -> "\" \"" 
               Pipe -> "\"|\""
               Comma -> "\",\" "
-      in ("P.","DelimitedCollection" ++ delimChar ++ (showRefTy mModule innerRef))
+      in ("P.","DelimitedCollection" ++ delimChar ++ (showRefTy mModule mTypeState innerRef))
+
+ where
+  getRefOrRefWithQual :: Maybe ModuleState -> Maybe TypeState -> Maybe SG.Module -> Ref -> String
+  getRefOrRefWithQual mModState mTyState mMod passedRef = 
+    case (mModState, mTyState) of
+      (Just modState, Just tyState) -> showRefTyWithQual modState tyState mMod passedRef
+      (Nothing, Nothing) -> showRefTy mModule mTyState passedRef
+      _ -> error $ "Expected either both ModuleState and TypeState to be present or none to be present."
+              ++ "\nGot only one of two present! Debug Info: ModuleState : " ++ (show mModState) 
+              ++ "\nTypeState: " ++ (show mTyState) 
+              ++ "\nRef : " ++ (show passedRef)
   
 
 printRef :: T.Text -> String
@@ -570,10 +623,10 @@ printRefWithQual moduleStateHM sgModule mCurrentSgModule typeTxt =
         case isSameModule sgModule sgMod of 
           True -> setValidConstructorId $ T.unpack typeTxt
           False ->
-            let (_, modQualName) = getModQualInfoModuleState moduleStateHM sgModule
+            let (_, modQualName) = getModQualInfoModuleState moduleStateHM sgModule False
             in modQualName ++ "." ++ (printRef typeTxt)
     Nothing -> 
-      let (_, modQualName) = getModQualInfoModuleState moduleStateHM sgModule
+      let (_, modQualName) = getModQualInfoModuleState moduleStateHM sgModule False
       in  modQualName ++ "." ++ (printRef typeTxt)
       
 
@@ -646,8 +699,8 @@ moduleImport (moduleNameStr, (isQualified, qualifiedName) ) =
 
 
 
-routeDeclaration :: ModuleState -> (String, Route Ref) -> Decl SrcSpanInfo
-routeDeclaration moduleStateHM (routeNameStr, routePathComponents) = 
+routeDeclaration :: ModuleState -> TypeState -> (String, Route Ref) -> Decl SrcSpanInfo
+routeDeclaration moduleStateHM typeStateHM (routeNameStr, routePathComponents) = 
   let routePieceList = getRoute routePathComponents
   in 
     case routePieceList of
@@ -684,7 +737,7 @@ routeDeclaration moduleStateHM (routeNameStr, routePathComponents) =
   processPathComponent refRoutePiece = 
     case refRoutePiece of
       Static staticPathPiece -> promotedType $ T.unpack staticPathPiece
-      Dynamic pType -> typeConstructor $ showRefTyWithQual moduleStateHM Nothing pType
+      Dynamic pType -> typeConstructor $ showRefTyWithQual moduleStateHM typeStateHM Nothing pType
 
 promotedType :: String -> Type SrcSpanInfo
 promotedType typeNameData = 
