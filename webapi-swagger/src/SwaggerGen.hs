@@ -267,9 +267,12 @@ routeComponents (Route pieces) =
           Dynamic x -> T.toTitle (replacePuncts x)
       ) pieces
 
-  where replacePuncts = T.map replacePunct
+  where replacePuncts = optionalH . T.map (replacePunct)
         replacePunct x | C.isAlphaNum x = x
                        | otherwise      = '_'
+        optionalH x = case T.head x of
+          '_' -> "H" <> x
+          _   -> x
 
 moduleQualification :: [T.Text] -> T.Text
 moduleQualification =
