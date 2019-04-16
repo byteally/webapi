@@ -185,6 +185,7 @@ data SwaggerGenState = SwaggerGenState { typeState   :: TypeState
                                        , routeState  :: RouteState
                                        , apiContract :: ContractState
                                        , modules     :: ModuleState
+                                       , forwardRefs :: ForwardRefs
                                        , errors      :: [ErrorMessage]
                                        } deriving (Show, Eq, Generic)
 
@@ -193,10 +194,12 @@ defaultSwaggerState = SwaggerGenState { typeState   = HM.empty
                                         , routeState  = HM.empty
                                         , apiContract = HM.empty
                                         , modules     = HM.empty
+                                        , forwardRefs = HS.empty
                                         , errors      = []
                                         }
 
 type TypeState      = HM.HashMap TypeMeta   TypeDefinition
+type ForwardRefs    = HS.HashSet DefinitionName
 
 type RouteState     = HM.HashMap (Route UnparsedPiece) (Route Ref)
 
@@ -263,7 +266,7 @@ methodComponent = T.pack . show
 routeComponents :: Route UnparsedPiece -> [T.Text]
 routeComponents (Route pieces) =
   map (\piece -> case piece of
-          Static x -> T.toTitle (replacePuncts x)
+          Static x  -> T.toTitle (replacePuncts x)
           Dynamic x -> T.toTitle (replacePuncts x)
       ) pieces
 
@@ -359,6 +362,7 @@ generateSwaggerState :: Swagger -> SwaggerGenerator ()
 generateSwaggerState sw = do
   globalSwaggerDefinitions (_swaggerDefinitions sw)
   generateRoutesState (_swaggerParameters sw) (_swaggerResponses sw) (_swaggerPaths sw)
+  resolveTypeClashes  
   moduleState
 
 moduleState :: SwaggerGenerator ()
@@ -919,15 +923,34 @@ definitionRef _ _ (Primitive ty)   = Inline ty
 extendProvenance :: DefinitionName -> Provenance -> Provenance
 extendProvenance n (Provenance m ks) = Provenance m (ks ++ [n])
 
+isForwardRef :: DefinitionName -> SwaggerGenerator Bool
+isForwardRef def =
+  gets (HS.member def . forwardRefs)
+
+addToForwardRefs :: DefinitionName -> SwaggerGenerator ()
+addToForwardRefs def =
+  modify' (\s -> s { forwardRefs = HS.insert def (forwardRefs s) })
+
+removeFromForwardRefs :: DefinitionName -> SwaggerGenerator ()
+removeFromForwardRefs def =
+  modify' (\s -> s { forwardRefs = HS.delete def (forwardRefs s) })
+
 lookupGlobalDefinitionOrGenerate :: Definitions Schema -> DefinitionName -> SwaggerGenerator Ref
 lookupGlobalDefinitionOrGenerate schs defn = do
   mcTy <- gets (lookupDefinition defn . typeState)
   case mcTy of
     Nothing  -> do
-      case OHM.lookup defn schs of
-        Just k -> do
-          schemaDefinition (lookupGlobalDefinitionOrGenerate schs) globalProv defn k
-        Nothing -> error "Panic: key not found"
+      isw <- isForwardRef defn
+      case isw of
+        True -> pure (Ref (Definition globalProv defn))
+        False -> do
+          addToForwardRefs defn
+          case OHM.lookup defn schs of
+            Just k -> do
+              ref <- schemaDefinition (lookupGlobalDefinitionOrGenerate schs) globalProv defn k
+              removeFromForwardRefs defn
+              pure ref
+            Nothing -> error "Panic: key not found"
     Just cty -> pure (definitionRef globalProv defn (Object cty))
 
   where lookupDefinition defn' tyDefs =
@@ -1185,7 +1208,7 @@ resolveTypeClashes = do
           in  newTyState
           
         resolveTyListClashes _ !newTyState [] = newTyState
-        resolveTyListClashes i !newTyState ((curProv, !curTyDef) : kvs) =
+        resolveTyListClashes !i !newTyState ((curProv, !curTyDef) : kvs) =
           let clss = L.foldl' (\cs (_, tyDef) ->
                                  case checkNameClash curTyDef tyDef of
                                    []  -> cs
@@ -1237,10 +1260,3 @@ updateTypeDefinitionRec tyFun ref = do
         go f (Inline (DelimitedCollection _ r)) ts =
           go f r ts
         go _ _ ts = ts
-             
-
-
-              
-                                              
-                                              
-              

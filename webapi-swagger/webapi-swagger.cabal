@@ -22,6 +22,10 @@ library
   exposed-modules:
       SwaggerGen
       GenerationCore
+      Constants
+      ContractGenTypes
+      HaskellValidation
+                  
   other-modules:
       Paths_webapi_swagger
   hs-source-dirs:
@@ -57,7 +61,7 @@ library
     
   default-language: Haskell2010
   -- ghc-options: -Wall -Werror
-  ghc-options: -Wall
+  ghc-options: -Wall -fprof-auto
 
 executable init-swagger-project
   main-is: Main.hs

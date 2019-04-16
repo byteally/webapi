@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import ContractGen
+import GenerationCore
 import Options.Applicative
 import Data.Semigroup ((<>))
 import Data.Text (Text)
