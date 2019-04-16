@@ -43,19 +43,30 @@ type Imports = HMS.HashMap String String
 getModuleFromProvenance :: Provenance -> SG.Module
 getModuleFromProvenance (Provenance sgMod _ ) = sgMod
 
-getModQualInfoModuleState :: ModuleState -> SG.Module -> Bool -> (String, String)
-getModQualInfoModuleState moduleStateHM sgModule forPathDir =
+getModQualInfoModuleState :: ModuleState -> SG.Module -> (String, String)
+getModQualInfoModuleState moduleStateHM sgModule =
   case HMS.lookup sgModule moduleStateHM of
     Just (HaskModule fullModNameList modQual) -> 
-      let separationChar = 
-            case forPathDir of
-              True -> "/"
-              False -> "."
-      in (T.unpack $ T.intercalate separationChar (trace ("Full Mod Name List : " ++ (show fullModNameList)) fullModNameList), T.unpack modQual) 
-      
+      (T.unpack $ T.intercalate "." fullModNameList, T.unpack modQual) 
     Nothing -> error $ "The impossible happened! Did not find mapping for Module in ModuleState!" 
                 ++ "Debug Info: \nModule: " ++ (show sgModule) ++ "\nModuleState: " ++ (show moduleStateHM)
 
+
+getModulePathAndQualInfo :: ModuleState -> SG.Module -> (String, String, String)
+getModulePathAndQualInfo moduleStateHM sgModule =
+  case HMS.lookup sgModule moduleStateHM of
+    Just (HaskModule fullModNameList modQual) -> 
+      let (innerTypesModuleName, modulePath) = 
+              case fullModNameList of
+                [] -> error $ "Encountered empty list in HaskModule! Expected Module Name components!"
+                        ++ "ModuleState: " ++ (show moduleStateHM )
+                modNameList -> 
+                  let hsModName = (T.unpack $ DL.last modNameList) ++ ".hs"
+                      relativePath = (T.unpack $ T.intercalate "/" (DL.init fullModNameList) ) ++ "/"
+                  in (hsModName, relativePath)
+      in (modulePath, innerTypesModuleName, T.unpack modQual) 
+    Nothing -> error $ "The impossible happened! Did not find mapping for Module in ModuleState!" 
+                ++ "Debug Info: \nModule: " ++ (show sgModule) ++ "\nModuleState: " ++ (show moduleStateHM)
 
 -- getModuleQualFromRef :: ModuleState -> TypeState -> Ref -> String
 -- getModuleQualFromRef moduleState typeState ref =
@@ -96,7 +107,7 @@ parseTypeStateIntoModuleTypes tyState moduleStateHM =
     let provenanceMod = getProvenanceModule typeMeta
         importList = importsForTypes (customHaskType typeDefn) 
         importsHM = constructImportsHMFromList importList
-        finalImportHM = HMS.delete (fst $ getModQualInfoModuleState moduleStateHM provenanceMod False) importsHM
+        finalImportHM = HMS.delete (fst $ getModQualInfoModuleState moduleStateHM provenanceMod) importsHM
         newModuleTypes = HMS.insertWith (\(newTypes, newImps) (oldTypes, oldImps) -> (newTypes ++ oldTypes, HMS.union newImps oldImps) ) 
                                 provenanceMod ([typeDefn], finalImportHM) accModTypes
     in newModuleTypes
@@ -142,7 +153,7 @@ generateContractFromContractState contractName contractState routeStateHM genDir
   let refRoutePaths = fmap lookupRouteInRouteState unParsedRoutePaths
   let routeNames = fmap (constructRouteName) refRoutePaths
 
-  let moduleQualNames = fmap (\(route, method) -> getModQualInfoModuleState moduleStateHM (getModuleFromProvenance $ localProv route method) False ) routeListUnGrouped
+  let moduleQualNames = fmap (\(route, method) -> getModQualInfoModuleState moduleStateHM (getModuleFromProvenance $ localProv route method) ) routeListUnGrouped
   let otherModuleNames = DL.concat $ fmap (getModuleImportsForRouteState . getRoute) $ HMS.elems routeStateHM 
   let importsHM = constructImportsHMFromList (moduleQualNames ++ otherModuleNames)
 
@@ -283,10 +294,10 @@ parseContractInfo routeNameStr unpRouteInfo contractInfo method moduleStateHM ty
   fromMaybeSV = fromJustNote "Expected a list with 4 elements for WebApi instance! "
 
   insertQual :: Ref -> String
-  insertQual inputRef = 
-    let prov = localProv unpRouteInfo method
-        sgMod = getModuleFromProvenance prov
-    in showRefTyWithQual moduleStateHM typeStateHM (Just sgMod) inputRef
+  insertQual inputRef = showRefTyWithQual moduleStateHM typeStateHM Nothing inputRef
+    -- let prov = localProv unpRouteInfo method
+    --     sgMod = getModuleFromProvenance prov
+    -- in 
         
     --     (_, modQualName) = getModQualInfoModuleState sgMod moduleStateHM  False
     -- in modQualName ++ "." ++ (T.unpack inputType)
@@ -368,9 +379,9 @@ generateModulesFromTypeState tState genPath moduleStateHM = do
  where
   parseSingleModuleTypes :: (SG.Module, ([TypeDefinition], Imports) ) -> (LHE.Module SrcSpanInfo, (String, String), (String, String) )
   parseSingleModuleTypes (sgModule, (typeDefnsList, importsHM) ) = 
-    let (relativeModulePath, typesModuleName) = getModQualInfoModuleState moduleStateHM sgModule True
+    let (relativeModulePath, hsFileName, typesModuleName) = getModulePathAndQualInfo moduleStateHM sgModule
         typesModuleDir = genPath ++ relativeModulePath
-        (modName, modQualName) = getModQualInfoModuleState moduleStateHM sgModule False
+        (modName, modQualName) = getModQualInfoModuleState moduleStateHM sgModule
 
         hseModule = 
           Module noSrcSpan 
@@ -380,7 +391,7 @@ generateModulesFromTypeState tState genPath moduleStateHM = do
               ( (DL.zip importsForTypesModule (cycle [(False, Nothing)]) ) 
                 ++ (qualTyModuleImports (HMS.toList importsHM) ) )) 
             (DL.foldl' (modAndTypesToHSEModule sgModule moduleStateHM) [] typeDefnsList)
-    in (hseModule, (modName, modQualName), (typesModuleDir, typesModuleName))
+    in (hseModule, (modName, modQualName), (typesModuleDir, hsFileName))
     
     
   modAndTypesToHSEModule :: SG.Module -> ModuleState -> [Decl SrcSpanInfo] -> TypeDefinition -> [Decl SrcSpanInfo]
@@ -456,7 +467,7 @@ getRefImports ref moduleStateHM =
         DelimitedCollection _ innerRef  -> ("CommonTypes", "P"):(getRefImports innerRef moduleStateHM) 
     (Ref typeMeta ) -> 
       let sgMod = getModuleFromTypeMeta typeMeta
-      in [getModQualInfoModuleState moduleStateHM sgMod False]
+      in [getModQualInfoModuleState moduleStateHM sgMod]
 
 
 
@@ -589,7 +600,7 @@ showPrimitiveTy mModuleState mTypeState mModule prim =
     -- TODO: What to do about qual of inner types? i.e. P. qual
     Default innerRef -> ("P.","Default " ++ (getRefOrRefWithQual mModuleState mTypeState mModule innerRef) ) -- (maybe (showRefTy mModule innerRef) (\modState -> showRefTyWithQual modState mModule innerRef) mModuleState) )
     Maybe innerRef -> ("P." ,"Maybe " ++ (getRefOrRefWithQual mModuleState mTypeState mModule innerRef) )
-    Array innerRef -> ("","[" ++ (getRefOrRefWithQual mModuleState mTypeState mModule innerRef) )
+    Array innerRef -> ("","[" ++ (getRefOrRefWithQual mModuleState mTypeState mModule innerRef) ++ "]" )
     Tuple innerRefList -> ("","(" ++ (DL.intercalate "," (fmap (\iRef -> getRefOrRefWithQual mModuleState mTypeState mModule iRef) innerRefList) ) ++ ")")
     MultiSet innerRef -> ("P.","MultiSet " ++ (getRefOrRefWithQual mModuleState mTypeState mModule innerRef) )
     DelimitedCollection delimiter innerRef  -> 
@@ -623,10 +634,10 @@ printRefWithQual moduleStateHM sgModule mCurrentSgModule typeTxt =
         case isSameModule sgModule sgMod of 
           True -> setValidConstructorId $ T.unpack typeTxt
           False ->
-            let (_, modQualName) = getModQualInfoModuleState moduleStateHM sgModule False
+            let (_, modQualName) = getModQualInfoModuleState moduleStateHM sgModule
             in modQualName ++ "." ++ (printRef typeTxt)
     Nothing -> 
-      let (_, modQualName) = getModQualInfoModuleState moduleStateHM sgModule False
+      let (_, modQualName) = getModQualInfoModuleState moduleStateHM sgModule
       in  modQualName ++ "." ++ (printRef typeTxt)
       
 
