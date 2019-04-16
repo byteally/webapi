@@ -808,3 +808,22 @@ emptyDataDeclaration declName =
 #else
     Nothing
 #endif
+
+
+
+
+
+parseTextIntoInstDecl :: T.Text -> Decl SrcSpanInfo
+parseTextIntoInstDecl instanceTxt = 
+  case parseDecl (T.unpack instanceTxt) of
+    ParseOk decl -> 
+      case decl of
+        InstDecl _ _ _ _ -> decl
+        _ -> error $ "The decl we parsed is NOT an InstDecl! "
+          ++ "Expected an InstDecl as we are parsing a Custom Instance! "
+          ++ "Got: " ++ (show decl)
+    ParseFailed srcLoc errString -> 
+      error $ "Failed while parsing an Instance text! "
+        ++ "\nLocation: " ++ (show srcLoc)
+        ++ "\nError Message: " ++ errString
+        ++ "\nPlease verify that the Instance Template/Instance Text is correct!"
