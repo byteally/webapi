@@ -18,7 +18,6 @@ import qualified Data.Text as T
 import qualified Data.List as DL
 import Language.Haskell.Exts as LHE hiding (OPTIONS, Int, Tuple, Comma)
 import Data.Maybe
-import HaskellValidation
 import Data.HashMap.Strict as HMS
 import Constants
 import qualified Data.Set as Set
@@ -67,20 +66,6 @@ getModulePathAndQualInfo moduleStateHM sgModule =
       in (modulePath, innerTypesModuleName, T.unpack modQual) 
     Nothing -> error $ "The impossible happened! Did not find mapping for Module in ModuleState!" 
                 ++ "Debug Info: \nModule: " ++ (show sgModule) ++ "\nModuleState: " ++ (show moduleStateHM)
-
--- getModuleQualFromRef :: ModuleState -> TypeState -> Ref -> String
--- getModuleQualFromRef moduleState typeState ref =
---   case ref of
---     Inline prim -> undefined
---     Ref typeMeta -> 
---       case HMS.lookup typeMeta typeState of
---         Just typeDefn ->
---           let customTy = customHaskType typeDefn
-
---         Nothing -> error $ "The impossible happened! Could not find TypeMeta in TypeState HM!"
---                     ++ "\nTypeMeta: " ++ (show typeMeta)
---                     ++ "\nTypeState: " ++ (show typeState)
-
 
 
 getModuleFromTypeMeta :: TypeMeta -> SG.Module
@@ -206,7 +191,7 @@ generateContractFromContractState contractName contractState routeStateHM genDir
   constructRouteName routeInfo =
     let routePieces = getRoute routeInfo
         routePiecesStr = prettifyRouteName routePieces
-    in setValidConstructorId $ routePiecesStr ++ "R"
+    in routePiecesStr ++ "R"
 
   lookupRouteInRouteState ::(Route UnparsedPiece) -> Route Ref
   lookupRouteInRouteState unparsedRoute = 
@@ -423,10 +408,10 @@ generateModulesFromTypeState tState genPath moduleStateHM = do
 
   
 validateRouteDirectoryPath :: String -> String
-validateRouteDirectoryPath = setValidConstructorId
+validateRouteDirectoryPath = id
 
 validateRouteModuleName :: String -> String
-validateRouteModuleName = setValidConstructorId
+validateRouteModuleName = id
   --  where
   --   createDataDeclarations :: [(CreateDataType, NamingCounter)] -> [Decl SrcSpanInfo]
   --   createDataDeclarations = DL.foldl' createTypeDeclFromCDT []  
@@ -494,14 +479,14 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM =
         DataDecl noSrcSpan  
           (dataOrNewType False)
           Nothing 
-          (declHead $ setValidConstructorId $ T.unpack tyConstructor)
+          (declHead $ T.unpack tyConstructor)
           (qualConDecls sgModule (Left dataConsList) )
           (derivingDecl derivingList)
       CustomNewType tyConstructor dConsName mRec ref  ->
         DataDecl noSrcSpan  
           (dataOrNewType True)
           Nothing 
-          (declHead $ setValidConstructorId $ T.unpack tyConstructor)
+          (declHead $ T.unpack tyConstructor)
           (qualConDecls sgModule (Right (dConsName, mRec, ref) ))
           (derivingDecl derivingList)
  where 
@@ -526,28 +511,28 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM =
                       [] -> 
                         let typeConsList = fmap (typeConstructor . (showRefTyWithQual moduleStateHM typeStateHM (Just currentModuleInfo) ) ) $ snd $ DL.unzip mRecRefList
                         in QualConDecl noSrcSpan Nothing Nothing 
-                            (ConDecl noSrcSpan (nameDecl $ setValidConstructorId $ T.unpack dConsName) typeConsList)
+                            (ConDecl noSrcSpan (nameDecl $ T.unpack dConsName) typeConsList)
 
                       -- ProductType
                       recVals -> 
                         -- TODO: We should check that the 2 lists are of equal lengths?
                         let typeNames = fmap (showRefTyWithQual moduleStateHM typeStateHM (Just currentModuleInfo)) $ snd $ DL.unzip mRecRefList
-                            recordNamesWithTypes = DL.zip (fmap (snd . setValidFieldName . T.unpack) recVals) typeNames
-                            fieldDecls = snd $ DL.unzip $ fmap fieldDecl recordNamesWithTypes
+                            recordNamesWithTypes = DL.zip (fmap T.unpack recVals) typeNames
+                            fieldDecls = fmap fieldDecl recordNamesWithTypes
                         in QualConDecl noSrcSpan Nothing Nothing 
-                              (RecDecl noSrcSpan (nameDecl $ setValidConstructorId $ T.unpack dConsName) fieldDecls)                
+                              (RecDecl noSrcSpan (nameDecl $ T.unpack dConsName) fieldDecls)                
             ) dataConsList
       Right (dConsTxt, mRecName, refTy) ->  
         let recTy = showRefTyWithQual moduleStateHM typeStateHM (Just currentModuleInfo) refTy
         in case mRecName of
               Just recName ->
                 [QualConDecl noSrcSpan Nothing Nothing 
-                      (RecDecl noSrcSpan (nameDecl $ setValidConstructorId $ T.unpack dConsTxt) 
-                          [snd $ fieldDecl ( (snd . setValidFieldName . T.unpack ) recName, recTy)] )]
+                      (RecDecl noSrcSpan (nameDecl $ T.unpack dConsTxt) 
+                          [fieldDecl (T.unpack recName, recTy)] )]
               Nothing ->
                 let tyCons = typeConstructor recTy
                 in [QualConDecl noSrcSpan Nothing Nothing 
-                    (ConDecl noSrcSpan (nameDecl $ setValidConstructorId $ T.unpack dConsTxt) [tyCons])]
+                    (ConDecl noSrcSpan (nameDecl $ T.unpack dConsTxt) [tyCons])]
 
   
 
@@ -624,14 +609,14 @@ showPrimitiveTy mModuleState mTypeState mModule prim =
   
 
 printRef :: T.Text -> String
-printRef typeTxt = setValidConstructorId $ T.unpack typeTxt 
+printRef typeTxt = T.unpack typeTxt 
     
 printRefWithQual :: ModuleState -> SG.Module -> Maybe SG.Module -> T.Text -> String
 printRefWithQual moduleStateHM sgModule mCurrentSgModule typeTxt = 
   case mCurrentSgModule of
     Just sgMod ->
         case isSameModule sgModule sgMod of 
-          True -> setValidConstructorId $ T.unpack typeTxt
+          True -> T.unpack typeTxt
           False ->
             let (_, modQualName) = getModQualInfoModuleState moduleStateHM sgModule
             in modQualName ++ "." ++ (printRef typeTxt)
@@ -680,15 +665,9 @@ typeConstructor typeConName = (TyCon noSrcSpan
                                 (UnQual noSrcSpan $ nameDecl typeConName)
                               )
 
-fieldDecl :: (String, String) -> (Maybe (String, String), FieldDecl SrcSpanInfo)
+fieldDecl :: (String, String) -> FieldDecl SrcSpanInfo
 fieldDecl (fieldName, fieldType) = 
-  let (isChanged, fName) = setValidFieldName fieldName
-      mModRecord = 
-        case isChanged of
-          True -> Just (fieldName, fName)
-          False -> Nothing
-      fDecl = FieldDecl noSrcSpan [nameDecl fName] (TyCon noSrcSpan (UnQual noSrcSpan (nameDecl fieldType)))
-  in (mModRecord, fDecl)
+  FieldDecl noSrcSpan [nameDecl fieldName] (TyCon noSrcSpan (UnQual noSrcSpan (nameDecl fieldType)))
 
 languageExtension :: String -> ModulePragma SrcSpanInfo
 languageExtension langExtName = LanguagePragma noSrcSpan [nameDecl langExtName]
