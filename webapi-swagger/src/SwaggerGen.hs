@@ -130,7 +130,6 @@ updateDataConstructorName oldDcon newDcon (CustomNewType tyCon dcon fld ref) =
   in  CustomNewType tyCon newDcon' fld ref
 
 
-
 getTypeConstructor :: CustomType -> TypeConstructor
 getTypeConstructor (CustomType tyCon _)        = tyCon
 getTypeConstructor (CustomNewType tyCon _ _ _) = tyCon
@@ -140,7 +139,7 @@ dataConstructorNames (CustomType _ dcons) =
   map (\(DataConstructor n _) -> n) dcons
 dataConstructorNames (CustomNewType _ dcon _ _) = [dcon]
 
-data CustomType = CustomType TypeConstructor    [DataConstructor]
+data CustomType = CustomType    TypeConstructor [DataConstructor]
                 | CustomNewType TypeConstructor DataConstructorName (Maybe RecordName) Ref
                 deriving (Show, Eq, Generic)
 
@@ -816,43 +815,45 @@ productType !rawName !rawFlds =
   in  defaultTypeDefinition cty
   
 mkRecordName :: T.Text -> T.Text
-mkRecordName = T.toLower . T.concat . filter (/= T.empty) . T.splitOn "_" . emptyRec . T.map replaceInvalidChars . replaceKeyword
+mkRecordName = replaceKeyword . emptyRecOrNum . T.toLower . T.intercalate "_" . filter (/= T.empty) . T.splitOn "_" . T.map replaceInvalidChars 
   where replaceInvalidChars t
           | (C.isAlphaNum t) || t == '_' || t == '\'' = t
           | otherwise = '_'
 
-        emptyRec :: T.Text -> T.Text
-        emptyRec "" = "emptyRecord"
-        emptyRec r  = r
+        emptyRecOrNum :: T.Text -> T.Text
+        emptyRecOrNum "" = "emptyRecord"
+        emptyRecOrNum r
+          | C.isDigit (T.head r) = "H" <> r
+          | otherwise = r
         
-        isHsKeyword :: T.Text -> Bool
-        isHsKeyword str = elem str haskellKeywords
-
         replaceKeyword t
-          | isHsKeyword t = t <> "_"
-          | otherwise     = t
+          | t `elem` haskellKeywords = t <> "_"
+          | otherwise                = t
         
 
 mkDataConstructorName :: T.Text -> T.Text
-mkDataConstructorName = T.toTitle . T.concat . filter (/= T.empty) . T.splitOn "_" . emptyCon . T.map replaceInvalidChars
+mkDataConstructorName = T.toTitle . emptyCon . T.intercalate "_" . filter (/= T.empty) . T.splitOn "_" . T.map replaceInvalidChars
   where replaceInvalidChars t
           | (C.isAlphaNum t) || t == '_' || t == '\'' = t
           | otherwise                             = '_'
 
         emptyCon :: T.Text -> T.Text
         emptyCon "" = "EmptyCon"
-        emptyCon r  = r
+        emptyCon r
+          | C.isDigit (T.head r) = "H" <> r
+          | otherwise = r
 
 mkTypeConstructorName :: T.Text -> T.Text
-mkTypeConstructorName = T.toTitle . T.concat . filter (/= T.empty) . T.splitOn "_" . emptyTyCon . T.map replaceInvalidChars
+mkTypeConstructorName = T.toTitle . emptyTyCon . T.intercalate "_" . filter (/= T.empty) . T.splitOn "_" . T.map replaceInvalidChars
   where replaceInvalidChars t
           | (C.isAlphaNum t) || t == '_' || t == '\'' = t
           | otherwise                             = '_'
 
         emptyTyCon :: T.Text -> T.Text
         emptyTyCon "" = "EmptyTyCon"
-        emptyTyCon r  = r
-
+        emptyTyCon r
+          | C.isDigit (T.head r) = "H" <> r
+          | otherwise = r
 
 schemaDefinitions :: (DefinitionName -> SwaggerGenerator Ref) -> Provenance -> Definitions Schema -> SwaggerGenerator [Ref]
 schemaDefinitions defLookup prov defs =
