@@ -33,7 +33,7 @@ import qualified Data.Char as Char
 import Data.Vector.Sized as SV hiding ((++), foldM, forM, mapM)
 import Data.Finite.Internal
 import Safe
-import Debug.Trace
+-- import Debug.Trace
 
 type ModuleTypes = HMS.HashMap SG.Module ([TypeDefinition], Imports)
 
@@ -241,7 +241,7 @@ generateContractFromContractState contractName contractState routeStateHM genDir
     let refRoute = lookupRouteInRouteState unparsedRoute
         routeNameStr = constructRouteName refRoute
         topLevelVector = fromMaybeSV $ SV.fromList ["W.ApiContract", contractName, qualMethodName method, routeNameStr]
-        typeInsts = parseContractInfo routeNameStr unparsedRoute contractInfo method modStateHM typeStateHM
+        typeInsts = parseContractInfo routeNameStr contractInfo method modStateHM typeStateHM
     in (topLevelVector, typeInsts):acc
   
   fromMaybeSV :: Maybe a -> a
@@ -252,13 +252,12 @@ qualMethodName :: Method -> String
 qualMethodName = ("W." ++) . show
 
 parseContractInfo :: String 
-                  -> Route UnparsedPiece 
                   -> ContractInfo Ref 
                   -> Method 
                   -> ModuleState 
                   -> TypeState 
                   -> [Vector 4 String]
-parseContractInfo routeNameStr unpRouteInfo contractInfo method moduleStateHM typeStateHM = 
+parseContractInfo routeNameStr contractInfo method moduleStateHM typeStateHM = 
   let mApiErr = fmap (\typeInfo -> constructVector "ApiErr" (insertQual typeInfo) ) (apiError contractInfo)
       mApiOut = fmap (\typeInfo -> constructVector "ApiOut" (insertQual typeInfo) ) (apiOutput contractInfo)
       mHeaderParam = fmap (\typeInfo -> constructVector "HeaderIn" (insertQual typeInfo) ) (headerParam contractInfo)
@@ -379,7 +378,7 @@ generateModulesFromTypeState tState genPath moduleStateHM = do
  where
   parseSingleModuleTypes :: (SG.Module, ([TypeDefinition], Imports) ) -> (LHE.Module SrcSpanInfo, (String, String), (String, String) )
   parseSingleModuleTypes (sgModule, (typeDefnsList, importsHM) ) = 
-    let (relativeModulePath, hsFileName, typesModuleName) = getModulePathAndQualInfo moduleStateHM sgModule
+    let (relativeModulePath, hsFileName, _) = getModulePathAndQualInfo moduleStateHM sgModule
         typesModuleDir = genPath ++ relativeModulePath
         (modName, modQualName) = getModQualInfoModuleState moduleStateHM sgModule
 
