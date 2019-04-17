@@ -28,7 +28,8 @@ import qualified Text.Megaparsec.Char as M
 import qualified Data.HashSet as HS
 import qualified Data.Char as C
 import Network.HTTP.Media.MediaType (MediaType)
-import Data.Maybe 
+import Data.Maybe
+import qualified Debug.Trace as DT
 -- import qualified Dhall as D
 
 data Ref  = Inline Primitive
@@ -845,7 +846,6 @@ newtypeIfRoot prov n ref
           
 schemaDefinition :: (DefinitionName -> SwaggerGenerator Ref) -> Provenance -> DefinitionName -> Schema -> SwaggerGenerator Ref
 schemaDefinition defLookup prov def sch = do
-  liftIO $ putStrLn $ "Schema definition: " ++ show def
   let paramSchema = _schemaParamSchema sch
       additionalProps props = case OHM.null props of
         True -> case _schemaAdditionalProperties sch of
@@ -1030,7 +1030,6 @@ insertWithTypeMeta :: TypeMeta -> TypeDefinition -> SwaggerGenerator TypeDefinit
 insertWithTypeMeta !tyMeta !def = go def
 
   where go !tyDef = do
-          liftIO $ putStrLn $ "insert for Def: " ++ show tyMeta
           insertDef tyDef
 
         insertDef !val = do
@@ -1218,22 +1217,24 @@ resolveTypeClashes = do
           let modTys = HM.foldlWithKey' (\hses k@(Definition prov _) curTyDef ->
                                 HM.insertWith (++) (provModule prov) [(k, curTyDef)] hses) HM.empty s
               newTyState = HM.foldl' (\newTyS tyList ->
-                                        resolveTyListClashes 0 newTyS tyList) HM.empty modTys
+                                        resolveTyListClashes 0 [] newTyS tyList) HM.empty modTys
           in  newTyState
           
-        resolveTyListClashes _ !newTyState [] = newTyState
-        resolveTyListClashes !i !newTyState ((curProv, !curTyDef) : kvs) =
+        resolveTyListClashes _ resolved !newTyState [] = HM.fromList resolved `HM.union` newTyState
+        resolveTyListClashes !i resolved !newTyState ((curProv, !curTyDef) : kvs) =
           let clss = L.foldl' (\cs (_, tyDef) ->
                                  case checkNameClash curTyDef tyDef of
                                    []  -> cs
                                    cls -> cls ++ cs
-                            ) [] kvs
+                            ) [] (resolved ++ kvs)
           in case clss of
-               [] -> resolveTyListClashes 0 (HM.insert curProv curTyDef newTyState) kvs
-               _  -> resolveTyListClashes (i + 1) newTyState (( curProv
-                                                             , resolveTypeDefinitionClashes i clss curTyDef
-                                                             ) : kvs
-                                                            )
+               [] -> resolveTyListClashes 0 ((curProv, curTyDef) : resolved) newTyState kvs
+               _  -> resolveTyListClashes (i + 1) resolved
+                                                 newTyState
+                                                 (( curProv
+                                                  , resolveTypeDefinitionClashes i clss curTyDef
+                                                  ) : kvs
+                                                 )
 
 lookupTypeDefinition :: TypeMeta -> TypeState -> TypeDefinition
 lookupTypeDefinition r ts =
