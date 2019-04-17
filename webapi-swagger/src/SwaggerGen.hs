@@ -275,7 +275,10 @@ routeComponents (Route pieces) =
                        | otherwise      = '_'
         optionalH x = case T.head x of
           '_' -> "H" <> x
-          _   -> x
+          a | C.isDigit a
+              -> "H" <> x
+            | otherwise
+              -> x
 
 moduleQualification :: [T.Text] -> T.Text
 moduleQualification =
@@ -368,7 +371,8 @@ generateSwaggerState sw = do
 moduleState :: SwaggerGenerator ()
 moduleState = do
   rms <- gets (HM.keys . apiContract)
-  modify' (\s -> s { modules = mkModuleState rms })
+  let ms = mkModuleState rms
+  modify' (\s -> s { modules = ms })
 
 generateRoutesState :: Definitions Param -> Definitions Response -> OHM.InsOrdHashMap FilePath PathItem -> SwaggerGenerator ()
 generateRoutesState globalParams globalResps pItems = do
@@ -444,7 +448,7 @@ insertContract :: Route UnparsedPiece ->
                   Maybe Ref ->
                   Maybe Ref ->
                   SwaggerGenerator ()
-insertContract r m qp fp fip hp bdy suc err = do
+insertContract !r !m !qp !fp !fip !hp !bdy !suc !err = do
   let cInfo = ContractInfo { queryParam  = qp
                            -- , pathParam   = ""
                            , formParam   = fp
@@ -469,7 +473,7 @@ parseRouteType rt params = do
                                 DynParamPiece x -> x
                                 _               -> error "Panic: impossible case @unDynParamPiece"
                             ) . filter isDynParamPiece 
-      ppDyns = L.foldl' (\acc x -> case x of
+      ppDyns = L.foldl' (\ !acc x -> case x of
                             Dynamic ds -> unDynParamPiece ds : acc
                             Static _   -> acc
                         ) [] (getRoute pps)
@@ -753,7 +757,29 @@ paramSchemaDefinition prov def parSch = hasDef <$> go
               insertDefinition prov def tyDef
             Nothing    -> error "TODO: non string in enums"
 
-        arrayDefinition = error "TODO: array in param"
+        arrayDefinition mitem = do
+          case mitem of
+           Just (SwaggerItemsPrimitive mfmt ipar) -> primitiveArrayDefinition mfmt ipar
+           _                                      -> error "TODO: unhandled @arrayDef"
+
+        primitiveArrayDefinition :: Maybe (CollectionFormat t) -> ParamSchema t -> SwaggerGenerator Ref
+        primitiveArrayDefinition mfmt ipar = do
+          typeKeys <- getTypeStateKeys           
+          let arrCtsDef = newDefinitionName prov (def <> "ArrayContents") typeKeys
+              extProv   = extendProvenance def prov
+          rcty <- paramSchemaDefinition extProv arrCtsDef ipar
+          let unDefault = case rcty of
+                            Inline (Default cty) -> cty
+                            _                    -> rcty
+          let arTy = case mfmt of
+                Nothing              -> Array rcty
+                Just CollectionCSV   -> DelimitedCollection Comma unDefault
+                Just CollectionSSV   -> DelimitedCollection Space unDefault
+                Just CollectionTSV   -> DelimitedCollection SlashT unDefault
+                Just CollectionPipes -> DelimitedCollection Pipe unDefault
+                Just CollectionMulti -> MultiSet unDefault
+          pure (Inline arTy)
+          
         inline = pure . Inline
 
 singleton :: a -> [a]
@@ -779,11 +805,11 @@ newType rawName rawFld ref =
   in  defaultTypeDefinition cty
   
 productType :: T.Text -> [(T.Text, Ref)] -> TypeDefinition
-productType rawName rawFlds =
+productType !rawName !rawFlds =
   let dcon = DataConstructor
              (mkDataConstructorName rawName)
              fields
-      fields = map (\(fld, ref) -> (Just (mkRecordName fld), ref)) rawFlds
+      fields = map (\(!fld, !ref) -> (Just (mkRecordName fld), ref)) rawFlds
       cty = CustomType (mkTypeConstructorName rawName) [dcon]
       
   in  defaultTypeDefinition cty
@@ -799,7 +825,7 @@ mkTypeConstructorName = T.toTitle
 
 schemaDefinitions :: (DefinitionName -> SwaggerGenerator Ref) -> Provenance -> Definitions Schema -> SwaggerGenerator [Ref]
 schemaDefinitions defLookup prov defs =
-  OHM.foldlWithKey' (\s k sc -> do
+  OHM.foldlWithKey' (\ !s k sc -> do
                         xs <- s
                         x <- schemaDefinition defLookup prov k sc
                         pure (x : xs)
@@ -1001,29 +1027,17 @@ insertDefinition prov def tyDef = do
   pure (definitionRef prov def (Object (customHaskType val)))
 
 insertWithTypeMeta :: TypeMeta -> TypeDefinition -> SwaggerGenerator TypeDefinition
-insertWithTypeMeta tyMeta = go -- 0
+insertWithTypeMeta !tyMeta !def = go def
 
-  where go {-ct-} tyDef = do
+  where go !tyDef = do
           liftIO $ putStrLn $ "insert for Def: " ++ show tyMeta
           insertDef tyDef
-          {-
-          tyState <- gets typeState
-          let clss = HM.foldlWithKey' (\cs k v ->
-                                         case checkNameClash k tyMeta v tyDef of
-                                           []  -> cs        
-                                           cls -> cls ++ cs
-                                      ) [] tyState
-          case clss of
-            [] -> insertDef tyDef
-            _  -> go (ct + 1) (resolveClashes ct clss tyDef)
-          -}
-        insertDef val = do
+
+        insertDef !val = do
           let key = tyMeta
-          modify' (\sws -> sws { typeState   = HM.insertWith (flip const)
+          modify' (\sws -> sws { typeState   = HM.insertWith (\_ !b -> b)
                                               key val
                                               (typeState sws)
-                              , apiContract = apiContract sws
-                              , errors      = errors sws
                               }
                   )
           pure val
@@ -1245,18 +1259,20 @@ addResponseInstance pt tyDef =
 
 updateTypeDefinitionRec :: (TypeDefinition -> TypeDefinition) -> Ref -> SwaggerGenerator ()
 updateTypeDefinitionRec tyFun ref = do
-  modify' (\x -> x { typeState = go tyFun ref (typeState x) })
+  modify' (\x -> x { typeState = go HS.empty tyFun ref (typeState x) })
 
-  where go f (Ref r) !ts = 
+  where go !hs f (Ref r) !ts = 
           let rTyDef  = lookupTypeDefinition r ts
               ityRefs = innerTypeRefs (customHaskType rTyDef)
-          in updateTypeDefinition f r (L.foldl' (\ !acc ir -> go f ir acc) ts ityRefs)
-        go f (Inline (Default r)) ts = go f r ts
-        go f (Inline (Maybe r)) ts   = go f r ts
-        go f (Inline (Array r)) ts   = go f r ts
-        go f (Inline (Tuple rs)) !ts  =
-          L.foldl' (\ !acc r -> go f r acc) ts rs
-        go f (Inline (MultiSet r)) ts = go f r ts
-        go f (Inline (DelimitedCollection _ r)) ts =
-          go f r ts
-        go _ _ ts = ts
+          in case HS.member r hs of
+            True  -> ts
+            False -> updateTypeDefinition f r (L.foldl' (\ !acc ir -> go (HS.insert r hs) f ir acc) ts ityRefs)
+        go hs f (Inline (Default r)) ts = go hs f r ts
+        go hs f (Inline (Maybe r)) ts   = go hs f r ts
+        go hs f (Inline (Array r)) ts   = go hs f r ts
+        go !hs f (Inline (Tuple rs)) !ts  =
+          L.foldl' (\ !acc r -> go hs f r acc) ts rs
+        go hs f (Inline (MultiSet r)) ts = go hs f r ts
+        go hs f (Inline (DelimitedCollection _ r)) ts =
+          go hs f r ts
+        go _ _ _ ts = ts
