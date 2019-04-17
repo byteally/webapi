@@ -29,8 +29,8 @@ import qualified Data.HashSet as HS
 import qualified Data.Char as C
 import Network.HTTP.Media.MediaType (MediaType)
 import Data.Maybe
-import qualified Debug.Trace as DT
 -- import qualified Dhall as D
+
 
 data Ref  = Inline Primitive
           | Ref    TypeMeta
@@ -816,13 +816,43 @@ productType !rawName !rawFlds =
   in  defaultTypeDefinition cty
   
 mkRecordName :: T.Text -> T.Text
-mkRecordName = T.toLower
+mkRecordName = T.toLower . T.concat . filter (/= T.empty) . T.splitOn "_" . emptyRec . T.map replaceInvalidChars . replaceKeyword
+  where replaceInvalidChars t
+          | (C.isAlphaNum t) || t == '_' || t == '\'' = t
+          | otherwise = '_'
+
+        emptyRec :: T.Text -> T.Text
+        emptyRec "" = "emptyRecord"
+        emptyRec r  = r
+        
+        isHsKeyword :: T.Text -> Bool
+        isHsKeyword str = elem str haskellKeywords
+
+        replaceKeyword t
+          | isHsKeyword t = t <> "_"
+          | otherwise     = t
+        
 
 mkDataConstructorName :: T.Text -> T.Text
-mkDataConstructorName = T.toTitle
+mkDataConstructorName = T.toTitle . T.concat . filter (/= T.empty) . T.splitOn "_" . emptyCon . T.map replaceInvalidChars
+  where replaceInvalidChars t
+          | (C.isAlphaNum t) || t == '_' || t == '\'' = t
+          | otherwise                             = '_'
+
+        emptyCon :: T.Text -> T.Text
+        emptyCon "" = "EmptyCon"
+        emptyCon r  = r
 
 mkTypeConstructorName :: T.Text -> T.Text
-mkTypeConstructorName = T.toTitle
+mkTypeConstructorName = T.toTitle . T.concat . filter (/= T.empty) . T.splitOn "_" . emptyTyCon . T.map replaceInvalidChars
+  where replaceInvalidChars t
+          | (C.isAlphaNum t) || t == '_' || t == '\'' = t
+          | otherwise                             = '_'
+
+        emptyTyCon :: T.Text -> T.Text
+        emptyTyCon "" = "EmptyTyCon"
+        emptyTyCon r  = r
+
 
 schemaDefinitions :: (DefinitionName -> SwaggerGenerator Ref) -> Provenance -> Definitions Schema -> SwaggerGenerator [Ref]
 schemaDefinitions defLookup prov defs =
@@ -1277,3 +1307,40 @@ updateTypeDefinitionRec tyFun ref = do
         go hs f (Inline (DelimitedCollection _ r)) ts =
           go hs f r ts
         go _ _ _ ts = ts
+
+haskellKeywords :: [T.Text]
+haskellKeywords = 
+  ["as"
+  ,"case"
+  ,"of"
+  ,"class"
+  ,"data"
+  ,"data family"
+  ,"data instance"
+  ,"default"
+  ,"deriving"
+  ,"deriving instance"
+  ,"do"
+  ,"forall"
+  ,"foreign"
+  ,"hiding"
+  ,"if"
+  ,"then"
+  ,"else"
+  ,"import"
+  ,"infix"
+  ,"infixl"
+  ,"infixr"
+  ,"instance"
+  ,"let"
+  ,"in"
+  ,"mdo"
+  ,"module"
+  ,"newtype"
+  ,"proc"
+  ,"qualified"
+  ,"rec"
+  ,"type"
+  ,"type family"
+  ,"type instance"
+  ,"where"]
