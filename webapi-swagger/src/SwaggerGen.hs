@@ -29,7 +29,7 @@ import qualified Data.HashSet as HS
 import qualified Data.Char as C
 import Network.HTTP.Media.MediaType (MediaType)
 import Data.Maybe
--- import qualified Dhall as D
+import qualified Dhall as D
 
 
 data Ref  = Inline Primitive
@@ -1173,14 +1173,14 @@ routeParser = either (const Nothing) Just . M.parse go "ROUTE"
 
   where go :: RouteParser [PathParamPiece T.Text]
         go = do
-          x <- (Left <$> M.eof) M.<|> (Right <$> M.anySingle)
+          x <- (Left <$> M.eof) M.<|> (Right <$> M.anyChar)
           case x of
             Right '{' -> do
-              piece <- M.some (M.anySingleBut '}')
+              piece <- M.some (M.notChar '}')
               _ <- M.char '}'
               ((:) (DynParamPiece (T.pack piece))) <$> go
             Right v -> do
-              piece <- M.some (M.anySingleBut '{')
+              piece <- M.some (M.notChar '{')
               ((:) (StaticParamPiece (T.pack (v : piece)))) <$> go
             Left _ -> pure []
 
