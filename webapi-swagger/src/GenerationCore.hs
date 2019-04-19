@@ -32,6 +32,7 @@ import qualified Data.Char as Char
 import Data.Vector.Sized as SV hiding ((++), foldM, forM, mapM)
 import Data.Finite.Internal
 import Safe
+import Data.Either
 -- import Debug.Trace
 
 type ModuleTypes = HMS.HashMap SG.Module ([TypeDefinition], Imports)
@@ -119,13 +120,16 @@ runCodeGen swaggerJsonInputFilePath outputPath projectName = do
   case decodedVal of
     Left errMsg -> error $ errMsg -- "Panic: not a valid JSON or yaml"
     Right (swaggerData :: Swagger) -> do
-      finalStateVal <- runSwaggerGenerator (Config []) (generateSwaggerState swaggerData)
+      -- TODO: Read in the Config(s) from a file later
+      let config = Config {instanceTemplates = []}
+      let instanceTemplateList = instanceTemplates config
+      finalStateVal <- runSwaggerGenerator config (generateSwaggerState swaggerData)
       writeFile (projectSrcDir ++ "CommonTypes.hs") commonTypesModuleContent
       let tyState = typeState finalStateVal
       let routeStateHM = routeState finalStateVal
       let apiContractStateHM = apiContract finalStateVal
       let moduleStateHM = modules finalStateVal
-      modulesWithQualNames <- generateModulesFromTypeState tyState projectSrcDir moduleStateHM
+      modulesWithQualNames <- generateModulesFromTypeState tyState projectSrcDir moduleStateHM instanceTemplateList
       generateContractFromContractState "SwaggerContract" apiContractStateHM routeStateHM projectFolderGenPath moduleStateHM tyState
       let moduleNamesOnly =  fst $ DL.unzip $ Set.toList modulesWithQualNames
       writeCabalAndProjectFiles projectFolderGenPath projectName False moduleNamesOnly
@@ -351,22 +355,24 @@ showRoutePiece routePiece =
 --       [] -> error $ "Encountered empty Route! Expected the route to contain atleast one piece!"
 --       routeInfoList -> DL.intercalate "." $ fmap (validateRouteModuleName . showRoutePiece) routeInfoList  
 
-generateModulesFromTypeState :: TypeState -> FilePath -> ModuleState -> IO (Set.Set (String, String) )
-generateModulesFromTypeState tState genPath moduleStateHM = do
+generateModulesFromTypeState :: TypeState -> FilePath -> ModuleState -> [InstanceTemplate] -> IO (Set.Set (String, String) )
+generateModulesFromTypeState tState genPath moduleStateHM instanceTemplateList = do
   let moduleTypesHM = parseTypeStateIntoModuleTypes tState moduleStateHM
-  let (finalHseModules, importsList, folderPathWithfileName)  = DL.unzip3 $ fmap parseSingleModuleTypes $ HMS.toList moduleTypesHM
-  Prelude.mapM_ (\(moduleContents, (modulePath, fName) ) -> do
+  let singleModuleResults = fmap parseSingleModuleTypes $ HMS.toList moduleTypesHM
+  importsList <- Prelude.mapM (\(moduleContents, impsForModule, (modulePath, fName), errTxts ) -> do
         createDirectoryIfMissing True modulePath
-        writeFile (modulePath ++ fName) (prettyPrint moduleContents) ) $ DL.zip finalHseModules folderPathWithfileName
+        writeFile (modulePath ++ fName) (prettyPrint moduleContents) 
+        putStrLn $ T.unpack errTxts
+        pure impsForModule ) singleModuleResults 
   pure $ Set.fromList importsList
 
  where
-  parseSingleModuleTypes :: (SG.Module, ([TypeDefinition], Imports) ) -> (LHE.Module SrcSpanInfo, (String, String), (String, String) )
+  parseSingleModuleTypes :: (SG.Module, ([TypeDefinition], Imports) ) -> (LHE.Module SrcSpanInfo, (String, String), (String, String), T.Text )
   parseSingleModuleTypes (sgModule, (typeDefnsList, importsHM) ) = 
     let (relativeModulePath, hsFileName, _) = getModulePathAndQualInfo moduleStateHM sgModule
         typesModuleDir = genPath ++ relativeModulePath
         (modName, modQualName) = getModQualInfoModuleState moduleStateHM sgModule
-
+        (declAcc, errMsgs) = (DL.foldl' (modAndTypesToHSEModule sgModule moduleStateHM) ([],"") typeDefnsList)
         hseModule = 
           Module noSrcSpan 
             (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan modName) Nothing Nothing)
@@ -374,50 +380,43 @@ generateModulesFromTypeState tState genPath moduleStateHM = do
             (fmap moduleImport 
               ( (DL.zip importsForTypesModule (cycle [(False, Nothing)]) ) 
                 ++ (qualTyModuleImports (HMS.toList importsHM) ) )) 
-            (DL.foldl' (modAndTypesToHSEModule sgModule moduleStateHM) [] typeDefnsList)
-    in (hseModule, (modName, modQualName), (typesModuleDir, hsFileName))
+            (declAcc)
+    in (hseModule, (modName, modQualName), (typesModuleDir, hsFileName), errMsgs)
     
     
-  modAndTypesToHSEModule :: SG.Module -> ModuleState -> [Decl SrcSpanInfo] -> TypeDefinition -> [Decl SrcSpanInfo]
-  modAndTypesToHSEModule sgModule modState declAcc tyDefn = 
-    let newDataDecl =  constructDeclFromCustomType sgModule tyDefn modState tState
-    in newDataDecl:declAcc
+  modAndTypesToHSEModule :: SG.Module -> ModuleState -> ([Decl SrcSpanInfo], T.Text) -> TypeDefinition -> ([Decl SrcSpanInfo], T.Text)
+  modAndTypesToHSEModule sgModule modState (declAcc, errAcc) tyDefn = 
+    let (newDataDecls, errMsgs) =  constructDeclFromCustomType sgModule tyDefn modState tState instanceTemplateList
+        -- map over typeInstances, lookup and get InstanceTemplates, construct instanceTemplates, add to Decl List
+    in (declAcc ++ newDataDecls, errAcc <> errMsgs)
 
-
-  -- parseRouteIntoFolderName :: Route UnparsedPiece -> String
-  -- parseRouteIntoFolderName routeInfo =
-  --   case getRoute routeInfo of
-  --     [] -> error $ "Encountered empty Route! Expected the route to contain atleast one piece!"
-  --     routeInfoList -> DL.intercalate "/" $ fmap (validateRouteDirectoryPath . showRoutePiece) routeInfoList
 
   qualTyModuleImports :: [(String, String)] -> [(String, (Bool, Maybe (ModuleName SrcSpanInfo)))]
   qualTyModuleImports conditionalImportList =
     let qualImportList = qualifiedImportsForTypesModule ++ conditionalImportList
     in fmap (\(fullModuleName, qual) ->  (fullModuleName, (True, Just $ ModuleName noSrcSpan qual)) ) qualImportList
 
-  -- constructLocalTypeModulePath :: Route UnparsedPiece -> Maybe Method -> FilePath -> (String, String)
-  -- constructLocalTypeModulePath routeInfo mMethodName genDirPath =
-  --   let routePath = parseRouteIntoFolderName routeInfo
-  --   in 
-  --     case mMethodName of
-  --       Just stdMethodName -> 
-  --         ( genDirPath ++ (localRouteMethodTypesPath routePath stdMethodName), hsModuleToFileName localRouteMethodTypesModuleName)
-  --       Nothing -> 
-  --         ( genDirPath ++ (routeLevelTypesPath routePath), hsModuleToFileName routeLevelTypesModuleName)
+lookupInstance :: Instance -> [InstanceTemplate] -> Either T.Text InstanceTemplate
+lookupInstance inst instanceTemplateList = 
+  case DL.find isMatchingInstanceTemplate instanceTemplateList of
+    Just template -> Right template
+    -- TODO : Inform user that this produced no result and that an Instance Template has to be written!
+    Nothing -> -- {instanceType = ""{-ParamInstance (QueryParam) -}, className ="", methods = []}
+      Left $ "\n\nERROR: Did not find an Instance Template for the Instance that we are trying to construct! "
+        <> "\nInstance: " <> (T.pack $ show inst)
+        -- <> "\nInstanceTemplates: " <> (T.pack $ show instanceTemplateList) 
 
 
+ where
+  isMatchingInstanceTemplate :: InstanceTemplate -> Bool
+  isMatchingInstanceTemplate currentInstTemplate = True -- temp hack. 
+    -- instanceType currentInstTemplate == inst
   
 validateRouteDirectoryPath :: String -> String
 validateRouteDirectoryPath = id
 
 validateRouteModuleName :: String -> String
 validateRouteModuleName = id
-  --  where
-  --   createDataDeclarations :: [(CreateDataType, NamingCounter)] -> [Decl SrcSpanInfo]
-  --   createDataDeclarations = DL.foldl' createTypeDeclFromCDT []  
-  
-  -- getGlobalModuleNames :: [String] -> [String]
-  -- getGlobalModuleNames = DL.filter (DL.isInfixOf ".GlobalDefinitions.") 
     
 
 -- NOTE : Do NOT call this function.
@@ -426,7 +425,7 @@ validateRouteModuleName = id
 getRefImports :: Ref -> ModuleState -> [(String, String)]
 getRefImports ref moduleStateHM = 
   case ref of
-    (Inline prim) -> 
+    (Inline _ prim) -> 
       case prim of
         Date -> [("Data.Time.Calendar", "P")]
         DateTime -> [("Data.Time.Clock", "P")]
@@ -470,25 +469,36 @@ getRefImports ref moduleStateHM =
 --       dCons2 = DataConstructor "PendingCons" [(Nothing, Ref (Local  routeDefn GET ["Pending"]) "defName2" "AvlTyName" )]
 --   in CustomType "ComplexSumTy" [dCons1, dCons2]
 
-constructDeclFromCustomType :: SG.Module -> TypeDefinition -> ModuleState -> TypeState -> Decl SrcSpanInfo
-constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM = 
+constructDeclFromCustomType :: SG.Module 
+                            -> TypeDefinition 
+                            -> ModuleState 
+                            -> TypeState 
+                            -> [InstanceTemplate] 
+                            -> ([Decl SrcSpanInfo], T.Text)
+constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instanceTemplateList = 
   let customTy = customHaskType typeDefn
       derivingList = fmap (T.unpack) $ derivingConstraints typeDefn 
+      typeInstances = instances typeDefn
   in case customTy of
       CustomType tyConstructor dataConsList -> 
-        DataDecl noSrcSpan  
-          (dataOrNewType False)
-          Nothing 
-          (declHead $ T.unpack tyConstructor)
-          (qualConDecls sgModule (Left dataConsList) )
-          (derivingDecl derivingList)
+        let (qualConDecls, instDecls, errMsgs) = qualConDeclsWithInstDecls sgModule tyConstructor (Left dataConsList) typeInstances
+            currentDataDecl = DataDecl noSrcSpan  
+                                (dataOrNewType False)
+                                Nothing 
+                                (declHead $ T.unpack tyConstructor)
+                                (qualConDecls)
+                                (derivingDecl derivingList)
+        in (currentDataDecl:instDecls, errMsgs)
       CustomNewType tyConstructor dConsName mRec ref  ->
-        DataDecl noSrcSpan  
-          (dataOrNewType True)
-          Nothing 
-          (declHead $ T.unpack tyConstructor)
-          (qualConDecls sgModule (Right (dConsName, mRec, ref) ))
-          (derivingDecl derivingList)
+        let (qualConDecls, instDecls, errMsgs) = (qualConDeclsWithInstDecls sgModule tyConstructor (Right (dConsName, mRec, ref) ) typeInstances)
+            currentDataDecl = DataDecl noSrcSpan  
+                                (dataOrNewType True)
+                                Nothing 
+                                (declHead $ T.unpack tyConstructor)
+                                (qualConDecls)
+                                (derivingDecl derivingList)
+        in (currentDataDecl:instDecls, errMsgs)
+        
  where 
   dataOrNewType :: Bool -> DataOrNew SrcSpanInfo
   dataOrNewType isNewType =
@@ -499,42 +509,135 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM =
   declHead :: String -> DeclHead SrcSpanInfo
   declHead declHeadName = DHead noSrcSpan (nameDecl declHeadName) 
 
-  qualConDecls :: SG.Module -> Either [DataConstructor] (T.Text, Maybe RecordName, Ref) -> [QualConDecl SrcSpanInfo]
-  qualConDecls currentModuleInfo dataCons = 
+  qualConDeclsWithInstDecls :: SG.Module 
+                            -> TypeConstructor
+                            -> Either [DataConstructor] (T.Text, Maybe RecordName, Ref) 
+                            -> [Instance]
+                            -> ([QualConDecl SrcSpanInfo], [Decl SrcSpanInfo], T.Text)
+  qualConDeclsWithInstDecls currentModuleInfo tyCons dataCons typeInstances = 
     case dataCons of
-      Left dataConsList ->  
-            fmap (\(DataConstructor dConsName mRecRefList) -> 
-                case fst $ DL.unzip mRecRefList of
-                  mRecList -> 
-                    case catMaybes mRecList of
-                      -- SumType
-                      [] -> 
-                        let typeConsList = fmap (typeConstructor . (showRefTyWithQual moduleStateHM typeStateHM (Just currentModuleInfo) ) ) $ snd $ DL.unzip mRecRefList
-                        in QualConDecl noSrcSpan Nothing Nothing 
-                            (ConDecl noSrcSpan (nameDecl $ T.unpack dConsName) typeConsList)
-
-                      -- ProductType
-                      recVals -> 
-                        -- TODO: We should check that the 2 lists are of equal lengths?
-                        let typeNames = fmap (showRefTyWithQual moduleStateHM typeStateHM (Just currentModuleInfo)) $ snd $ DL.unzip mRecRefList
-                            recordNamesWithTypes = DL.zip (fmap T.unpack recVals) typeNames
-                            fieldDecls = fmap fieldDecl recordNamesWithTypes
-                        in QualConDecl noSrcSpan Nothing Nothing 
-                              (RecDecl noSrcSpan (nameDecl $ T.unpack dConsName) fieldDecls)                
-            ) dataConsList
+      Left dataConsList 
+        | isProductType dataConsList ->
+            -- TODO: We should check that the 2 lists are of equal lengths?
+          let [DataConstructor dConsName mRecRefList] = dataConsList
+              typeNames = fmap (showRefTyWithQual moduleStateHM typeStateHM (Just currentModuleInfo)) $ snd $ DL.unzip mRecRefList
+              recVals = catMaybes $ fst $ DL.unzip mRecRefList
+              recordNamesWithTypes = DL.zip (fmap T.unpack recVals) typeNames
+              fieldDecls = fmap fieldDecl recordNamesWithTypes
+              qualDecl = 
+                [QualConDecl noSrcSpan Nothing Nothing 
+                  (RecDecl noSrcSpan (nameDecl $ T.unpack dConsName) fieldDecls)]                
+              (errMessages, instDecls) = partitionEithers $ fmap (constructInstDecl instanceTemplateList dConsName mRecRefList) typeInstances
+          in (qualDecl, instDecls, T.concat errMessages)
+        | isEnumType dataConsList ->
+          let qualDecls = 
+                fmap (\(DataConstructor dConsName mRecRefList) -> 
+                          let typeConsList = fmap (typeConstructor . (showRefTyWithQual moduleStateHM typeStateHM (Just currentModuleInfo) ) ) $ snd $ DL.unzip mRecRefList
+                          in QualConDecl noSrcSpan Nothing Nothing 
+                              (ConDecl noSrcSpan (nameDecl $ T.unpack dConsName) typeConsList) ) dataConsList
+              instDecls = []
+              errMessages = ""
+          in (qualDecls, instDecls, errMessages)
+          -- Sum Type
+        | otherwise  -> 
+          let qualDecls = 
+                fmap (\(DataConstructor dConsName mRecRefList) -> 
+                          let typeConsList = fmap (typeConstructor . (showRefTyWithQual moduleStateHM typeStateHM (Just currentModuleInfo) ) ) $ snd $ DL.unzip mRecRefList
+                          in QualConDecl noSrcSpan Nothing Nothing 
+                              (ConDecl noSrcSpan (nameDecl $ T.unpack dConsName) typeConsList) ) dataConsList
+              instDecls = []
+              errMessages = ""
+          in (qualDecls, instDecls, errMessages)
       Right (dConsTxt, mRecName, refTy) ->  
         let recTy = showRefTyWithQual moduleStateHM typeStateHM (Just currentModuleInfo) refTy
-        in case mRecName of
-              Just recName ->
-                [QualConDecl noSrcSpan Nothing Nothing 
-                      (RecDecl noSrcSpan (nameDecl $ T.unpack dConsTxt) 
-                          [fieldDecl (T.unpack recName, recTy)] )]
-              Nothing ->
-                let tyCons = typeConstructor recTy
-                in [QualConDecl noSrcSpan Nothing Nothing 
-                    (ConDecl noSrcSpan (nameDecl $ T.unpack dConsTxt) [tyCons])]
+            qualDecls =
+              case mRecName of
+                Just recName ->
+                  [QualConDecl noSrcSpan Nothing Nothing 
+                        (RecDecl noSrcSpan (nameDecl $ T.unpack dConsTxt) 
+                            [fieldDecl (T.unpack recName, recTy)] )]
+                Nothing ->
+                  let tyConsName = typeConstructor recTy
+                  in [QualConDecl noSrcSpan Nothing Nothing 
+                      (ConDecl noSrcSpan (nameDecl $ T.unpack dConsTxt) [tyConsName])]
+        in (qualDecls, [], "")
 
-  
+   where
+    isProductType :: [DataConstructor] -> Bool
+    isProductType dCons = 
+      case dCons of
+        [singleDCon] -> hasRecordField singleDCon
+        _ -> False
+
+    hasRecordField :: DataConstructor -> Bool
+    hasRecordField (DataConstructor _ recNameRefList) = 
+      not $ DL.null $ catMaybes $ fst $ DL.unzip recNameRefList
+
+    isEnumType :: [DataConstructor] -> Bool
+    isEnumType dCons =
+      let ctorList = DL.concat $ fmap (\(DataConstructor _ recNameRefList) -> recNameRefList ) dCons
+      in case ctorList of
+          [] -> True
+          _ -> False
+    
+    constructInstDecl :: [InstanceTemplate] -> DataConstructorName -> [(Maybe RecordName, Ref)] -> Instance -> Either T.Text (Decl SrcSpanInfo) 
+    constructInstDecl instTemplateList dConsName mRecRefList currentInst = 
+      case lookupInstance currentInst instTemplateList of
+        Left errMsg -> Left errMsg
+        Right instTmp -> 
+          let ctor = dConsName
+              tyCon = tyCons
+              varName = "val"
+              fields = fmap refListToField mRecRefList  -- [("X", "x"), ("Y", "y")]
+              code = "instance " <> (className instTmp) <> " " <> tyCon <> " where\n  "
+                        <> (T.concat $ fmap (showInstanceMethod ctor varName fields) (methods instTmp) )
+              parseModeWithExts = LHE.defaultParseMode {LHE.extensions = [LHE.EnableExtension LHE.DataKinds, LHE.EnableExtension LHE.MultiParamTypeClasses]}
+          in 
+            case LHE.parseDeclWithMode parseModeWithExts (T.unpack code) of
+              LHE.ParseOk decl -> 
+                case decl of
+                  LHE.InstDecl _ _ _ _ -> 
+                    -- appendFile "/Users/kahlil/projects/ByteAlly/webapi/webapi-swagger/sampleFiles/Sample.hs" (LHE.prettyPrint decl)
+                    Right decl
+                  _ -> -- error $ 
+                    Left $ "\n\nERROR: The decl we parsed is NOT an InstDecl! "
+                        <> "Expected an InstDecl as we are parsing a Custom Instance! "
+                        <> "\nGot: " <> (T.pack $ show decl)
+              LHE.ParseFailed srcLoc errString -> 
+                Left $ "\n\nERROR: Failed while parsing an Instance text! "
+                  <> "\nLocation: " <> (T.pack $ show srcLoc)
+                  <> "\nError Message: " <> (T.pack errString)
+                  <> "\n" <> code
+                  <> "\nPlease verify that the Instance Template/Instance Text is correct!"
+     where
+      showInstanceMethod :: T.Text -> T.Text -> [(T.Text, T.Text)] -> MethodTemplate -> T.Text
+      showInstanceMethod ctor varName fields methodTemplate = 
+        (methodName methodTemplate) <> " = "  <> (body methodTemplate)
+                        <> " \\" <> varName <> " -> "
+                        <> T.intercalate (" \n      " <> (fieldCombinator methodTemplate)
+                                              <> " ")
+                                        ( showCtorAndFieldTemplates (ctorTemplate methodTemplate ctor ctor) 
+                                              (DL.map (\(x, y) -> fieldTemplate methodTemplate x y varName) fields)
+                                        )
+                                      
+      showCtorAndFieldTemplates :: Maybe T.Text -> [T.Text] -> [T.Text]                                    
+      showCtorAndFieldTemplates mCtorTemplate fieldTemplateList =
+        case  mCtorTemplate of
+          Just ctorText -> ctorText:fieldTemplateList
+          Nothing -> fieldTemplateList
+
+      refListToField :: (Maybe RecordName, Ref) -> (RecordName, T.Text) 
+      refListToField (mRecName, ref) = 
+        let fjnErr = "Expected RecordName in DataConstructor of a Product Type!"
+                        ++ "\nGot a Nothing! Debug Info: "
+                        ++ "\nData Cons Name: " ++ (show dConsName) 
+                        ++ "\nRecord and Ref List: " ++ (show mRecRefList)
+            recName = fromJustNote fjnErr mRecName
+            defnName = 
+              case ref of
+                (Ref (Definition _ defName)) -> defName
+                (Inline defName _) -> defName 
+        in (defnName, recName)
 
 -- -- Product Types
 -- [QualConDecl noSrcSpan Nothing Nothing (RecDecl noSrcSpan (nameDecl constructorName) fieldDecls )]
@@ -549,7 +652,7 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM =
 --         (nameDecl construcorVal) [] ) )
 
 showRefTyWithQual :: ModuleState -> TypeState -> Maybe SG.Module -> Ref -> String
-showRefTyWithQual moduleStateHM typeStateHM mModule (Inline prim) = 
+showRefTyWithQual moduleStateHM typeStateHM mModule (Inline _ prim) = 
   let (qual, ty) = showPrimitiveTy (Just moduleStateHM) (Just typeStateHM) mModule prim
   in qual ++ ty
 showRefTyWithQual moduleStateHM typeStateHM mModule (Ref typeMeta) = 
@@ -558,7 +661,7 @@ showRefTyWithQual moduleStateHM typeStateHM mModule (Ref typeMeta) =
   in printRefWithQual moduleStateHM sgModule mModule tyCon
 
 showRefTy :: Maybe SG.Module -> Maybe TypeState -> Ref -> String
-showRefTy mModule mTyState (Inline prim) = snd $ showPrimitiveTy Nothing mTyState mModule prim
+showRefTy mModule mTyState (Inline _ prim) = snd $ showPrimitiveTy Nothing mTyState mModule prim
 showRefTy _ mTyState (Ref typeMeta) = 
   let typeStateHM = fromJustNote ("Expected a TypeState but got a Nothing! Type Meta: " ++ (show typeMeta) ) mTyState
   in printRef (getTypeConstructor $ lookupTypeStateGetCustomHaskType typeMeta typeStateHM)
