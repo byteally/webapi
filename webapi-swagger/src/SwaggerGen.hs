@@ -813,6 +813,14 @@ productType !rawName !rawFlds =
       cty = CustomType (mkTypeConstructorName rawName) [dcon]
       
   in  defaultTypeDefinition cty
+
+mkRouteName :: [RoutePiece Ref] -> T.Text
+mkRouteName =
+  T.intercalate "_" . map mkRoutePiece
+
+  where mkRoutePiece (Static rpc) = mkTypeConstructorName rpc
+        mkRoutePiece (Dynamic _rp) = "Dynamic"
+
   
 mkRecordName :: T.Text -> T.Text
 mkRecordName = replaceKeyword . emptyRecOrNum . T.toLower . T.intercalate "_" . filter (/= T.empty) . T.splitOn "_" . T.map replaceInvalidChars 

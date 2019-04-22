@@ -110,9 +110,13 @@ parseTypeStateIntoModuleTypes tyState moduleStateHM =
 
 runCodeGen :: FilePath -> FilePath -> String -> IO () 
 runCodeGen swaggerJsonInputFilePath outputPath projectName = do
-  removeDirectoryRecursive outputPath
+  -- removeDirectoryRecursive outputPath
   let projectFolderGenPath = outputPath ++ projectName ++ "/"
   let projectSrcDir = (projectFolderGenPath ++ "src/")
+  hasSrcDir <- doesPathExist projectSrcDir
+  case hasSrcDir of
+    True  -> removeDirectoryRecursive projectSrcDir
+    False -> removeDirectoryRecursive outputPath
   createDirectoryIfMissing True projectSrcDir
   swaggerJSONContents <- liftIO $ BSL.readFile swaggerJsonInputFilePath
   let decodedVal = eitherDecode swaggerJSONContents <|> either (Left . show) Right (decodeEither' (BSL.toStrict swaggerJSONContents))
@@ -190,7 +194,7 @@ generateContractFromContractState contractName contractState routeStateHM genDir
   constructRouteName :: Route Ref -> String
   constructRouteName routeInfo =
     let routePieces = getRoute routeInfo
-        routePiecesStr = prettifyRouteName routePieces
+        routePiecesStr = T.unpack (mkRouteName routePieces)
     in routePiecesStr ++ "R"
 
   lookupRouteInRouteState ::(Route UnparsedPiece) -> Route Ref
