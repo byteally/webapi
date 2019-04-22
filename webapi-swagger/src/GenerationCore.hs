@@ -411,8 +411,8 @@ lookupInstance inst instanceTemplateList =
 
  where
   isMatchingInstanceTemplate :: InstanceTemplate -> Bool
-  isMatchingInstanceTemplate currentInstTemplate = True -- temp hack. 
-    -- instanceType currentInstTemplate == inst
+  isMatchingInstanceTemplate currentInstTemplate = 
+    instanceType currentInstTemplate == inst
   
 validateRouteDirectoryPath :: String -> String
 validateRouteDirectoryPath = id
