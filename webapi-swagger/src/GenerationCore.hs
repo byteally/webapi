@@ -376,23 +376,25 @@ generateModulesFromTypeState tState genPath moduleStateHM instanceTemplateList =
     let (relativeModulePath, hsFileName, _) = getModulePathAndQualInfo moduleStateHM sgModule
         typesModuleDir = genPath ++ relativeModulePath
         (modName, modQualName) = getModQualInfoModuleState moduleStateHM sgModule
-        (declAcc, errMsgs) = (DL.foldl' (modAndTypesToHSEModule sgModule moduleStateHM) ([],"") typeDefnsList)
+        (declAcc, errMsgs, userImports) = (DL.foldl' (modAndTypesToHSEModule sgModule moduleStateHM) ([],"", []) typeDefnsList)
+        uqUserImports = DL.nub userImports
+        importsWithUserImports = importsForTypesModule ++ (fmap T.unpack uqUserImports)
         hseModule = 
           Module noSrcSpan 
             (Just $ ModuleHead noSrcSpan (ModuleName noSrcSpan modName) Nothing Nothing)
             (fmap languageExtension languageExtensionsForTypesModule)
             (fmap moduleImport 
-              ( (DL.zip importsForTypesModule (cycle [(False, Nothing)]) ) 
+              ( (DL.zip importsWithUserImports (cycle [(False, Nothing)]) ) 
                 ++ (qualTyModuleImports (HMS.toList importsHM) ) )) 
             (declAcc)
     in (hseModule, (modName, modQualName), (typesModuleDir, hsFileName), errMsgs)
     
     
-  modAndTypesToHSEModule :: SG.Module -> ModuleState -> ([Decl SrcSpanInfo], T.Text) -> TypeDefinition -> ([Decl SrcSpanInfo], T.Text)
-  modAndTypesToHSEModule sgModule modState (declAcc, errAcc) tyDefn = 
-    let (newDataDecls, errMsgs) =  constructDeclFromCustomType sgModule tyDefn modState tState instanceTemplateList
+  modAndTypesToHSEModule :: SG.Module -> ModuleState -> ([Decl SrcSpanInfo], T.Text, [T.Text]) -> TypeDefinition -> ([Decl SrcSpanInfo], T.Text, [T.Text])
+  modAndTypesToHSEModule sgModule modState (declAcc, errAcc, userImportsAcc) tyDefn = 
+    let (newDataDecls, errMsgs, userImports) =  constructDeclFromCustomType sgModule tyDefn modState tState instanceTemplateList
         -- map over typeInstances, lookup and get InstanceTemplates, construct instanceTemplates, add to Decl List
-    in (declAcc ++ newDataDecls, errAcc <> errMsgs)
+    in (declAcc ++ newDataDecls, errAcc <> errMsgs, userImports ++ userImportsAcc)
 
 
   qualTyModuleImports :: [(String, String)] -> [(String, (Bool, Maybe (ModuleName SrcSpanInfo)))]
@@ -413,8 +415,8 @@ lookupInstance inst instanceTemplateList =
 
  where
   isMatchingInstanceTemplate :: InstanceTemplate -> Bool
-  isMatchingInstanceTemplate currentInstTemplate = True -- temp hack. 
-    -- instanceType currentInstTemplate == inst
+  isMatchingInstanceTemplate currentInstTemplate = 
+    instanceType currentInstTemplate == inst
   
 validateRouteDirectoryPath :: String -> String
 validateRouteDirectoryPath = id
@@ -478,30 +480,32 @@ constructDeclFromCustomType :: SG.Module
                             -> ModuleState 
                             -> TypeState 
                             -> [InstanceTemplate] 
-                            -> ([Decl SrcSpanInfo], T.Text)
+                            -> ([Decl SrcSpanInfo], T.Text, [T.Text])
 constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instanceTemplateList = 
   let customTy = customHaskType typeDefn
       derivingList = fmap (T.unpack) $ derivingConstraints typeDefn 
       typeInstances = instances typeDefn
   in case customTy of
       CustomType tyConstructor dataConsList -> 
-        let (qualConDecls, instDecls, errMsgs) = qualConDeclsWithInstDecls sgModule tyConstructor (Left dataConsList) typeInstances
+        let (qualConDecls, instDeclsWithUserImports, errMsgs) = qualConDeclsWithInstDecls sgModule tyConstructor (Left dataConsList) typeInstances
             currentDataDecl = DataDecl noSrcSpan  
                                 (dataOrNewType False)
                                 Nothing 
                                 (declHead $ T.unpack tyConstructor)
                                 (qualConDecls)
                                 (derivingDecl derivingList)
-        in (currentDataDecl:instDecls, errMsgs)
+            (instDecls, userImports) = DL.unzip instDeclsWithUserImports
+        in (currentDataDecl:instDecls, errMsgs, DL.concat userImports)
       CustomNewType tyConstructor dConsName mRec ref  ->
-        let (qualConDecls, instDecls, errMsgs) = (qualConDeclsWithInstDecls sgModule tyConstructor (Right (dConsName, mRec, ref) ) typeInstances)
+        let (qualConDecls, instDeclsWithUserImports, errMsgs) = (qualConDeclsWithInstDecls sgModule tyConstructor (Right (dConsName, mRec, ref) ) typeInstances)
             currentDataDecl = DataDecl noSrcSpan  
                                 (dataOrNewType True)
                                 Nothing 
                                 (declHead $ T.unpack tyConstructor)
                                 (qualConDecls)
                                 (derivingDecl derivingList)
-        in (currentDataDecl:instDecls, errMsgs)
+            (instDecls, userImports) = DL.unzip instDeclsWithUserImports
+        in (currentDataDecl:instDecls, errMsgs, DL.concat userImports)
         
  where 
   dataOrNewType :: Bool -> DataOrNew SrcSpanInfo
@@ -517,7 +521,7 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instance
                             -> TypeConstructor
                             -> Either [DataConstructor] (T.Text, Maybe RecordName, Ref) 
                             -> [Instance]
-                            -> ([QualConDecl SrcSpanInfo], [Decl SrcSpanInfo], T.Text)
+                            -> ([QualConDecl SrcSpanInfo], [(Decl SrcSpanInfo, [T.Text])], T.Text)
   qualConDeclsWithInstDecls currentModuleInfo tyCons dataCons typeInstances = 
     case dataCons of
       Left dataConsList 
@@ -584,7 +588,7 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instance
           [] -> True
           _ -> False
     
-    constructInstDecl :: [InstanceTemplate] -> DataConstructorName -> [(Maybe RecordName, Ref)] -> Instance -> Either T.Text (Decl SrcSpanInfo) 
+    constructInstDecl :: [InstanceTemplate] -> DataConstructorName -> [(Maybe RecordName, Ref)] -> Instance -> Either T.Text (Decl SrcSpanInfo, [T.Text]) 
     constructInstDecl instTemplateList dConsName mRecRefList currentInst = 
       case lookupInstance currentInst instTemplateList of
         Left errMsg -> Left errMsg
@@ -596,13 +600,14 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instance
               code = "instance " <> (className instTmp) <> " " <> tyCon <> " where\n  "
                         <> (T.concat $ fmap (showInstanceMethod ctor varName fields) (methods instTmp) )
               parseModeWithExts = LHE.defaultParseMode {LHE.extensions = [LHE.EnableExtension LHE.DataKinds, LHE.EnableExtension LHE.MultiParamTypeClasses]}
+              userImports = importNames instTmp
           in 
             case LHE.parseDeclWithMode parseModeWithExts (T.unpack code) of
               LHE.ParseOk decl -> 
                 case decl of
                   LHE.InstDecl _ _ _ _ -> 
                     -- appendFile "/Users/kahlil/projects/ByteAlly/webapi/webapi-swagger/sampleFiles/Sample.hs" (LHE.prettyPrint decl)
-                    Right decl
+                    Right (decl, userImports)
                   _ -> -- error $ 
                     Left $ "\n\nERROR: The decl we parsed is NOT an InstDecl! "
                         <> "Expected an InstDecl as we are parsing a Custom Instance! "
