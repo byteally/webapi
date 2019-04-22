@@ -1214,6 +1214,7 @@ data InstanceTemplate = InstanceTemplate
   { instanceType :: Instance
   , className    :: T.Text
   , methods      :: [MethodTemplate]
+  , importNames  :: [T.Text]
   } deriving (Generic)
 
 data MethodTemplate = MethodTemplate
