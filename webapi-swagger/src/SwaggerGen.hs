@@ -30,9 +30,10 @@ import qualified Data.Char as C
 import Network.HTTP.Media.MediaType (MediaType)
 import Data.Maybe
 import qualified Dhall as D
+import qualified Language.Haskell.Exts as LHE hiding (OPTIONS, Int, Tuple, Comma)
 
 
-data Ref  = Inline Primitive
+data Ref  = Inline DefinitionName Primitive 
           | Ref    TypeMeta
           deriving (Show, Eq, Generic)
 
@@ -208,11 +209,11 @@ data ParamType a = QueryParam
                  | PathParam
                  | FileParam
                  | HeaderParam
-                 | BodyParam [a]
+                 | BodyParam a
                  deriving (Show, Eq, Generic)
 
-data ResponseType a = ApiOutput [a]
-                    | ApiError [a]
+data ResponseType a = ApiOutput a
+                    | ApiError a
                     | HeaderOutput
                   deriving (Show, Eq, Generic)
 
@@ -419,10 +420,10 @@ generateRouteMethodState globalParams globalResps routeRefs route meth mOp =
       fpTy   <- paramDefinitions FormParam route meth fp
       fipTy  <- paramDefinitions FileParam route meth fip
       hpTy   <- paramDefinitions HeaderParam route meth hp
-      bodyTy <- paramDefinitions (BodyParam []) route meth bp
+      bodyTy <- paramDefinitions undefined route meth bp
       let (sucs, fails, _headers) = groupOutputDefinitions globalResps opResponses
-      succTy <- outputDefinitions (ApiOutput []) route meth sucs
-      errTy <- outputDefinitions (ApiError []) route meth fails
+      succTy <- outputDefinitions undefined route meth sucs
+      errTy <- outputDefinitions undefined route meth fails
       insertContract route meth qpTy fpTy fipTy hpTy bodyTy succTy errTy
       pure (meth, pp)
 
@@ -517,7 +518,9 @@ outputDefinitions rType r m rs = Just <$> do
   insertOutputType rType r m tyDef
 
   where outputDefinition code mrsch = case mrsch of
-          Nothing -> pure (code, Inline Null)
+          Nothing -> do
+            let n = responseName code
+            pure (code, Inline n Null)
           Just (SW.Ref (Reference n)) -> do
             refT <- lookupGlobalDefinition n
             pure (code, refT)
@@ -703,17 +706,17 @@ paramDefinition' prov par = do
                      paramSchemaDefinition prov parName (_paramOtherSchemaParamSchema pOth)
   let reqParamTypeRef = case req of
         True  -> case paramTypeRef of
-          Inline (Default r) -> r
+          Inline _ (Default r) -> r
           _                  -> paramTypeRef
         False -> case paramTypeRef of
-          Inline (Default r) -> Inline (Default r)
-          _                  -> Inline (Maybe paramTypeRef)
+          Inline def (Default r) -> Inline def (Default r)
+          _                      -> Inline parName (Maybe paramTypeRef)
   pure (ParamTypeInfo reqParamTypeRef parName)
 
 paramSchemaDefinition :: Provenance -> DefinitionName -> ParamSchema t -> SwaggerGenerator Ref
 paramSchemaDefinition prov def parSch = hasDef <$> go
   where hasDef ref = case _paramSchemaDefault parSch of
-          Just _  -> Inline (Default ref)
+          Just _  -> Inline def (Default ref)
           Nothing -> ref
           
         go =
@@ -769,8 +772,8 @@ paramSchemaDefinition prov def parSch = hasDef <$> go
               extProv   = extendProvenance def prov
           rcty <- paramSchemaDefinition extProv arrCtsDef ipar
           let unDefault = case rcty of
-                            Inline (Default cty) -> cty
-                            _                    -> rcty
+                            Inline _ (Default cty) -> cty
+                            _                      -> rcty
           let arTy = case mfmt of
                 Nothing              -> Array rcty
                 Just CollectionCSV   -> DelimitedCollection Comma unDefault
@@ -778,9 +781,9 @@ paramSchemaDefinition prov def parSch = hasDef <$> go
                 Just CollectionTSV   -> DelimitedCollection SlashT unDefault
                 Just CollectionPipes -> DelimitedCollection Pipe unDefault
                 Just CollectionMulti -> MultiSet unDefault
-          pure (Inline arTy)
+          pure (Inline def arTy)
           
-        inline = pure . Inline
+        inline = pure . Inline def
 
 singleton :: a -> [a]
 singleton a = [a]
@@ -906,11 +909,11 @@ schemaDefinition defLookup prov def sch = do
    where reqType k rty =
            case k `L.elem` _schemaRequired sch of
              True -> case rty of
-               Inline (Default r) -> r
+               Inline _ (Default r) -> r
                _                  -> rty
              False -> case rty of
-               Inline (Default r) -> Inline (Default r)
-               _                  -> Inline (Maybe rty)
+               Inline def' (Default r) -> Inline def' (Default r)
+               _                       -> Inline k (Maybe rty)
          customTypeDefinition props = do
            --TODO: Additional properties not handled
            fields <- OHM.foldlWithKey' (\s k rsc -> do
@@ -935,8 +938,8 @@ schemaDefinition defLookup prov def sch = do
                extProv   = extendProvenance def prov
            rcty <- paramSchemaDefinition extProv arrCtsDef ipar
            let unDefault = case rcty of
-                             Inline (Default cty) -> cty
-                             _                    -> rcty
+                             Inline _ (Default cty) -> cty
+                             _                      -> rcty
            let arTy = case mfmt of
                  Nothing              -> Array rcty
                  Just CollectionCSV   -> DelimitedCollection Comma unDefault
@@ -944,7 +947,7 @@ schemaDefinition defLookup prov def sch = do
                  Just CollectionTSV   -> DelimitedCollection SlashT unDefault
                  Just CollectionPipes -> DelimitedCollection Pipe unDefault
                  Just CollectionMulti -> MultiSet unDefault
-           pure (Inline arTy)
+           pure (Inline def arTy)
             
          objectArrayDefinition rsc = do
            case rsc of
@@ -953,10 +956,10 @@ schemaDefinition defLookup prov def sch = do
                            (def <> "ArrayContents")
                let extProv   = extendProvenance def prov
                rty <- schemaDefinition defLookup extProv arrCtsDef sc
-               pure (Inline (Array rty))
+               pure (Inline def (Array rty))
              SW.Ref (Reference n) -> do
                rty <- defLookup n
-               pure (Inline (Array rty))
+               pure (Inline def (Array rty))
 
          tupleDefinition rscs = do
            rtys <- mapM (\(i, rsc) -> case rsc of
@@ -970,7 +973,7 @@ schemaDefinition defLookup prov def sch = do
                            SW.Ref (Reference n) -> defLookup n
                        )
                        (zip ([0 .. ] :: [Int]) rscs)
-           pure (Inline (Tuple rtys))
+           pure (Inline def (Tuple rtys))
                   
          schemaField k rsc = case rsc of
            SW.Ref (Reference n) -> do
@@ -982,8 +985,8 @@ getTypeStateKeys :: SwaggerGenerator (HS.HashSet TypeMeta)
 getTypeStateKeys = gets (HS.fromList . HM.keys . typeState)
          
 definitionRef :: Provenance -> DefinitionName -> SwaggerHaskType -> Ref
-definitionRef prv defn (Object {}) = Ref (Definition prv defn)
-definitionRef _ _ (Primitive ty)   = Inline ty
+definitionRef prv defn (Object {})  = Ref (Definition prv defn)
+definitionRef _ defn (Primitive ty) = Inline defn ty
 
 extendProvenance :: DefinitionName -> Provenance -> Provenance
 extendProvenance n (Provenance m ks) = Provenance m (ks ++ [n])
@@ -1175,21 +1178,36 @@ getProvenanceModule (Definition prov _)  = go prov
 provModule :: Provenance -> Module
 provModule (Provenance m _) = m
 
-type RouteParser = M.Parsec () T.Text
+-- routeParser :: UnparsedPiece -> Maybe [PathParamPiece T.Text]
+-- routeParser = undefined
 
+--   where go :: RouteParser [PathParamPiece T.Text]
+--         go = do
+--           x <- (Left <$> M.eof) M.<|> (Right <$> M.anyChar)
+--           case x of
+--             Right '{' -> do
+--               piece <- M.some (M.notChar '}')
+--               _ <- M.char '}'
+--               ((:) (DynParamPiece (T.pack piece))) <$> go
+--             Right v -> do
+--               piece <- M.some (M.notChar '{')
+--               ((:) (StaticParamPiece (T.pack (v : piece)))) <$> go
+--             Left _ -> pure []
+
+type RouteParser = M.Parsec () T.Text
 routeParser :: UnparsedPiece -> Maybe [PathParamPiece T.Text]
 routeParser = either (const Nothing) Just . M.parse go "ROUTE"
 
   where go :: RouteParser [PathParamPiece T.Text]
         go = do
-          x <- (Left <$> M.eof) M.<|> (Right <$> M.anyChar)
+          x <- (Left <$> M.eof) M.<|> (Right <$> M.anySingle)
           case x of
             Right '{' -> do
-              piece <- M.some (M.notChar '}')
+              piece <- M.some (M.anySingleBut '}')
               _ <- M.char '}'
               ((:) (DynParamPiece (T.pack piece))) <$> go
             Right v -> do
-              piece <- M.some (M.notChar '{')
+              piece <- M.some (M.anySingleBut '{')
               ((:) (StaticParamPiece (T.pack (v : piece)))) <$> go
             Left _ -> pure []
 
@@ -1209,7 +1227,7 @@ data InstanceTemplate = InstanceTemplate
 data MethodTemplate = MethodTemplate
   { fieldTemplate   :: T.Text -> T.Text -> T.Text -> T.Text
                       -- def, field, var 
-  , ctorTemplate    :: T.Text -> T.Text -> T.Text
+  , ctorTemplate    :: T.Text -> T.Text -> Maybe T.Text
                       -- def, Ctor
   , fieldCombinator :: T.Text
   , body            :: T.Text
@@ -1220,29 +1238,63 @@ data Instance = OutputInstance (ResponseType MediaType)
               | ParamInstance  (ParamType MediaType)
               deriving (Show, Generic, Eq)
 
-{-
-instance D.Interpret InstanceTemplate
-instance D.Interpret MethodTemplate
-instance D.Interpret Template
--}
 
-{-
-test :: IO ()
-test = do
-    x <- D.input D.auto "/tmp/config"
-    let ctor = "Foo"
-        var = "v"
-        fields = [("x", "X"), ("y", "Y")]
-        code = body instTmp
-                    <> " \\" <> var <> " -> "
-                    <> T.intercalate (" " <> fieldCombinator instTmp
-                                          <> " ")
-                                     ( ctorTemplate instTmp ctor ctor :
-                                       map (\(x, y) -> fieldTemplate instTmp x y var) fields
-                                     )
-        instTmp = x :: InstanceTemplate
-    putStrLn (T.unpack code)
--}
+-- instance D.Interpret InstanceTemplate
+instance D.Interpret MethodTemplate
+-- instance D.Interpret Instance
+-- instance D.Interpret MediaType
+-- instance D.Interpret Template
+-- instance D.Interpret (ResponseType a)
+-- instance D.Interpret (ParamType a)
+
+
+-- test :: IO ()
+-- test = do
+--     x <- D.input D.auto "/Users/kahlil/projects/ByteAlly/tmp/swaggerConfig.dhall"
+--     let ctor = "Foo"
+--         tyCon = "Bar" 
+--         var = "v"
+--         def = "xVal"
+--         fields = [("X", "x"), ("Y", "y")]
+
+--         code = "instance " <> (className instTmp) <> " " <> tyCon <> " where\n  "
+--                     <> (T.concat $ fmap (showInstanceMethod ctor var fields) (methods instTmp) )
+--         instTmp = x :: InstanceTemplate
+--     let parseModeWithExts = LHE.defaultParseMode {LHE.extensions = [LHE.EnableExtension LHE.DataKinds, LHE.EnableExtension LHE.MultiParamTypeClasses]}
+--     case LHE.parseDeclWithMode parseModeWithExts (T.unpack code) of
+--       LHE.ParseOk decl -> 
+--         case decl of
+--           LHE.InstDecl _ _ _ _ -> 
+--             appendFile "/Users/kahlil/projects/ByteAlly/webapi/webapi-swagger/sampleFiles/Sample.hs" (LHE.prettyPrint decl)
+--           _ -> error $ "The decl we parsed is NOT an InstDecl! "
+--             ++ "Expected an InstDecl as we are parsing a Custom Instance! "
+--             ++ "Got: " ++ (show decl)
+--       LHE.ParseFailed srcLoc errString -> 
+--         error $ "Failed while parsing an Instance text! "
+--           ++ "\nLocation: " ++ (show srcLoc)
+--           ++ "\nError Message: " ++ errString
+--           ++ "\n" ++ (T.unpack code)
+--           ++ "\nPlease verify that the Instance Template/Instance Text is correct!"
+--     putStrLn (T.unpack code)
+
+--  where
+--   showInstanceMethod :: T.Text -> T.Text -> [(T.Text, T.Text)] -> MethodTemplate -> T.Text
+--   showInstanceMethod ctor var fields methodTemplate = 
+--     (methodName methodTemplate) <> " = "  <> (body methodTemplate)
+--                     <> " \\" <> var <> " -> "
+--                     <> T.intercalate (" \n      " <> (fieldCombinator methodTemplate)
+--                                           <> " ")
+--                                      ( showCtorAndFieldTemplates (ctorTemplate methodTemplate ctor ctor) 
+--                                           (map (\(x, y) -> fieldTemplate methodTemplate x y var) fields)
+--                                      )
+                                     
+--   showCtorAndFieldTemplates :: Maybe T.Text -> [T.Text] -> [T.Text]                                    
+--   showCtorAndFieldTemplates mCtorTemplate fieldTemplateList =
+--     case  mCtorTemplate of
+--       Just ctorText -> ctorText:fieldTemplateList
+--       Nothing -> fieldTemplateList
+
+
 
 keysSet :: HM.HashMap k v -> HS.HashSet k
 keysSet m = HS.fromMap (() <$ m)
@@ -1307,13 +1359,13 @@ updateTypeDefinitionRec tyFun ref = do
           in case HS.member r hs of
             True  -> ts
             False -> updateTypeDefinition f r (L.foldl' (\ !acc ir -> go (HS.insert r hs) f ir acc) ts ityRefs)
-        go hs f (Inline (Default r)) ts = go hs f r ts
-        go hs f (Inline (Maybe r)) ts   = go hs f r ts
-        go hs f (Inline (Array r)) ts   = go hs f r ts
-        go !hs f (Inline (Tuple rs)) !ts  =
+        go hs f (Inline _ (Default r)) ts = go hs f r ts
+        go hs f (Inline _ (Maybe r)) ts   = go hs f r ts
+        go hs f (Inline _ (Array r)) ts   = go hs f r ts
+        go !hs f (Inline _ (Tuple rs)) !ts  =
           L.foldl' (\ !acc r -> go hs f r acc) ts rs
-        go hs f (Inline (MultiSet r)) ts = go hs f r ts
-        go hs f (Inline (DelimitedCollection _ r)) ts =
+        go hs f (Inline _ (MultiSet r)) ts = go hs f r ts
+        go hs f (Inline _ (DelimitedCollection _ r)) ts =
           go hs f r ts
         go _ _ _ ts = ts
 
