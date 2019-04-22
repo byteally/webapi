@@ -27,10 +27,11 @@ import qualified Text.Megaparsec as M
 import qualified Text.Megaparsec.Char as M
 import qualified Data.HashSet as HS
 import qualified Data.Char as C
-import Network.HTTP.Media.MediaType (MediaType)
 import Data.Maybe
-import qualified Dhall as D
-import qualified Language.Haskell.Exts as LHE hiding (OPTIONS, Int, Tuple, Comma)
+import Dhall (Interpret (..))
+-- import qualified Dhall.Core as D
+-- import qualified Data.Text.Encoding as T
+import qualified Network.HTTP.Media.MediaType as HTTP
 
 
 data Ref  = Inline DefinitionName Primitive 
@@ -209,11 +210,11 @@ data ParamType a = QueryParam
                  | PathParam
                  | FileParam
                  | HeaderParam
-                 | BodyParam a
+                 | BodyParam [a]
                  deriving (Show, Eq, Generic)
 
-data ResponseType a = ApiOutput a
-                    | ApiError a
+data ResponseType a = ApiOutput [a]
+                    | ApiError [a]
                     | HeaderOutput
                   deriving (Show, Eq, Generic)
 
@@ -365,7 +366,7 @@ mkModuleState rms =
 generateSwaggerState :: Swagger -> SwaggerGenerator ()
 generateSwaggerState sw = do
   globalSwaggerDefinitions (_swaggerDefinitions sw)
-  generateRoutesState (_swaggerParameters sw) (_swaggerResponses sw) (_swaggerPaths sw)
+  generateRoutesState (_swaggerConsumes sw) (_swaggerProduces sw) (_swaggerParameters sw) (_swaggerResponses sw) (_swaggerPaths sw)
   resolveTypeClashes  
   moduleState
 
@@ -375,14 +376,14 @@ moduleState = do
   let ms = mkModuleState rms
   modify' (\s -> s { modules = ms })
 
-generateRoutesState :: Definitions Param -> Definitions Response -> OHM.InsOrdHashMap FilePath PathItem -> SwaggerGenerator ()
-generateRoutesState globalParams globalResps pItems = do
+generateRoutesState :: MimeList -> MimeList -> Definitions Param -> Definitions Response -> OHM.InsOrdHashMap FilePath PathItem -> SwaggerGenerator ()
+generateRoutesState globalInputFmts globalOutputFmts globalParams globalResps pItems = do
   OHM.foldlWithKey' updatePathItems (pure ()) pItems
 
   where updatePathItems :: SwaggerGenerator () -> FilePath -> PathItem -> SwaggerGenerator ()
         updatePathItems sws routeStr pItem = do
           let route = parseRoute routeStr
-              updState = generateRouteMethodState globalParams globalResps (_pathItemParameters pItem) route
+              updState = generateRouteMethodState globalInputFmts globalOutputFmts globalParams globalResps (_pathItemParameters pItem) route
           sws
           ppG   <- updState GET (_pathItemGet pItem)
           ppP   <- updState PUT (_pathItemPut pItem)
@@ -407,23 +408,25 @@ generateRoutesState globalParams globalResps pItems = do
                                     ) methPars
             in  methParsNamed
             
-generateRouteMethodState :: Definitions Param -> Definitions Response -> [SW.Referenced Param] -> Route UnparsedPiece -> Method -> Maybe Operation -> SwaggerGenerator (Method, [Param])
-generateRouteMethodState globalParams globalResps routeRefs route meth mOp =
+generateRouteMethodState :: MimeList -> MimeList -> Definitions Param -> Definitions Response -> [SW.Referenced Param] -> Route UnparsedPiece -> Method -> Maybe Operation -> SwaggerGenerator (Method, [Param])
+generateRouteMethodState globalInputFmts globalOutputFmts globalParams globalResps routeRefs route meth mOp =
   case mOp of
     Nothing -> pure (meth, [])
     Just op -> do
       let opParams    = overrideParams routeRefs (_operationParameters op)
                         -- TODO: ResponsesDefault ignored.
           opResponses = _operationResponses op
+          inputFmts   = maybe globalInputFmts id (_operationConsumes op)
+          outputFmts  = maybe globalOutputFmts id (_operationProduces op)
       let (pp, qp, fp, fip, hp, bp) = groupParamDefinitions globalParams opParams
       qpTy   <- paramDefinitions QueryParam route meth qp
       fpTy   <- paramDefinitions FormParam route meth fp
       fipTy  <- paramDefinitions FileParam route meth fip
       hpTy   <- paramDefinitions HeaderParam route meth hp
-      bodyTy <- paramDefinitions undefined route meth bp
+      bodyTy <- paramDefinitions (BodyParam (getMimeList inputFmts)) route meth bp
       let (sucs, fails, _headers) = groupOutputDefinitions globalResps opResponses
-      succTy <- outputDefinitions undefined route meth sucs
-      errTy <- outputDefinitions undefined route meth fails
+      succTy <- outputDefinitions (ApiOutput (getMimeList outputFmts)) route meth sucs
+      errTy <- outputDefinitions (ApiError (getMimeList outputFmts)) route meth fails
       insertContract route meth qpTy fpTy fipTy hpTy bodyTy succTy errTy
       pure (meth, pp)
 
@@ -507,7 +510,7 @@ globalSwaggerDefinitions defs = do
   _ <- schemaDefinitions (lookupGlobalDefinitionOrGenerate defs) globalProv defs
   pure ()
                                                   
-outputDefinitions :: ResponseType MediaType -> Route UnparsedPiece -> Method ->
+outputDefinitions :: ResponseType HTTP.MediaType -> Route UnparsedPiece -> Method ->
                       [(HttpStatusCode, Maybe (SW.Referenced Schema))] -> SwaggerGenerator (Maybe Ref)
 outputDefinitions _ _ _ []    = pure Nothing
 outputDefinitions rType r m rs = Just <$> do
@@ -637,7 +640,7 @@ isFileOrFormParam par =
       _             -> Nothing
     _ -> Nothing
 
-paramDefinitions :: ParamType MediaType -> Route UnparsedPiece -> Method -> [Param] -> SwaggerGenerator (Maybe Ref)
+paramDefinitions :: ParamType HTTP.MediaType -> Route UnparsedPiece -> Method -> [Param] -> SwaggerGenerator (Maybe Ref)
 paramDefinitions pType rt method params
   | params == [] = pure Nothing
   | otherwise   = do      
@@ -1045,7 +1048,7 @@ localProv r m = Provenance (Local r m) []
 routeLocalProv :: Route UnparsedPiece -> Provenance
 routeLocalProv r = Provenance (RouteLocal r) []
 
-insertOutputType :: ResponseType MediaType -> Route UnparsedPiece -> Method -> TypeDefinition -> SwaggerGenerator Ref
+insertOutputType :: ResponseType HTTP.MediaType -> Route UnparsedPiece -> Method -> TypeDefinition -> SwaggerGenerator Ref
 insertOutputType rt rte meth tyDef = do
   let prov = localProv rte meth
   def <- mkDefinitionName prov (responseTypeName rt)
@@ -1054,7 +1057,7 @@ insertOutputType rt rte meth tyDef = do
   updateTypeDefinitionRec (addResponseInstance rt) ref
   pure ref
   
-insertParamType :: ParamType MediaType -> Route UnparsedPiece -> Method -> TypeDefinition -> SwaggerGenerator Ref
+insertParamType :: ParamType HTTP.MediaType -> Route UnparsedPiece -> Method -> TypeDefinition -> SwaggerGenerator Ref
 insertParamType pt rt meth tyDef = do
   let prov = localProv rt meth
   def <- mkDefinitionName prov (paramTypeName pt)
@@ -1219,7 +1222,7 @@ ctor  = \def ctor -> "${ctor}"
 -}
 
 data InstanceTemplate = InstanceTemplate
-  { instanceType :: Instance
+  { instanceType :: InstanceInfo
   , className    :: T.Text
   , methods      :: [MethodTemplate]
   } deriving (Generic)
@@ -1234,19 +1237,24 @@ data MethodTemplate = MethodTemplate
   , methodName      :: T.Text
   } deriving (Generic)
 
-data Instance = OutputInstance (ResponseType MediaType)
-              | ParamInstance  (ParamType MediaType)
+
+data InstanceInfo = InstanceInfo { instanceOf :: T.Text
+                                 , mediaType  :: Maybe MediaType
+                                 }
+                    deriving (Generic)
+
+data MediaType = MediaType { mType :: T.Text
+                           , mSubType :: Maybe T.Text
+                           } deriving (Generic)
+
+data Instance = OutputInstance (ResponseType HTTP.MediaType)
+              | ParamInstance  (ParamType HTTP.MediaType)
               deriving (Show, Generic, Eq)
 
-
--- instance D.Interpret InstanceTemplate
-instance D.Interpret MethodTemplate
--- instance D.Interpret Instance
--- instance D.Interpret MediaType
--- instance D.Interpret Template
--- instance D.Interpret (ResponseType a)
--- instance D.Interpret (ParamType a)
-
+instance Interpret InstanceTemplate
+instance Interpret MethodTemplate
+instance Interpret InstanceInfo
+instance Interpret MediaType
 
 -- test :: IO ()
 -- test = do
@@ -1341,11 +1349,11 @@ innerTypeRefs (CustomType _ dcons) = concatMap getRefTy dcons
   where getRefTy (DataConstructor _ xs) = map snd xs
 innerTypeRefs (CustomNewType _ _ _ ref) = [ref]
 
-addInputInstance :: ParamType MediaType -> TypeDefinition -> TypeDefinition
+addInputInstance :: ParamType HTTP.MediaType -> TypeDefinition -> TypeDefinition
 addInputInstance pt tyDef =
   tyDef { instances = ParamInstance pt : instances tyDef }
 
-addResponseInstance :: ResponseType MediaType -> TypeDefinition -> TypeDefinition
+addResponseInstance :: ResponseType HTTP.MediaType -> TypeDefinition -> TypeDefinition
 addResponseInstance pt tyDef =
   tyDef { instances = OutputInstance pt : instances tyDef }
 
