@@ -33,6 +33,9 @@ import Data.Vector.Sized as SV hiding ((++), foldM, forM, mapM)
 import Data.Finite.Internal
 import Safe
 import Data.Either
+import Data.Text.Encoding
+import qualified Network.HTTP.Media.MediaType as HTTP
+
 -- import Debug.Trace
 
 type ModuleTypes = HMS.HashMap SG.Module ([TypeDefinition], Imports)
@@ -416,7 +419,28 @@ lookupInstance inst instanceTemplateList =
  where
   isMatchingInstanceTemplate :: InstanceTemplate -> Bool
   isMatchingInstanceTemplate currentInstTemplate = 
-    instanceType currentInstTemplate == inst
+    getInstFromInstanceInfo (instanceType currentInstTemplate) == inst
+
+  getInstFromInstanceInfo :: InstanceInfo -> Instance
+  getInstFromInstanceInfo instInfo = 
+    let httpMediaType = createHttpMediaType $ mediaType instInfo
+    in case instanceOf instInfo of
+        "QueryParam" -> ParamInstance QueryParam 
+        "FormParam" -> ParamInstance FormParam
+        "BodyParam" -> ParamInstance (BodyParam [httpMediaType]) 
+        "FileParam" -> ParamInstance FileParam
+        "HeaderParam" -> ParamInstance HeaderParam
+        "ApiOutput" -> OutputInstance (ApiOutput [httpMediaType])
+        "ApiError" -> OutputInstance (ApiError [httpMediaType])
+        "HeaderOutput" -> OutputInstance HeaderOutput
+        _ -> OutputInstance HeaderOutput -- Placeholder for an unmatching instance
+
+  createHttpMediaType :: Maybe MediaType -> HTTP.MediaType 
+  createHttpMediaType (Just (MediaType mTy mSubTy)) = 
+    case mSubTy of 
+      Just subTy -> (HTTP.//) (encodeUtf8 mTy) (encodeUtf8 subTy)
+      Nothing -> (HTTP.//) (encodeUtf8 mTy) ""
+  createHttpMediaType Nothing = (HTTP.//) "" ""
   
 validateRouteDirectoryPath :: String -> String
 validateRouteDirectoryPath = id
