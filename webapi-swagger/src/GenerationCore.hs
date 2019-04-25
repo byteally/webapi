@@ -35,6 +35,7 @@ import Safe
 import Data.Either
 import Data.Text.Encoding
 import qualified Network.HTTP.Media.MediaType as HTTP
+import Dhall (auto, input)
 
 -- import Debug.Trace
 
@@ -112,8 +113,8 @@ parseTypeStateIntoModuleTypes tyState moduleStateHM =
     let importsList = fmap (\(_, ref) -> getRefImports ref moduleStateHM) recList
     in DL.concat importsList
 
-runCodeGen :: FilePath -> FilePath -> String -> IO () 
-runCodeGen swaggerJsonInputFilePath outputPath projectName = do
+runCodeGen :: FilePath -> FilePath -> FilePath -> String -> IO () 
+runCodeGen swaggerJsonInputFilePath outputPath dhallFilePath projectName = do
   -- removeDirectoryRecursive outputPath
   let projectFolderGenPath = outputPath ++ projectName ++ "/"
   let projectSrcDir = (projectFolderGenPath ++ "src/")
@@ -129,6 +130,9 @@ runCodeGen swaggerJsonInputFilePath outputPath projectName = do
     Right (swaggerData :: Swagger) -> do
       -- TODO: Read in the Config(s) from a file later
       let config = Config {instanceTemplates = []}
+      instTemplates <- input auto (T.pack dhallFilePath) -- "/Users/kahlil/projects/ByteAlly/tmp/swaggerConfig.dhall"
+              
+      let config = Config {instanceTemplates = instTemplates}
       let instanceTemplateList = instanceTemplates config
       finalStateVal <- runSwaggerGenerator config (generateSwaggerState swaggerData)
       writeFile (projectSrcDir ++ "CommonTypes.hs") commonTypesModuleContent
@@ -419,28 +423,30 @@ lookupInstance inst instanceTemplateList =
  where
   isMatchingInstanceTemplate :: InstanceTemplate -> Bool
   isMatchingInstanceTemplate currentInstTemplate = 
-    getInstFromInstanceInfo (instanceType currentInstTemplate) == inst
+    case getInstFromInstanceInfo (instanceType currentInstTemplate) of
+      Just matchedInst -> matchedInst == inst
+      Nothing -> False
 
-  getInstFromInstanceInfo :: InstanceInfo -> Instance
+  getInstFromInstanceInfo :: InstanceInfo -> Maybe Instance
   getInstFromInstanceInfo instInfo = 
     let httpMediaType = createHttpMediaType $ mediaType instInfo
     in case instanceOf instInfo of
-        "QueryParam" -> ParamInstance QueryParam 
-        "FormParam" -> ParamInstance FormParam
-        "BodyParam" -> ParamInstance (BodyParam [httpMediaType]) 
-        "FileParam" -> ParamInstance FileParam
-        "HeaderParam" -> ParamInstance HeaderParam
-        "ApiOutput" -> OutputInstance (ApiOutput [httpMediaType])
-        "ApiError" -> OutputInstance (ApiError [httpMediaType])
-        "HeaderOutput" -> OutputInstance HeaderOutput
-        _ -> OutputInstance HeaderOutput -- Placeholder for an unmatching instance
+        "QueryParam" -> Just $ ParamInstance QueryParam 
+        "FormParam" -> Just $ ParamInstance FormParam
+        "BodyParam" -> Just $ ParamInstance (BodyParam httpMediaType) 
+        "FileParam" -> Just $ ParamInstance FileParam
+        "HeaderParam" -> Just $ ParamInstance HeaderParam
+        "ApiOutput" -> Just $ OutputInstance (ApiOutput httpMediaType)
+        "ApiError" -> Just $ OutputInstance (ApiError httpMediaType)
+        "HeaderOutput" -> Just $ OutputInstance HeaderOutput
+        _ -> Nothing -- Placeholder for an unmatching instance
 
-  createHttpMediaType :: Maybe MediaType -> HTTP.MediaType 
+  createHttpMediaType :: Maybe MediaType -> [HTTP.MediaType] 
   createHttpMediaType (Just (MediaType mTy mSubTy)) = 
     case mSubTy of 
-      Just subTy -> (HTTP.//) (encodeUtf8 mTy) (encodeUtf8 subTy)
-      Nothing -> (HTTP.//) (encodeUtf8 mTy) ""
-  createHttpMediaType Nothing = (HTTP.//) "" ""
+      Just subTy -> [(HTTP.//) (encodeUtf8 mTy) (encodeUtf8 subTy)]
+      Nothing -> [(HTTP.//) (encodeUtf8 mTy) ""]
+  createHttpMediaType Nothing = []
   
 validateRouteDirectoryPath :: String -> String
 validateRouteDirectoryPath = id
@@ -507,8 +513,8 @@ constructDeclFromCustomType :: SG.Module
                             -> ([Decl SrcSpanInfo], T.Text, [T.Text])
 constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instanceTemplateList = 
   let customTy = customHaskType typeDefn
-      derivingList = fmap (T.unpack) $ derivingConstraints typeDefn 
-      typeInstances = instances typeDefn
+      derivingList =  ("P.Generic"):(fmap (T.unpack) $ derivingConstraints typeDefn)  
+      typeInstances = DL.nub $ instances typeDefn
   in case customTy of
       CustomType tyConstructor dataConsList -> 
         let (qualConDecls, instDeclsWithUserImports, errMsgs) = qualConDeclsWithInstDecls sgModule tyConstructor (Left dataConsList) typeInstances
@@ -561,15 +567,17 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instance
                   (RecDecl noSrcSpan (nameDecl $ T.unpack dConsName) fieldDecls)]                
               (errMessages, instDecls) = partitionEithers $ fmap (constructInstDecl instanceTemplateList dConsName mRecRefList) typeInstances
           in (qualDecl, instDecls, T.concat errMessages)
+        -- Enum Type
         | isEnumType dataConsList ->
           let qualDecls = 
                 fmap (\(DataConstructor dConsName mRecRefList) -> 
                           let typeConsList = fmap (typeConstructor . (showRefTyWithQual moduleStateHM typeStateHM (Just currentModuleInfo) ) ) $ snd $ DL.unzip mRecRefList
                           in QualConDecl noSrcSpan Nothing Nothing 
                               (ConDecl noSrcSpan (nameDecl $ T.unpack dConsName) typeConsList) ) dataConsList
-              instDecls = []
-              errMessages = ""
-          in (qualDecls, instDecls, errMessages)
+              (errMessages, instDecls) = partitionEithers $ fmap (tempInstDeclForSums instanceTemplateList tyCons) typeInstances
+              -- instDecls = []
+              -- errMessages = ""
+          in (qualDecls, instDecls, T.concat errMessages)
           -- Sum Type
         | otherwise  -> 
           let qualDecls = 
@@ -577,9 +585,10 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instance
                           let typeConsList = fmap (typeConstructor . (showRefTyWithQual moduleStateHM typeStateHM (Just currentModuleInfo) ) ) $ snd $ DL.unzip mRecRefList
                           in QualConDecl noSrcSpan Nothing Nothing 
                               (ConDecl noSrcSpan (nameDecl $ T.unpack dConsName) typeConsList) ) dataConsList
-              instDecls = []
-              errMessages = ""
-          in (qualDecls, instDecls, errMessages)
+              (errMessages, instDecls) = partitionEithers $  fmap (tempInstDeclForSums instanceTemplateList tyCons) typeInstances
+              -- instDecls = []
+              -- errMessages = ""
+          in (qualDecls, instDecls, T.concat errMessages)
       Right (dConsTxt, mRecName, refTy) ->  
         let recTy = showRefTyWithQual moduleStateHM typeStateHM (Just currentModuleInfo) refTy
             qualDecls =
@@ -612,21 +621,53 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instance
           [] -> True
           _ -> False
     
+    tempInstDeclForSums :: [InstanceTemplate] -> T.Text -> Instance -> Either T.Text (Decl SrcSpanInfo, [T.Text])
+    tempInstDeclForSums instTemplateList tyConsTxt currentInst = 
+      case lookupInstance currentInst instTemplateList of
+        Left errMsg -> Left errMsg
+          
+        Right instTmp -> 
+          let instHead = instanceHeadTxt instTmp tyConsTxt 
+              parseModeWithExts = LHE.defaultParseMode {LHE.extensions = [LHE.EnableExtension LHE.DataKinds, LHE.EnableExtension LHE.MultiParamTypeClasses]}
+          in 
+            case LHE.parseDeclWithMode parseModeWithExts (T.unpack instHead) of
+              LHE.ParseOk decl -> 
+                case decl of
+                  LHE.InstDecl _ _ _ _ -> 
+                    Right (decl, [])
+                  _ -> Left $ "Not an InstDecl"
+
+              LHE.ParseFailed srcLoc errString -> 
+                Left $ "\n\nERROR: Failed while parsing an Instance text! "
+                  <> "\nLocation: " <> (T.pack $ show srcLoc)
+                  <> "\nError Message: " <> (T.pack errString)
+                  <> "\n" <> instHead
+                  <> "\nPlease verify that the Instance Template/Instance Text is correct!"
+        -- _ -> Left "Output Instance encountered. Not generating it for now."
+
+
+    instanceHeadTxt :: InstanceTemplate -> T.Text -> T.Text
+    instanceHeadTxt instTmp tyCon =
+      "instance " <> (className instTmp) <> " " <> tyCon 
+
     constructInstDecl :: [InstanceTemplate] -> DataConstructorName -> [(Maybe RecordName, Ref)] -> Instance -> Either T.Text (Decl SrcSpanInfo, [T.Text]) 
     constructInstDecl instTemplateList dConsName mRecRefList currentInst = 
       case lookupInstance currentInst instTemplateList of
         Left errMsg -> Left errMsg
+          
         Right instTmp -> 
           let ctor = dConsName
               tyCon = tyCons
+              fields = fmap refListToField mRecRefList  
               varName = "val"
-              fields = fmap refListToField mRecRefList  -- [("X", "x"), ("Y", "y")]
-              code = "instance " <> (className instTmp) <> " " <> tyCon <> " where\n  "
-                        <> (T.concat $ fmap (showInstanceMethod ctor varName fields) (methods instTmp) )
+              instanceCode = 
+                instanceHeadTxt instTmp tyCon
+                  <> " where\n  "
+                  <> (T.concat $ fmap (showInstanceMethod ctor varName fields) (methods instTmp) )
               parseModeWithExts = LHE.defaultParseMode {LHE.extensions = [LHE.EnableExtension LHE.DataKinds, LHE.EnableExtension LHE.MultiParamTypeClasses]}
               userImports = importNames instTmp
           in 
-            case LHE.parseDeclWithMode parseModeWithExts (T.unpack code) of
+            case LHE.parseDeclWithMode parseModeWithExts (T.unpack instanceCode) of
               LHE.ParseOk decl -> 
                 case decl of
                   LHE.InstDecl _ _ _ _ -> 
@@ -640,7 +681,7 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instance
                 Left $ "\n\nERROR: Failed while parsing an Instance text! "
                   <> "\nLocation: " <> (T.pack $ show srcLoc)
                   <> "\nError Message: " <> (T.pack errString)
-                  <> "\n" <> code
+                  <> "\n" <> instanceCode
                   <> "\nPlease verify that the Instance Template/Instance Text is correct!"
      where
       showInstanceMethod :: T.Text -> T.Text -> [(T.Text, T.Text)] -> MethodTemplate -> T.Text

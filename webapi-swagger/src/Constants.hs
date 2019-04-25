@@ -70,7 +70,10 @@ commonTypesModuleContent = [i|
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE StandaloneDeriving #-}
+
+
 
 module CommonTypes where
 
@@ -187,7 +190,22 @@ instance DecodeParam SwaggerNumber where
             ++ "\\nInput param is : " ++ (show bs)
 
 newtype Default a = Default { getDefault :: a} 
-                  deriving (Show)           
+                  deriving (Show, ToJSON, FromJSON)
+
+deriving instance (FromParam 'QueryParam a) => FromParam 'QueryParam (Default a)
+deriving instance (FromParam 'PathParam a) => FromParam 'PathParam (Default a)
+deriving instance (FromParam 'FormParam a) => FromParam 'FormParam (Default a)
+deriving instance (FromParam 'FileParam a) => FromParam 'FileParam (Default a)
+
+deriving instance (ToParam 'QueryParam a) => ToParam 'QueryParam (Default a)
+deriving instance (ToParam 'PathParam a) => ToParam 'PathParam (Default a)
+deriving instance (ToParam 'FormParam a) => ToParam 'FormParam (Default a)
+deriving instance (ToParam 'FileParam a) => ToParam 'FileParam (Default a)
+
+-- Note : This is a temp hack. 
+instance FromJSON ByteString where
+  parseJSON = undefined
+
 |]
 
 
@@ -368,6 +386,7 @@ importsForTypesModule = [
 qualifiedImportsForTypesModule :: [(String, String)]  
 qualifiedImportsForTypesModule = 
                                [
+                                 ("GHC.Generics", "P") -- Temp fix for adding generic insts 
                                 --  ("Data.ByteString.Char8", "ASCII")
                               --  , ("Data.HashMap.Lazy", "HM" )
                               --  , ("CommonTypes", "P")

@@ -7,11 +7,12 @@ import Data.Semigroup ((<>))
 import Data.Text (Text)
 import qualified Data.Text as T
 
-data CodegenOpts = CodegenOpts { inPath  :: Text
-                               , outPath :: Text
-                               , name    :: Maybe Text
-                               , prefix  :: Maybe Text
-                               , verbose :: Bool
+data CodegenOpts = CodegenOpts { inPath    :: Text
+                               , outPath   :: Text
+                               , dhallPath :: Text
+                               , name      :: Maybe Text
+                               , prefix    :: Maybe Text
+                               , verbose   :: Bool
                                -- , isUrl   :: Bool
                                } deriving (Show, Eq)
 
@@ -28,6 +29,9 @@ codegenOpts =
               <*> strArgument  (  metavar "OUTPUT-DIR"
                                  <> help "Directory of generated files"
                                )  
+              <*> strArgument  (  metavar "DHALL-FILE-LOCATION"
+                                 <> help "Directory of the Dhall Config file"
+                               )                                 
               <*> optional
                     (strOption (  long "name"
                                <> short 'n'
@@ -58,6 +62,7 @@ main = do
   opts <- execParser codegenProg
   runCodeGen (T.unpack (inPath opts))
              (T.unpack (op opts))
+             (T.unpack (dhallPath opts))
              (T.unpack (pName opts))
 
   where op opts = case T.last (outPath opts) of
