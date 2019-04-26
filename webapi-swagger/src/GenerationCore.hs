@@ -435,7 +435,7 @@ lookupInstance inst instanceTemplateList =
         "FormParam" -> Just $ ParamInstance FormParam
         "BodyParam" -> Just $ ParamInstance (BodyParam httpMediaType) 
         "FileParam" -> Just $ ParamInstance FileParam
-        "HeaderParam" -> Just $ ParamInstance HeaderParam
+        "ToHeader" -> Just $ ParamInstance HeaderParam
         "ApiOutput" -> Just $ OutputInstance (ApiOutput httpMediaType)
         "ApiError" -> Just $ OutputInstance (ApiError httpMediaType)
         "HeaderOutput" -> Just $ OutputInstance HeaderOutput
@@ -513,7 +513,7 @@ constructDeclFromCustomType :: SG.Module
                             -> ([Decl SrcSpanInfo], T.Text, [T.Text])
 constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instanceTemplateList = 
   let customTy = customHaskType typeDefn
-      derivingList =  ("P.Generic"):(fmap (T.unpack) $ derivingConstraints typeDefn)  
+      derivingList = fmap (T.unpack) $ derivingConstraints typeDefn
       typeInstances = DL.nub $ instances typeDefn
   in case customTy of
       CustomType tyConstructor dataConsList -> 
@@ -628,9 +628,12 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instance
           
         Right instTmp -> 
           let instHead = instanceHeadTxt instTmp tyConsTxt 
+              instWhere = " where"
+              instMethods = 
+                T.concat $ fmap (\methodTemp -> "\n  " <> methodName methodTemp <> " = P.undefined" ) (methods instTmp)
               parseModeWithExts = LHE.defaultParseMode {LHE.extensions = [LHE.EnableExtension LHE.DataKinds, LHE.EnableExtension LHE.MultiParamTypeClasses]}
           in 
-            case LHE.parseDeclWithMode parseModeWithExts (T.unpack instHead) of
+            case LHE.parseDeclWithMode parseModeWithExts (T.unpack $ instHead <> instWhere <> instMethods ) of
               LHE.ParseOk decl -> 
                 case decl of
                   LHE.InstDecl _ _ _ _ -> 
@@ -658,7 +661,7 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instance
         Right instTmp -> 
           let ctor = dConsName
               tyCon = tyCons
-              fields = fmap refListToField mRecRefList  
+              fields = fmap (refListToField tyCons) mRecRefList  
               varName = "val"
               instanceCode = 
                 instanceHeadTxt instTmp tyCon
@@ -700,18 +703,20 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instance
           Just ctorText -> ctorText:fieldTemplateList
           Nothing -> fieldTemplateList
 
-      refListToField :: (Maybe RecordName, Ref) -> (RecordName, T.Text) 
-      refListToField (mRecName, ref) = 
+      refListToField :: T.Text -> (Maybe RecordName, Ref) -> (T.Text, RecordName) 
+      refListToField tyConsTxt (mRecName, ref) = 
         let fjnErr = "Expected RecordName in DataConstructor of a Product Type!"
                         ++ "\nGot a Nothing! Debug Info: "
                         ++ "\nData Cons Name: " ++ (show dConsName) 
                         ++ "\nRecord and Ref List: " ++ (show mRecRefList)
             recName = fromJustNote fjnErr mRecName
+            refTy = T.pack $ showRefTyWithQual moduleStateHM typeStateHM (Just currentModuleInfo) ref
+            recNameWithSig::T.Text = "(" <> recName <> " :: " <> tyConsTxt <> " -> " <> refTy <> ")"
             defnName = 
               case ref of
                 (Ref (Definition _ defName)) -> defName
                 (Inline defName _) -> defName 
-        in (defnName, recName)
+        in (defnName, recNameWithSig)
 
 -- -- Product Types
 -- [QualConDecl noSrcSpan Nothing Nothing (RecDecl noSrcSpan (nameDecl constructorName) fieldDecls )]
