@@ -409,14 +409,15 @@ generateModulesFromTypeState tState genPath moduleStateHM instanceTemplateList =
     let qualImportList = qualifiedImportsForTypesModule ++ conditionalImportList
     in fmap (\(fullModuleName, qual) ->  (fullModuleName, (True, Just $ ModuleName noSrcSpan qual)) ) qualImportList
 
-lookupInstance :: Instance -> [InstanceTemplate] -> Either T.Text InstanceTemplate
-lookupInstance inst instanceTemplateList = 
+lookupInstance :: T.Text -> Instance -> [InstanceTemplate] -> Either T.Text InstanceTemplate
+lookupInstance tyCons inst instanceTemplateList = 
   case DL.find isMatchingInstanceTemplate instanceTemplateList of
     Just template -> Right template
     -- TODO : Inform user that this produced no result and that an Instance Template has to be written!
     Nothing -> -- {instanceType = ""{-ParamInstance (QueryParam) -}, className ="", methods = []}
       Left $ "\n\nERROR: Did not find an Instance Template for the Instance that we are trying to construct! "
         <> "\nInstance: " <> (T.pack $ show inst)
+        <> "\nType Name: " <> tyCons
         -- <> "\nInstanceTemplates: " <> (T.pack $ show instanceTemplateList) 
 
 
@@ -482,11 +483,13 @@ getRefImports ref moduleStateHM =
         Maybe innerRef -> ("Prelude","P"):getRefImports innerRef moduleStateHM
         Array innerRef -> getRefImports innerRef moduleStateHM
         Tuple innerRefList -> DL.concat $ fmap (\inRef -> getRefImports inRef moduleStateHM) innerRefList 
-        MultiSet innerRef -> ("Webapi.Param","P"):getRefImports innerRef moduleStateHM
+        MultiSet innerRef -> ("WebApi.Param","P"):getRefImports innerRef moduleStateHM
         DelimitedCollection _ innerRef  -> ("CommonTypes", "P"):(getRefImports innerRef moduleStateHM) 
     (Ref typeMeta ) -> 
       let sgMod = getModuleFromTypeMeta typeMeta
       in [getModQualInfoModuleState moduleStateHM sgMod]
+
+
 
 
 
@@ -623,7 +626,7 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instance
     
     tempInstDeclForSums :: [InstanceTemplate] -> T.Text -> Instance -> Either T.Text (Decl SrcSpanInfo, [T.Text])
     tempInstDeclForSums instTemplateList tyConsTxt currentInst = 
-      case lookupInstance currentInst instTemplateList of
+      case lookupInstance tyConsTxt currentInst instTemplateList of
         Left errMsg -> Left errMsg
           
         Right instTmp -> 
@@ -655,7 +658,7 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instance
 
     constructInstDecl :: [InstanceTemplate] -> DataConstructorName -> [(Maybe RecordName, Ref)] -> Instance -> Either T.Text (Decl SrcSpanInfo, [T.Text]) 
     constructInstDecl instTemplateList dConsName mRecRefList currentInst = 
-      case lookupInstance currentInst instTemplateList of
+      case lookupInstance dConsName currentInst instTemplateList of
         Left errMsg -> Left errMsg
           
         Right instTmp -> 
