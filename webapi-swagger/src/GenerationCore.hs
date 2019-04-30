@@ -736,14 +736,14 @@ constructDeclFromCustomType sgModule typeDefn moduleStateHM typeStateHM instance
 showRefTyWithQual :: ModuleState -> TypeState -> Maybe SG.Module -> Ref -> String
 showRefTyWithQual moduleStateHM typeStateHM mModule (Inline _ prim) = 
   let (qual, ty) = showPrimitiveTy (Just moduleStateHM) (Just typeStateHM) mModule prim
-  in qual ++ ty
+  in addBracesIfNested (qual ++ ty) (isNestedType prim)
 showRefTyWithQual moduleStateHM typeStateHM mModule (Ref typeMeta) = 
   let sgModule = getModuleFromTypeMeta typeMeta
       tyCon = getTypeConstructor $ lookupTypeStateGetCustomHaskType typeMeta typeStateHM
   in printRefWithQual moduleStateHM sgModule mModule tyCon
 
 showRefTy :: Maybe SG.Module -> Maybe TypeState -> Ref -> String
-showRefTy mModule mTyState (Inline _ prim) = snd $ showPrimitiveTy Nothing mTyState mModule prim
+showRefTy mModule mTyState (Inline _ prim) = addBracesIfNested (snd $ showPrimitiveTy Nothing mTyState mModule prim) (isNestedType prim) 
 showRefTy _ mTyState (Ref typeMeta) = 
   let typeStateHM = fromJustNote ("Expected a TypeState but got a Nothing! Type Meta: " ++ (show typeMeta) ) mTyState
   in printRef (getTypeConstructor $ lookupTypeStateGetCustomHaskType typeMeta typeStateHM)
@@ -791,7 +791,41 @@ showPrimitiveTy mModuleState mTypeState mModule prim =
               ++ "\nGot only one of two present! Debug Info: ModuleState : " ++ (show mModState) 
               ++ "\nTypeState: " ++ (show mTyState) 
               ++ "\nRef : " ++ (show passedRef)
-  
+
+isNestedType :: Primitive -> Bool
+isNestedType primVal = 
+-- ref = 
+--   case ref of
+--     (Inline _ primVal) -> 
+    case primVal of
+      Date -> False
+      DateTime -> False
+      Password -> False
+      Byte -> False
+      Binary -> False
+      Text -> False
+      Float -> False
+      Double -> False
+      Number -> False
+      Int -> False
+      Int32 -> False
+      Int64 -> False
+      Bool -> False
+      File -> False
+      Null -> False
+      Default _ -> True 
+      Maybe _ -> True
+      Array _ -> True
+      Tuple _List -> True
+      MultiSet _ -> True
+      DelimitedCollection _ _  -> True
+    -- (Ref _ ) -> False
+
+addBracesIfNested :: String -> Bool -> String
+addBracesIfNested strVal isNested = 
+  case isNested of
+    True -> "(" ++ strVal ++ ")"
+    False -> strVal
 
 printRef :: T.Text -> String
 printRef typeTxt = T.unpack typeTxt 
