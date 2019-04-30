@@ -912,6 +912,13 @@ routeDeclaration moduleStateHM typeStateHM (routeNameStr, routePathComponents) =
   let routePieceList = getRoute routePathComponents
   in 
     case routePieceList of
+      [] -> -- TODO: This needs discussion and a possible change.
+        TypeDecl noSrcSpan
+          (declarationHead routeNameStr)
+          (TyApp noSrcSpan
+            (typeConstructor "W.Static")
+            (recursiveTypeForRoute routePieceList) )
+
       (Static _):[] -> 
         TypeDecl noSrcSpan
           (declarationHead routeNameStr)
@@ -927,7 +934,7 @@ routeDeclaration moduleStateHM typeStateHM (routeNameStr, routePathComponents) =
   recursiveTypeForRoute :: [RoutePiece Ref] -> Type SrcSpanInfo
   recursiveTypeForRoute routeRefComponents = 
     case routeRefComponents of
-      [] -> error "Did not expect an empty list here! "
+      [] -> promotedType "BaseRoute" -- TODO: This needs discussion and a possible change.
       x:[] -> processPathComponent x
       prevElem:lastElem:[] -> 
         (TyInfix noSrcSpan 
