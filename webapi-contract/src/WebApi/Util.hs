@@ -12,6 +12,7 @@ module WebApi.Util where
 import Data.Proxy (Proxy (..))
 import Data.Text (Text, pack)
 import GHC.TypeLits
+import GHC.Exts
 
 type family HListToTuple (xs :: [*]) :: * where
   HListToTuple '[]   = ()
@@ -180,3 +181,15 @@ type family FilterDynP (ps :: [*]) :: [*] where
   FilterDynP (DynamicPiece p1 ': p2) = p1 ': FilterDynP p2
   FilterDynP (p1 ': p2)              = FilterDynP p2
   FilterDynP '[]                     = '[]
+
+type family Elem t ts :: Constraint where
+  Elem t ts = Elem' t ts ts
+
+type family Elem' t ts ots :: Constraint where
+  Elem' t (t ': ts) _   = ()
+  Elem' t (_ ': ts) ots = Elem' t ts ots
+  Elem' t '[]       ots = TypeError ('Text "Type " ':<>:
+                                     'ShowType t   ':<>:
+                                     'Text " is not a member of " ':<>:
+                                     'ShowType ots
+                                    )
