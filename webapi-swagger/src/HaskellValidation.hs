@@ -13,22 +13,22 @@ setValidConstructorId str =
   let (_, validName) = setValidFieldName str 
   in (Char.toUpper $ DL.head validName):(DL.tail validName)
 
+
 setValidFieldName :: String -> (Bool, String)
-setValidFieldName fldName = do
+setValidFieldName fldName = 
   -- Replace invalidId Chars, check if hs keyword and modify else return
   let (isChanged, invalidsFixed) = fixInvalidId fldName
-  case isHsKeyword invalidsFixed of 
-    True -> (True, invalidsFixed ++ "_")
-    False -> (isChanged, invalidsFixed)
+  in case isHsKeyword invalidsFixed of 
+       True -> (True, invalidsFixed ++ "_")
+       False -> (isChanged, invalidsFixed)
 
  where
   isHsKeyword :: String -> Bool
   isHsKeyword str = DL.elem str haskellKeywords
 
-
 fixInvalidId :: String -> (Bool, String)
 fixInvalidId idVal
-    | idVal == "" = error "Encountered potential empty Haskell Identifier! Please check the Swagger JSON!" 
+    | idVal == "" = error "Encountered potential empty Haskell Identifier! Please check the Swagger JSONx" 
     | idVal == "_" = (True, "holeName") -- ?? TODO : Is this allowed? Discuss
     | idVal == "\'" = (True, "singleQuoteId") -- TODO : Is this allowed?
     | DL.length idVal == 1 && isValidHsIdChar (DL.head idVal) = (False, fmap Char.toLower idVal)
