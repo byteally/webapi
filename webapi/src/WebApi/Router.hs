@@ -167,17 +167,11 @@ instance (Router s (MarkDyn rest) '(m, (pp :++ '[StaticPiece piece])), KnownSymb
 instance ( KnownSymbol piece, ApiHandler s m route
          , ToHeader (HeaderOut m route)
          , ToParam 'Cookie (CookieOut m route)
-         , FromParam 'QueryParam (QueryParam m route)
-         , FromParam 'FormParam (FormParam m route)
-         , FromParam 'FileParam (FileParam m route)
-         , FromHeader (HeaderIn m route)
-         , FromParam 'Cookie (CookieIn m route)
+         , FromWaiRequestCtx m route
          , Encodings (ContentTypes m route) (ApiOut m route)
          , Encodings (ContentTypes m route) (ApiErr m route)
          , PathParam m route ~ ()
          , ParamErrToApiErr (ApiErr m route)
-         , ToHListRecTuple (StripContents (RequestBody m route))
-         , PartDecodings (RequestBody m route)
          , Typeable m
          , Typeable route
          , WebApiServer s
@@ -203,18 +197,12 @@ instance ( KnownSymbol lpiece
          , route ~ (FromPieces paths)
          , ApiHandler s m route
          , PathParam m route ~ HListToTuple (FilterDynP paths)
-         , FromParam 'QueryParam (QueryParam m route)
-         , FromParam 'FormParam (FormParam m route)
-         , FromParam 'FileParam (FileParam m route)
-         , FromParam 'Cookie (CookieIn m route)
-         , FromHeader (HeaderIn m route)
          , Encodings (ContentTypes m route) (ApiErr m route)
          , Encodings (ContentTypes m route) (ApiOut m route)
          , ToHeader (HeaderOut m route)
          , ToParam 'Cookie (CookieOut m route)
          , ParamErrToApiErr (ApiErr m route)
-         , ToHListRecTuple (StripContents (RequestBody m route))
-         , PartDecodings (RequestBody m route)
+         , FromWaiRequestCtx m route
          , Typeable m
          , Typeable route
          , WebApiServer s
@@ -241,19 +229,13 @@ instance ( KnownSymbol rpiece
          , route ~ (FromPieces paths)
          , ApiHandler s m route
          , PathParam m route ~ HListToTuple (FilterDynP paths)
-         , FromParam 'QueryParam (QueryParam m route)
-         , FromParam 'FormParam (FormParam m route)
-         , FromParam 'FileParam (FileParam m route)
-         , FromParam 'Cookie (CookieIn m route)
-         , FromHeader (HeaderIn m route)
          , Encodings (ContentTypes m route) (ApiErr m route)
          , Encodings (ContentTypes m route) (ApiOut m route)
          , ToHeader (HeaderOut m route)
          , ToParam 'Cookie (CookieOut m route)
          , DecodeParam lpiece
          , ParamErrToApiErr (ApiErr m route)
-         , ToHListRecTuple (StripContents (RequestBody m route))
-         , PartDecodings (RequestBody m route)
+         , FromWaiRequestCtx m route
          , Typeable m
          , Typeable route
          , WebApiServer s
@@ -277,19 +259,13 @@ instance ( KnownSymbol rpiece
 instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
          , ApiHandler s m route
          , PathParam m route ~ HListToTuple (FilterDynP (pp :++ '[DynamicPiece t]))
-         , FromParam 'QueryParam (QueryParam m route)
-         , FromParam 'FormParam (FormParam m route)
-         , FromParam 'FileParam (FileParam m route)
-         , FromParam 'Cookie (CookieIn m route)
-         , FromHeader (HeaderIn m route)
          , Encodings (ContentTypes m route) (ApiErr m route)
          , Encodings (ContentTypes m route) (ApiOut m route)
          , ToHeader (HeaderOut m route)
          , ToParam 'Cookie (CookieOut m route)
          , DecodeParam t
          , ParamErrToApiErr (ApiErr m route)
-         , ToHListRecTuple (StripContents (RequestBody m route))
-         , PartDecodings (RequestBody m route)
+         , FromWaiRequestCtx m route
          , Typeable m
          , Typeable route
          , WebApiServer s
@@ -311,15 +287,8 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
 
 instance ( PathParam m (ns :// piece) ~ ()
          , ParamErrToApiErr (ApiErr m (ns :// piece))
-         , KnownSymbol piece
-         , FromHeader (HeaderIn m (ns :// piece))
-         , FromParam 'QueryParam (QueryParam m (ns :// piece))
-         , FromParam 'FormParam (FormParam m (ns :// piece))
-         , FromParam 'FileParam (FileParam m (ns :// piece))
-         , FromParam 'Cookie (CookieIn m (ns :// piece))
-         , ToHListRecTuple (StripContents (RequestBody m (ns :// piece)))
+         , KnownSymbol piece 
          , SingMethod m
-         , PartDecodings (RequestBody m (ns :// piece))
          , WebApiServer s
          , Typeable ns
          , Typeable m
@@ -328,6 +297,7 @@ instance ( PathParam m (ns :// piece) ~ ()
          , ApiContract (ApiInterface s) m (ns :// piece)
          , ToHeader (HeaderOut m (ns :// piece))
          , ToParam 'Cookie (CookieOut m (ns :// piece))
+         , FromWaiRequestCtx m (ns :// piece)
          , Encodings (ContentTypes m (ns :// piece)) (ApiErr m (ns :// piece))
          , Encodings (ContentTypes m (ns :// piece)) (ApiOut m (ns :// piece))
          ) => Router s ((ns :: *) :// (piece :: Symbol)) '(m, pp) where

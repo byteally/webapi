@@ -21,6 +21,8 @@ Provides a client for a web api for a given contract.
 {-# LANGUAGE TypeOperators         #-}
 {-# LANGUAGE UndecidableInstances  #-}
 {-# LANGUAGE CPP                   #-}
+{-# LANGUAGE TupleSections         #-}
+
 module WebApi.Client
        (
          -- * Client related functions
@@ -145,9 +147,11 @@ toClientRequest clientReq req = do
   let cReq' = clientReq
               { HC.method = singMethod (Proxy :: Proxy m)
               , HC.path = uriPath
-              , HC.requestHeaders = toHeader $ headerIn req
+              , HC.requestHeaders = accHeader ++ (toHeader $ headerIn req)
               , HC.cookieJar = Just ckJar
               }
+      accHeader = maybe [] singleton ((hAccept,) <$>  (getRawAcceptHeader req))
+      singleton x = [x]
       cReqQP = HC.setQueryString queryPar cReq'
       ckJar  = HC.createCookieJar (cks now)
       cReqUE = if Prelude.null formPar
