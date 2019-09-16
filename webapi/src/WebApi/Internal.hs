@@ -1,13 +1,18 @@
-{-# LANGUAGE CPP                     #-}
-{-# LANGUAGE ConstraintKinds         #-}
-{-# LANGUAGE DataKinds               #-}
-{-# LANGUAGE DefaultSignatures       #-}
-{-# LANGUAGE FlexibleContexts        #-}
-{-# LANGUAGE KindSignatures          #-}
-{-# LANGUAGE MultiParamTypeClasses   #-}
-{-# LANGUAGE OverloadedStrings       #-}
-{-# LANGUAGE ScopedTypeVariables     #-}
-{-# LANGUAGE TypeFamilies            #-}
+{-# LANGUAGE CPP                       #-}
+{-# LANGUAGE ConstraintKinds           #-}
+{-# LANGUAGE DataKinds                 #-}
+{-# LANGUAGE DefaultSignatures         #-}
+{-# LANGUAGE FlexibleContexts          #-}
+{-# LANGUAGE KindSignatures            #-}
+{-# LANGUAGE MultiParamTypeClasses     #-}
+{-# LANGUAGE OverloadedStrings         #-}
+{-# LANGUAGE ScopedTypeVariables       #-}
+{-# LANGUAGE TypeFamilies              #-}
+{-# LANGUAGE TypeOperators             #-}
+{-# LANGUAGE FlexibleInstances         #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE UndecidableInstances      #-}
+
 
 #if __GLASGOW_HASKELL__ >= 800
 {-# LANGUAGE UndecidableSuperClasses #-}
@@ -31,7 +36,8 @@ import           Data.Proxy
 import qualified Data.Text                          as T (pack)
 import           Data.Typeable                      (Typeable)
 import           Network.HTTP.Media                 (MediaType, mapAcceptMedia,
-                                                     matchAccept, matchContent)
+                                                     matchAccept, matchContent
+                                                    , mapAccept)
 import           Network.HTTP.Media.RenderHeader    (renderHeader)
 import           Network.HTTP.Types                 hiding (Query)
 import qualified Network.Wai                        as Wai
@@ -41,7 +47,7 @@ import           WebApi.ContentTypes
 import           WebApi.Contract
 import           WebApi.Param
 import           WebApi.Util
-
+import qualified Data.Text.Encoding                 as TE
 
 data RouteResult a = NotMatched | Matched a
 
@@ -53,16 +59,20 @@ toApplication app request respond =
     Matched result -> respond result
     NotMatched -> respond (Wai.responseLBS notFound404 [] "")
 
-fromWaiRequest :: forall m r.
-                   ( FromParam 'QueryParam (QueryParam m r)
-                   , FromParam 'FormParam (FormParam m r)
-                   , FromParam 'FileParam (FileParam m r)
-                   , FromHeader (HeaderIn m r)
-                   , FromParam 'Cookie (CookieIn m r)
-                   , ToHListRecTuple (StripContents (RequestBody m r))
-                   , PartDecodings (RequestBody m r)
-                   , SingMethod m
-                   ) => Wai.Request
+type FromWaiRequestCtx m r =
+  ( FromParam 'QueryParam (QueryParam m r)
+  , FromParam 'FormParam (FormParam m r)
+  , FromParam 'FileParam (FileParam m r)
+  , FromHeader (HeaderIn m r)
+  , FromParam 'Cookie (CookieIn m r)
+  , ToHListRecTuple (StripContents (RequestBody m r))
+  , PartDecodings (RequestBody m r)
+  , SingMethod m
+  , EncodingType m r (ContentTypes m r)
+  )
+
+fromWaiRequest :: forall m r. FromWaiRequestCtx m r =>
+                   Wai.Request
                  -> PathParam m r
                  -> (Request m r -> IO (Response m r))
                  -> IO (Validation [ParamErr] (Response m r))
@@ -79,7 +89,7 @@ fromWaiRequest waiReq pathPar handlerFn = do
                               <*> (fromHeader $ Wai.requestHeaders waiReq)
                               <*> (fromCookie $ maybe [] parseCookies (getCookie waiReq))
                               <*> (fromBody [])
-        handler' request
+        handler' (acceptHeaderType accHdr <$> request)
     Nothing -> do
       bdy <- Wai.lazyRequestBody waiReq
       let rBody = [(fromMaybe (renderHeader $ contentType (Proxy :: Proxy OctetStream)) mContentTy, bdy)]
@@ -90,12 +100,19 @@ fromWaiRequest waiReq pathPar handlerFn = do
                             <*> (fromHeader $ Wai.requestHeaders waiReq)
                             <*> (fromCookie $ maybe [] parseCookies (getCookie waiReq))
                             <*> (fromBody rBody)
-      handler' request
+      handler' (acceptHeaderType accHdr <$> request)
   where
+    accHdr = getAcceptType (Wai.requestHeaders waiReq)
     handler' (Validation (Right req)) = handlerFn req >>= \resp -> return $ Validation (Right resp)
     handler' (Validation (Left parErr)) = return $ Validation (Left parErr)
     hasFormData x = matchContent [contentType (Proxy :: Proxy MultipartFormData), contentType (Proxy :: Proxy UrlEncoded)] =<< x
-    fromBody x = Validation $ either (const (Left [NotFound "415"])) (Right . fromRecTuple (Proxy :: Proxy (StripContents (RequestBody m r)))) $ partDecodings (Proxy :: Proxy (RequestBody m r)) x
+    acceptHeaderType :: Maybe ByteString -> Request m r -> Request m r
+    acceptHeaderType (Just x) r =
+      fromMaybe r $ 
+      (\(Encoding t _ _) -> setAcceptHeader t r) <$> matchAcceptHeaders x r
+    acceptHeaderType Nothing r = r
+    fromBody x = Validation $ either (\e -> Left [NotFound (bspack e)]) (Right . fromRecTuple (Proxy :: Proxy (StripContents (RequestBody m r)))) $ partDecodings (Proxy :: Proxy (RequestBody m r)) x
+    bspack = TE.encodeUtf8 . T.pack
     fromWaiFile :: Wai.File FilePath -> (ByteString, FileInfo)
     fromWaiFile (fname, waiFileInfo) = (fname, FileInfo
                                          { fileName        = Wai.fileName waiFileInfo
@@ -220,8 +237,31 @@ hSetCookie = "Set-Cookie"
 getContentType :: ResponseHeaders -> Maybe ByteString
 getContentType = fmap snd . find ((== hContentType) . fst)
 
+getAcceptType :: ResponseHeaders -> Maybe ByteString
+getAcceptType = fmap snd . find ((== hAccept) . fst)
+
 newtype Tagged (s :: [*]) b = Tagged { unTagged :: b }
 
 toTagged :: Proxy s -> b -> Tagged s b
 toTagged _ = Tagged
 
+class EncodingType m r (ctypes :: [*]) where
+  getEncodingType :: Proxy ctypes -> [(MediaType, Encoding m r)]
+
+instance ( Accept ctype
+         , Elem ctype (ContentTypes m r)
+         , EncodingType m r ctypes
+         ) => EncodingType m r (ctype ': ctypes) where
+  getEncodingType _ =
+    (contentType (Proxy :: Proxy ctype), Encoding (Proxy :: Proxy ctype) Proxy Proxy) :
+    getEncodingType (Proxy :: Proxy ctypes)
+
+instance EncodingType m r '[] where
+  getEncodingType _ = []
+
+matchAcceptHeaders :: forall m r ctypes.
+                       ( EncodingType m r ctypes
+                       , ctypes ~ ContentTypes m r
+                       ) => ByteString -> Request m r -> Maybe (Encoding m r)
+matchAcceptHeaders b _ =
+  mapAccept (getEncodingType (Proxy :: Proxy ctypes)) b

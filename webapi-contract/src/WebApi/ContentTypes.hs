@@ -65,7 +65,6 @@ import           Data.Text.Lazy.Encoding            (decodeUtf8)
 import           Network.HTTP.Media.MediaType
 import           Network.HTTP.Media                 (mapContentMedia)
 import           WebApi.Util
-import           WebApi.Contract                    (JSON, PlainText)
 import           Data.ByteString.Builder (lazyByteString, Builder)
 
 
@@ -80,9 +79,6 @@ data MultipartFormData
 
 -- | Type representing content type of @application/x-www-form-urlencoded@.
 data UrlEncoded
-
--- | Type representing content type of @application/xml@.
-data XML
 
 -- | Encodings of type for all content types `ctypes`.
 class Encodings (ctypes :: [*]) a where
@@ -114,11 +110,11 @@ instance Decodings '[] a where
 class Accept ctype where
   contentType :: Proxy ctype -> MediaType
 
-instance Accept JSON where
-  contentType _ = "application" // "json"
-
 instance Accept PlainText where
   contentType _ = "text" // "plain" /: ("charset", "utf-8")
+
+instance Accept JSON where
+  contentType _ = "application" // "json"
 
 instance Accept HTML where
   contentType _ = "text" // "html" /: ("charset", "utf-8")
@@ -131,9 +127,6 @@ instance Accept MultipartFormData where
 
 instance Accept UrlEncoded where
   contentType _ = "application" // "x-www-form-urlencoded"
-
-instance Accept XML where
-  contentType _ = "application" // "xml"
 
 -- | Encode a type into a specific content type.
 class (Accept a) => Encode a c where
@@ -215,7 +208,7 @@ instance (PartDecodings ts, Decodings ctypes (StripContent t), MkContent t ~ Con
         (decValE :: Maybe (Either String (StripContent t))) = mapContentMedia decs ctype
     decVal <- fromMaybe (Left "Error 415: No Matching Content Type") decValE
     (decVal, ) <$> partDecodings (Proxy :: Proxy ts) xs
-  partDecodings _ [] = error "Error!: This shouldn't have happened"
+  partDecodings _ [] = error "Panic: impossible case"
 
 instance PartDecodings '[] where
   partDecodings _ _ = Right ()
@@ -223,3 +216,11 @@ instance PartDecodings '[] where
 type family MkContent a where
   MkContent (Content ctypes a) = Content ctypes a
   MkContent a                  = Content '[JSON] a
+
+-- | Type representing content type of @application/json@.
+data JSON
+
+-- | Type representing content type of @text/plain@.
+data PlainText
+
+

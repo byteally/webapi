@@ -195,6 +195,11 @@ spec = withApp $ describe "WebApi request with payload" $ do
       let headers = formHeaders [("HP1.hp1", "5"), ("Content-Type", "application/json")] [("cp", "True")]
           bdy = "{\"rb\":\"foobar\"}"
       request methodPut "api" headers bdy `shouldRespondWith` "[]" { matchStatus = 200 }
+  context "PUT Request with bad body" $ do
+    it "should be 400 failure" $ do
+      let headers = formHeaders [("HP1.hp1", "5"), ("Content-Type", "application/json")] [("cp", "True")]
+          bdy = "{\"jb\":\"foobar\"}"
+      request methodPut "api" headers bdy `shouldRespondWith` 400
   context "DELETE Request" $ do
     it "should be 200 ok" $ do
       request methodDelete "api" [] "" `shouldRespondWith` "[]" { matchStatus = 200 }

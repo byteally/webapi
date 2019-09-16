@@ -28,6 +28,8 @@ Provides the contract for the web api. The contract consists of 'WebApi' and 'Ap
 
 {-# LANGUAGE FlexibleInstances         #-}
 {-# LANGUAGE ScopedTypeVariables       #-}
+{-# LANGUAGE OverloadedStrings         #-}
+{-# LANGUAGE ExistentialQuantification #-}
 
 
 #if __GLASGOW_HASKELL__ >= 800
@@ -50,6 +52,10 @@ module WebApi.Contract
        , method
        , requestBody
        , pathParam
+       , setAcceptHeader
+       , getAcceptHeader
+       , getRawAcceptHeader
+       
        , pattern Request
        , pattern Req
        , Response (..)
@@ -57,6 +63,7 @@ module WebApi.Contract
        , OtherError (..)
        , Resource (..)
        , ReqInvariant
+       , Encoding (..)
        
        -- * Methods   
        , module WebApi.Method
@@ -81,6 +88,9 @@ import           GHC.TypeLits
 import           Network.HTTP.Types
 import           WebApi.Util
 import           WebApi.Method
+import           WebApi.ContentTypes  (JSON, PlainText, Accept (..))
+import           Network.HTTP.Media.RenderHeader
+import           Data.ByteString
 
 -- | Describes a collection of web apis.
 class WebApi (p :: *) where
@@ -183,23 +193,25 @@ type family DefaultApiErr (ctype :: [*]) :: * where
 data Request m r = Req'
   {
 #if __GLASGOW_HASKELL__ >= 800    
-    _pathParam   :: PathParam m r                                  -- ^ Path params of the request.
-  , _queryParam  :: QueryParam m r                                 -- ^ Query params of the request.
-  , _formParam   :: FormParam m r                                  -- ^  Form params of the request.
-  , _fileParam   :: FileParam m r                                  -- ^ File params of the request.
-  , _headerIn    :: HeaderIn m r                                   -- ^ Header params of the request.
-  , _cookieIn    :: CookieIn m r                                   -- ^ Cookie params of the request.
-  , _requestBody :: HListToTuple (StripContents (RequestBody m r)) -- ^ Body of the request
-  , _method      :: Text
+    _pathParam    :: PathParam m r                                  -- ^ Path params of the request.
+  , _queryParam   :: QueryParam m r                                 -- ^ Query params of the request.
+  , _formParam    :: FormParam m r                                  -- ^  Form params of the request.
+  , _fileParam    :: FileParam m r                                  -- ^ File params of the request.
+  , _headerIn     :: HeaderIn m r                                   -- ^ Header params of the request.
+  , _cookieIn     :: CookieIn m r                                   -- ^ Cookie params of the request.
+  , _requestBody  :: HListToTuple (StripContents (RequestBody m r)) -- ^ Body of the request
+  , _method       :: Text
+  , _acceptHeader :: Maybe (Encoding m r)
 #else
-    pathParam   :: PathParam m r                                  -- ^ Path params of the request.
-  , queryParam  :: QueryParam m r                                 -- ^ Query params of the request.
-  , formParam   :: FormParam m r                                  -- ^  Form params of the request.
-  , fileParam   :: FileParam m r                                  -- ^ File params of the request.
-  , headerIn    :: HeaderIn m r                                   -- ^ Header params of the request.
-  , cookieIn    :: CookieIn m r                                   -- ^ Cookie params of the request.
-  , requestBody :: HListToTuple (StripContents (RequestBody m r)) -- ^ Body of the request
-  , _method      :: Text
+    pathParam     :: PathParam m r                                  -- ^ Path params of the request.
+  , queryParam    :: QueryParam m r                                 -- ^ Query params of the request.
+  , formParam     :: FormParam m r                                  -- ^  Form params of the request.
+  , fileParam     :: FileParam m r                                  -- ^ File params of the request.
+  , headerIn      :: HeaderIn m r                                   -- ^ Header params of the request.
+  , cookieIn      :: CookieIn m r                                   -- ^ Cookie params of the request.
+  , requestBody   :: HListToTuple (StripContents (RequestBody m r)) -- ^ Body of the request
+  , _method       :: Text
+  , _acceptHeader :: Maybe (Encoding m r)
 #endif
   }
 
@@ -243,13 +255,13 @@ pattern Request { pathParam
                  , headerIn
                  , cookieIn
                  , requestBody
-                 } <- Req' pathParam queryParam formParam fileParam headerIn cookieIn requestBody _ where
+                 } <- Req' pathParam queryParam formParam fileParam headerIn cookieIn requestBody _ _ where
 #else
-pattern Request pp qp fp fip hi ci rb <- Req' pp qp fp fip hi ci rb _ where
+pattern Request pp qp fp fip hi ci rb <- Req' pp qp fp fip hi ci rb _ _ where
 #endif
     Request pp qp fp fip hi ci rb =
       let rt = _reqToRoute rq 
-          rq = Req' pp qp fp fip hi ci rb (_getMethodName rt)
+          rq = Req' pp qp fp fip hi ci rb (_getMethodName rt) Nothing
       in rq
 
 -- | Exists only for compatability reasons. This will be removed in the next version.
@@ -267,7 +279,7 @@ pattern Req :: () => (SingMethod m, HListToTuple (StripContents (RequestBody m r
                 -> CookieIn m r
                 -> Text
                 -> Request m r
-pattern Req pp qp fp fip hi ci m = Req' pp qp fp fip hi ci () m
+pattern Req pp qp fp fip hi ci m = Req' pp qp fp fip hi ci () m Nothing
 
 
 
@@ -288,8 +300,30 @@ type family ReqInvariant (form :: *) (file :: *) (body :: [*]) :: Constraint whe
   ReqInvariant a b '[]    = ()
   ReqInvariant a b c      = "Error" ~ "This combination is not supported"
 
--- | Type representing content type of @application/json@.
-data JSON
+-- | Set accept header. Has to be one among the ContentTypes.
+setAcceptHeader :: forall t m r.
+                    ( Elem t (ContentTypes m r)
+                    , Accept t 
+                    ) => Proxy t -> Request m r -> Request m r
+setAcceptHeader pct req =
+  req { _acceptHeader = Just (Encoding pct (Proxy :: Proxy m) (Proxy :: Proxy r)) }
 
--- | Type representing content type of @text/plain@.
-data PlainText
+-- | Get accept header.
+getAcceptHeader :: Request m r -> Maybe (Encoding m r)
+getAcceptHeader = _acceptHeader
+
+-- | Get raw accept header.
+getRawAcceptHeader :: Request m r -> Maybe HeaderValue
+getRawAcceptHeader req =
+  case _acceptHeader req of
+    Just (Encoding pct _ _) ->
+      let ct     = contentType pct
+          hdrVal = renderHeader ct
+      in  Just hdrVal
+    Nothing -> Nothing
+
+type HeaderValue = ByteString
+
+data Encoding m r = forall e. (Accept e, Elem e (ContentTypes m r)) => Encoding (Proxy e) (Proxy m) (Proxy r)
+
+

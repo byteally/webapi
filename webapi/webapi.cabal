@@ -82,3 +82,4 @@ test-suite unit-tests
                      , QuickCheck        >= 2.8  && < 2.13
                      , binary            == 0.8.*
                      , webapi
+                     , webapi-contract

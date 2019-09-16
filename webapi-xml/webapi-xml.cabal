@@ -41,6 +41,7 @@ library
     , http-media
     , case-insensitive
     , bytestring
+    , xml-conduit
   default-language: Haskell2010
 
 executable webapi-xml-exe
