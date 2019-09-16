@@ -16,6 +16,10 @@ import Data.ByteString (ByteString)
 import Data.Binary.Builder
 import Data.Aeson.Encoding
 import Control.Exception
+import qualified Data.Text.Lazy as LT
+import Data.Proxy
+import WebApi.Contract
+import Control.Monad.IO.Class
 
 port :: Int
 port = 9080
@@ -35,7 +39,7 @@ type LargeOutput = "large" :/ "output"
 data Person = Person { name    :: Text
                      , age     :: Age
                      , address :: Text
-                     } deriving (Show, Eq, Generic)
+                     } deriving (Show, Eq, Generic, Read)
 
 instance ToJSON Person
 instance FromJSON Person
@@ -46,7 +50,7 @@ data Output = Output { email :: Text }
 instance FromJSON Output
 
 newtype Age = Age { getAge :: Int }
-            deriving (Show, Eq, ToJSON, FromJSON, Generic)
+            deriving (Show, Eq, ToJSON, FromJSON, Generic, Read)
 
 newtype LargeOutputData = LargeOutputData { largeOutputData :: [Output] }
                         deriving (Show, Eq, FromJSON)
@@ -64,6 +68,7 @@ instance WebApi ClientSpec where
 instance ApiContract ClientSpec GET Persons where
   type ApiOut GET Persons = [Person]
   type ApiErr GET Persons = [Person]
+  type ContentTypes GET Persons = '[JSON, PlainText]
 
 instance ApiContract ClientSpec GET LargeOutput where
   type ApiOut GET LargeOutput = LargeOutputData
@@ -74,6 +79,7 @@ instance WebApiServer ClientSpecImpl where
 instance ApiHandler ClientSpecImpl GET Persons where
   handler _ req = do
     let pp = pathParam req
+    liftIO $ putStrLn $ "accept header is: " ++ show (getRawAcceptHeader req)
     case pp of
       True  -> respond persons
       False -> raise status410 persons
@@ -82,16 +88,19 @@ instance ApiHandler ClientSpecImpl GET LargeOutput where
   handler _ _ = respond (LargeOutputData [ undefined ])
 
 persons :: [Person]
-persons = [Person "foo" (Age 10) "10 1st baz"]
+persons = [Person "foo" (Age 10) "10 1st baz"
+          , Person "bar" (Age 20) "20 2nd baz"
+          , Person "zap" (Age 30) "20 2nd baz"
+          ]
 
 spec :: Spec
 spec = withApp $ describe "Webapi client" $ do
   it "can create proper requests" $
-    shouldReturn (clientAct True) (Right persons)
+    shouldReturn (clientAct True id) (Right persons)
   -- NOTE: since [Person] is being used in both success and failure
   --       the first one is being picked [due to default behavior changing in http-client 0.5]
   it "should handle api errors" $
-    shouldReturn (clientAct False) (Right persons) -- (Left (status410, persons))
+    shouldReturn (clientAct False id) (Right persons) -- (Left (status410, persons))
   it "should work with large output" $
     shouldReturn largeOutputAct (Right (LargeOutputData [ Output { email = "rowenawilson@enthaze.com" }
                                                         , Output { email = "perezsolomon@digial.com" }
@@ -107,6 +116,8 @@ spec = withApp $ describe "Webapi client" $ do
                                                         , Output { email = "danielscross@comstar.com" }
                                                         , Output { email = "wendinichols@cuizine.com" }
                                                         ]))
+  it "can set content types" $
+    shouldReturn (clientAct False (setAcceptHeader (Proxy :: Proxy PlainText))) (Right (take 1 persons))
 
 largeOutputAct :: IO (Either (Either (ApiError GET LargeOutput) OtherError) LargeOutputData)
 largeOutputAct = do
@@ -127,21 +138,22 @@ largeOutputAct = do
     Success _ d _ _   -> putStrLn "Success" >> return (Right d)
     Failure e         -> putStrLn "Failure" >> return (Left e)
 
-clientAct :: Bool -> IO (Either (Status, [Person]) [Person])
-clientAct pp = do
+clientAct :: Bool -> (Request GET Persons -> Request GET Persons) -> IO (Either (Status, [Person]) [Person])
+clientAct pp f = do
   mgr <- newManager defaultManagerSettings
   let csett = ClientSettings { baseUrl           = "http://localhost:" ++ show port
                              , connectionManager = mgr
                              }
-  resp <- client csett (Request { pathParam    = pp
-                                , queryParam  = ()
-                                , formParam   = ()
-                                , fileParam   = ()
-                                , cookieIn    = ()
-                                , headerIn    = ()
-                                , requestBody = ()
-                                } :: Request GET Persons
-                       )
+      req   = (Request { pathParam    = pp
+                       , queryParam  = ()
+                       , formParam   = ()
+                       , fileParam   = ()
+                       , cookieIn    = ()
+                       , headerIn    = ()
+                       , requestBody = ()
+                       } :: Request GET Persons
+              )
+  resp <- client csett (f req)
   case resp of
     Success _ d _ _                -> putStrLn "Success" >> return (Right d)
     Failure (Left ap)              -> putStrLn "Failed"  >> return (Left (code ap, err ap))
@@ -163,3 +175,10 @@ instance Eq (ApiError m r) where
 
 instance Eq OtherError where
   a == b = False
+
+instance FromText [Person] where
+  -- NOTE: take is applied just to ensure that [Person] takes fromText instance.
+  fromText = Just . take 1 . read . LT.unpack
+
+instance ToText [Person] where
+  toText = LT.pack . show
