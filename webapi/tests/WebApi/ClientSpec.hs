@@ -1,5 +1,5 @@
 {-# OPTIONS_GHC -fno-warn-unused-binds #-}
-{-# LANGUAGE MultiParamTypeClasses, TypeFamilies, OverloadedStrings, DataKinds, TypeOperators, TypeSynonymInstances, FlexibleInstances, DeriveGeneric, OverloadedStrings, FlexibleContexts, UndecidableInstances, GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses, TypeFamilies, OverloadedStrings, DataKinds, TypeOperators, TypeSynonymInstances, FlexibleInstances, DeriveGeneric, OverloadedStrings, FlexibleContexts, UndecidableInstances, GeneralizedNewtypeDeriving, OverloadedLabels, RankNTypes, ConstraintKinds, TypeApplications #-}
 
 module WebApi.ClientSpec (spec) where
 
@@ -20,6 +20,9 @@ import qualified Data.Text.Lazy as LT
 import Data.Proxy
 import WebApi.Contract
 import Control.Monad.IO.Class
+import WebApi.AnonClient (hnil, HParam (..), (.=))
+import qualified WebApi.AnonClient as Anon
+import Data.String
 
 port :: Int
 port = 9080
@@ -33,8 +36,9 @@ clientSpecApp = serverApp serverSettings ClientSpecImpl
 data ClientSpec
 data ClientSpecImpl = ClientSpecImpl
 
-type Persons = "person" :/ Bool :/ "all"
-type LargeOutput = "large" :/ "output"
+type PersonBounce  = "person" :/ "bounce"
+type Persons       = "person" :/ Bool :/ "all"
+type LargeOutput   = "large" :/ "output"
 
 data Person = Person { name    :: Text
                      , age     :: Age
@@ -50,7 +54,7 @@ data Output = Output { email :: Text }
 instance FromJSON Output
 
 newtype Age = Age { getAge :: Int }
-            deriving (Show, Eq, ToJSON, FromJSON, Generic, Read)
+            deriving (Show, Eq, ToJSON, FromJSON, Generic, Read, FromParam 'QueryParam, EncodeParam)
 
 newtype LargeOutputData = LargeOutputData { largeOutputData :: [Output] }
                         deriving (Show, Eq, FromJSON)
@@ -59,9 +63,11 @@ instance ToJSON LargeOutputData where
   toEncoding _ = unsafeToEncoding (fromByteString largeJSON)
   toJSON       = undefined
 
+instance FromParam 'QueryParam Person
 
 instance WebApi ClientSpec where
   type Apis ClientSpec = '[ Route '[GET] Persons
+                          , Route '[GET] PersonBounce
                           , Route '[GET] LargeOutput
                           ]
 
@@ -69,6 +75,12 @@ instance ApiContract ClientSpec GET Persons where
   type ApiOut GET Persons = [Person]
   type ApiErr GET Persons = [Person]
   type ContentTypes GET Persons = '[JSON, PlainText]
+
+instance ApiContract ClientSpec GET PersonBounce where
+  type QueryParam GET PersonBounce   = Person
+  type ApiOut GET PersonBounce       = Person
+  type ContentTypes GET PersonBounce = '[JSON, PlainText]
+
 
 instance ApiContract ClientSpec GET LargeOutput where
   type ApiOut GET LargeOutput = LargeOutputData
@@ -83,6 +95,12 @@ instance ApiHandler ClientSpecImpl GET Persons where
     case pp of
       True  -> respond persons
       False -> raise status410 persons
+
+instance ApiHandler ClientSpecImpl GET PersonBounce where
+  handler _ req = do
+    let p = queryParam req
+    print p
+    respond p
 
 instance ApiHandler ClientSpecImpl GET LargeOutput where
   handler _ _ = respond (LargeOutputData [ undefined ])
@@ -118,6 +136,10 @@ spec = withApp $ describe "Webapi client" $ do
                                                         ]))
   it "can set content types" $
     shouldReturn (clientAct False (setAcceptHeader (Proxy :: Proxy PlainText))) (Right (take 1 persons))
+  it "can make gclient request" $
+    shouldReturn anonClientAct1 (Right persons)
+  it "can make nested gclient request" $
+    shouldReturn anonClientAct2 (Right (Person "Jake" (Age 25) "Finley park"))
 
 largeOutputAct :: IO (Either (Either (ApiError GET LargeOutput) OtherError) LargeOutputData)
 largeOutputAct = do
@@ -137,6 +159,25 @@ largeOutputAct = do
   case resp of
     Success _ d _ _   -> putStrLn "Success" >> return (Right d)
     Failure e         -> putStrLn "Failure" >> return (Left e)
+
+anonClientAct1 :: IO (Either [Person] [Person])
+anonClientAct1 =
+  get @Persons
+  (fromString ("http://localhost:" ++ show port))
+  (#path .= True :&
+   hnil)             
+
+anonClientAct2 :: IO (Either () Person)
+anonClientAct2 =
+  get @PersonBounce
+  (fromString ("http://localhost:" ++ show port))
+  (#query .= (#name    .= ("Jake" :: Text)        :&
+              #age     .= Age 25                 :&
+              #address .= ("Finley park" :: Text) :&
+              hnil) :&
+   #accept .= (Proxy :: Proxy PlainText)     :&
+    hnil
+  )             
 
 clientAct :: Bool -> (Request GET Persons -> Request GET Persons) -> IO (Either (Status, [Person]) [Person])
 clientAct pp f = do
@@ -182,3 +223,19 @@ instance FromText [Person] where
 
 instance ToText [Person] where
   toText = LT.pack . show
+
+instance ToText Person where
+  toText = LT.pack . show
+
+instance FromText Person where
+  fromText = Just . read . LT.unpack
+
+--
+
+{-
+ #query .~ #name    .= "Jake"   :&
+           #age     .= (Age 25) :&
+           #address .= "Finley park" :&
+           Anon.hnil
+    :& hnil
+-}

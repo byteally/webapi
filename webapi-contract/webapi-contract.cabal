@@ -26,6 +26,7 @@ library
                      , WebApi.Util
                      , WebApi.ContentTypes
                      , WebApi.Param
+                     , WebApi.AnonClient
 
   -- other-extensions:
   build-depends:       base               >= 4.7      && < 5

@@ -4,7 +4,7 @@ module WebApi.MockSpec (spec) where
 
 import Data.Aeson
 import GHC.Generics
-import WebApi
+import WebApi hiding (get, post, put)
 import Test.Hspec
 import Test.Hspec.Wai
 import Test.QuickCheck

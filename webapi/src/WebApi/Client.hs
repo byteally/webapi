@@ -30,9 +30,18 @@ module WebApi.Client
        , fromClientResponse
        , toClientRequest
        , link
+       , gclient
+       , get
+       , get'
+       , post
+       , post'
+       , put
+       
 
          -- * Types
        , ClientSettings (..)
+       , GClientSettings
+       , gConnectionManager       
        , UnknownClientException
 
          -- * Connection manager
@@ -65,12 +74,15 @@ import           Network.HTTP.Media                    (RenderHeader (..),
                                                         mapContentMedia)
 import           Network.HTTP.Types                    hiding (Query)
 import           WebApi.ContentTypes
-import           WebApi.Contract
+import           WebApi.Contract                       
 import           WebApi.Internal
 import           WebApi.Param
 import           WebApi.Util
 import           Data.Maybe                            (fromJust)
 import           Data.Time.Clock                       (getCurrentTime)
+import qualified WebApi.AnonClient                     as Anon
+import           Data.String                           (IsString (..))
+import           GHC.Exts
 
 -- | Datatype representing the settings related to client.
 data ClientSettings = ClientSettings { baseUrl           :: String     -- ^ base url of the API being called.
@@ -262,3 +274,107 @@ data UnknownClientException = UnknownClientException
                             deriving (Typeable, Show)
 
 instance Exception UnknownClientException where
+
+-- | Client settings for anonymous (contractless) client
+---  Currently duplicated from ClientSettings to avoid a breaking change  
+data GClientSettings (m :: *) (r :: *) =
+  GClientSettings { gBaseUrl           :: String           -- ^ base url of the API being called.
+                  , gConnectionManager :: Maybe HC.Manager -- ^ connection manager for the connection.
+                  }
+
+type family ToParams m r xs :: Constraint where
+  ToParams m r xs =
+    ( ToHeader (Anon.LookupHParam Anon.HeaderParamLabel xs)
+    , ToParam 'PathParam (HListToTuple (FilterDynP (ToPieces r)))
+    , ToParam 'QueryParam (Anon.LookupHParam Anon.QueryParamLabel xs)
+    , ToParam 'FormParam (Anon.LookupHParam Anon.FormParamLabel xs)
+    , ToParam 'Cookie (Anon.LookupHParam Anon.CookieParamLabel xs)
+    , ToParam 'FileParam (Anon.LookupHParam Anon.FileParamLabel xs)
+    , PartEncodings (Anon.UnProxyReqBody
+                     (Anon.LookupHParam Anon.ReqBodyParamLabel xs))
+    , ToHListRecTuple (StripContents
+                             (Anon.UnProxyReqBody
+                                (Anon.LookupHParam Anon.ReqBodyParamLabel xs)))
+    , MkPathFormatString r
+    )
+
+type family FromParams o e xs co ho :: Constraint where
+  FromParams o e xs co ho =
+    ( Decodings (Anon.UnProxyContentType (Anon.LookupHParam Anon.ContentTypeLabel xs)) o
+    , Decodings (Anon.UnProxyContentType (Anon.LookupHParam Anon.ContentTypeLabel xs)) e
+    , FromHeader ho
+    , FromParam 'Cookie co
+    )
+
+-- | Generic anonymous client
+gclient :: forall m r xs e o co ho.
+          ( Anon.ParamCtx m r o e xs co ho
+          , ToParams m r xs
+          , FromParams o e xs co ho
+          ) => GClientSettings m r -> Anon.HParam xs -> IO (Anon.Response o e co ho)
+gclient acls hparams = do
+  cls <- mkClientSettings acls
+  Anon.fromAnonResponse <$> client cls (Anon.toAnonRequest (Proxy :: Proxy m) (Proxy :: Proxy r) hparams)
+
+instance IsString (GClientSettings m r) where
+  fromString url = GClientSettings { gBaseUrl           = url
+                                   , gConnectionManager = Nothing
+                                   }
+
+get :: forall r xs e o.
+      ( Anon.ParamCtx GET r o e xs () ()
+      , ToParams GET r xs
+      , FromParams o e xs () ()
+      ) => GClientSettings GET r -> Anon.HParam xs -> IO (Either e o)
+get cls = fmap respToEither . gclient cls
+
+get' :: forall r xs e o co ho.
+      ( Anon.ParamCtx GET r o e xs co ho
+      , ToParams GET r xs
+      , FromParams o e xs co ho
+      ) => GClientSettings GET r -> Anon.HParam xs -> IO (Anon.Response o e co ho)
+get' = gclient
+
+post :: forall r xs e o.
+       ( Anon.ParamCtx POST r o e xs () ()
+       , ToParams POST r xs
+       , FromParams o e xs () ()
+       ) => GClientSettings POST r -> Anon.HParam xs -> IO (Either e o)
+post cls = fmap respToEither . gclient cls
+
+post' :: forall r xs e o co ho.
+       ( Anon.ParamCtx POST r o e xs co ho
+       , ToParams POST r xs
+       , FromParams o e xs co ho
+       ) => GClientSettings POST r -> Anon.HParam xs -> IO (Anon.Response o e co ho)
+post' = gclient
+
+put :: forall r xs e o co ho.
+       ( Anon.ParamCtx PUT r o e xs co ho
+       , ToParams PUT r xs
+       , FromParams o e xs co ho
+       ) => GClientSettings PUT r -> Anon.HParam xs -> IO (Anon.Response o e co ho)
+put = gclient
+
+respToEither :: Anon.Response o e () () -> Either e o
+respToEither (Anon.Success _ o _ _)       = Right o
+respToEither (Anon.ServerFailure _ e _ _) = Left e
+respToEither (Anon.ClientFailure _e)      = error "TODO: unhandled"
+
+mkClientSettings :: GClientSettings m r -> IO ClientSettings
+mkClientSettings acls = do
+  let bUrl = gBaseUrl acls
+      conMgr = gConnectionManager acls
+  case conMgr of
+    Nothing -> do
+      mgr <- HC.newManager HC.defaultManagerSettings
+      pure (ClientSettings { baseUrl           = bUrl
+                           , connectionManager = mgr
+                           }
+           )
+    Just mgr -> do
+      pure (ClientSettings { baseUrl           = bUrl
+                           , connectionManager = mgr
+                           }
+           )
+

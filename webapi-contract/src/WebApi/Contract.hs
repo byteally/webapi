@@ -55,6 +55,7 @@ module WebApi.Contract
        , setAcceptHeader
        , getAcceptHeader
        , getRawAcceptHeader
+       , AcceptHeaderCtx
        
        , pattern Request
        , pattern Req
@@ -300,10 +301,15 @@ type family ReqInvariant (form :: *) (file :: *) (body :: [*]) :: Constraint whe
   ReqInvariant a b '[]    = ()
   ReqInvariant a b c      = "Error" ~ "This combination is not supported"
 
+type family AcceptHeaderCtx t m r where
+  AcceptHeaderCtx t m r =
+    ( Elem t (ContentTypes m r)
+    , Accept t
+    )
+
 -- | Set accept header. Has to be one among the ContentTypes.
 setAcceptHeader :: forall t m r.
-                    ( Elem t (ContentTypes m r)
-                    , Accept t 
+                    ( AcceptHeaderCtx t m r 
                     ) => Proxy t -> Request m r -> Request m r
 setAcceptHeader pct req =
   req { _acceptHeader = Just (Encoding pct (Proxy :: Proxy m) (Proxy :: Proxy r)) }

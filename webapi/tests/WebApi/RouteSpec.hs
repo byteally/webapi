@@ -1,7 +1,7 @@
 {-# LANGUAGE MultiParamTypeClasses, TypeFamilies, OverloadedStrings, DataKinds, TypeOperators, TypeSynonymInstances, FlexibleInstances #-}
 module WebApi.RouteSpec (spec) where
 
-import WebApi
+import WebApi hiding (get, put, post)
 import Data.Text (Text)
 import Test.Hspec
 import Test.Hspec.Wai

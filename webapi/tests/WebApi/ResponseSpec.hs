@@ -4,7 +4,7 @@
 module WebApi.ResponseSpec (spec) where
 
 import GHC.Generics
-import WebApi
+import WebApi hiding (get, put, post)
 import Test.Hspec
 import qualified Network.Wai as Wai
 import Test.Hspec.Wai (with, get, request, shouldRespondWith, matchStatus, (<:>), matchHeaders)
