@@ -39,7 +39,7 @@ module WebApi.Client
        
 
          -- * Types
-       , ToParams
+       , ToParams, FromParams
        , ClientSettings (..)
        , GClientSettings
        , gConnectionManager       
