@@ -20,7 +20,7 @@ Stability   : experimental
 
 module WebApi.AnonClient ( hnil
                          , HParam (..)
-                         , (.=)
+                         , (.=), Label (..)
                          , ParamCtx
                          , toAnonRequest
                          , fromAnonResponse
