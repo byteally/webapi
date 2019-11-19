@@ -50,6 +50,8 @@ import WebApi.Param
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text          as T
 import           Network.HTTP.Types
+import qualified Data.Aeson as A
+import qualified Data.HashMap.Strict as HMap
 
 
 data AnonApi t m r
@@ -220,6 +222,15 @@ instance ( ToParam 'FormParam (HParam xs)
 
 instance ToParam 'FormParam (HParam '[]) where
   toParam _ _ _ = []
+
+instance (KnownSymbol fld, A.ToJSON x, A.ToJSON (HParam xs)) => A.ToJSON (HParam (fld ::: x ': xs)) where
+  toJSON (Field v :& params) = case A.toJSON params of
+    A.Object hmap -> A.Object $ HMap.insert (T.pack $ symbolVal (Proxy :: Proxy fld)) (A.toJSON v) hmap
+    _ -> error "Panic: Invariant violated! Expecting only Object"
+
+instance A.ToJSON (HParam '[]) where
+  toJSON _ = A.object []
+  
 
 infixl 6 .=
 
