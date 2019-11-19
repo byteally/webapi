@@ -360,7 +360,7 @@ put = gclient
 respToEither :: Anon.Response o e () () -> Either e o
 respToEither (Anon.Success _ o _ _)       = Right o
 respToEither (Anon.ServerFailure _ e _ _) = Left e
-respToEither (Anon.ClientFailure _e)      = error "TODO: unhandled"
+respToEither (Anon.ClientFailure ex)      = error $ show ex
 
 mkClientSettings :: GClientSettings m r -> IO ClientSettings
 mkClientSettings acls = do

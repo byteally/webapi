@@ -233,6 +233,7 @@ data ApiError m r = ApiError
 
 -- | Datatype representing an unknown failure.
 data OtherError = OtherError { exception :: SomeException }
+                deriving Show
 
 -- | Used for constructing 'Request'
 #if __GLASGOW_HASKELL__ >= 800
