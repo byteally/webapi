@@ -48,6 +48,7 @@ import           WebApi.Contract
 import           WebApi.Param
 import           WebApi.Util
 import qualified Data.Text.Encoding                 as TE
+import GHC.TypeLits
 
 data RouteResult a = NotMatched | Matched a
 
@@ -210,6 +211,19 @@ data ServerSettings = ServerSettings
 serverSettings :: ServerSettings
 serverSettings = ServerSettings
 
+newtype NestedApplication (apps :: [(Symbol, *)])
+  = NestedApplication [Wai.Application]
+
+unconsNesApp :: NestedApplication (app ': apps) -> (Wai.Application, NestedApplication apps)
+unconsNesApp (NestedApplication (app : apps)) = (app, NestedApplication apps)
+unconsNesApp (NestedApplication []) = error "Panic: cannot happen by construction"
+
+newtype ApiComponent c = ApiComponent Wai.Application
+
+nestedApi :: NestedApplication '[]
+nestedApi = NestedApplication []
+
+data NestedR = NestedR 
 
 -- | Type of Exception raised in a handler.
 data ApiException m r = ApiException { apiException :: ApiError m r }

@@ -13,11 +13,17 @@ Comparing with the "WebApi.Contract", 'WebApi' and 'ApiContract' has the same re
 {-# LANGUAGE KindSignatures        #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE ExplicitForAll        #-}
+{-# LANGUAGE TypeOperators         #-}
 module WebApi.Server
        (
        -- * Creating a WAI application  
          serverApp
        , serverSettings
+       , nestedServerApp
+       , nestedApi
+       , apiComponent
+       , mount
        , ServerSettings
 
        -- * Implementation of Api 
@@ -45,6 +51,7 @@ import qualified Network.Wai as Wai
 import           WebApi.Contract
 import           WebApi.Internal
 import           WebApi.Router
+import           GHC.TypeLits
 
 -- | Creates a successful response from its components. It is assumed that 'HeaderOut' and 'CookieOut' has default definitions.
 respond :: ( Monad handM
@@ -97,3 +104,19 @@ serverApp :: ( iface ~ (ApiInterface server)
 serverApp _ server = toApplication $ router (apis server) server
   where apis :: server -> Proxy (Apis (ApiInterface server))
         apis = const Proxy
+
+
+nestedServerApp ::
+  ( Router (NestedApplication (app: apps)) 'NestedR '(CUSTOM "", '[])
+  ) => NestedApplication (app: apps) -> Wai.Application
+nestedServerApp apps = toApplication $ router (Proxy :: Proxy 'NestedR) apps
+
+mount :: forall (ns :: Symbol) c apps.
+         ApiComponent c
+      -> NestedApplication apps
+      -> NestedApplication ('(ns, ApiInterface c) ': apps)
+mount (ApiComponent comp) (NestedApplication apps) = NestedApplication (comp:apps)
+
+apiComponent :: ( Router server (Apis (ApiInterface server)) '(CUSTOM "", '[])
+                ) => server -> ApiComponent server
+apiComponent serv = ApiComponent $ serverApp ServerSettings serv

@@ -62,6 +62,7 @@ import Data.Typeable (Typeable)
 import GHC.TypeLits
 import Network.HTTP.Types hiding (Query)
 import Network.Wai (pathInfo, requestMethod)
+--import qualified Network.Wai as Wai
 import WebApi.ContentTypes
 import WebApi.Contract
 import WebApi.Internal
@@ -312,6 +313,20 @@ instance ( PathParam m (ns :// piece) ~ ()
               Validation (Right apiResp) -> return apiResp 
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toWaiResponse request response
+
+instance ( KnownSymbol pth
+         , Router (NestedApplication apps) nest acc
+         ) => Router (NestedApplication ( '(pth, c) ': apps)) nest acc where
+  route pNest nesApp pr request respond =
+    let (app, apps) = unconsNesApp nesApp
+    in case pathInfo request of
+         (pth : pths) | symTxt (Proxy :: Proxy pth) == pth
+                     -> app (request {pathInfo = pths}) (respond . Matched)
+         _ -> route pNest apps pr request respond
+
+instance Router (NestedApplication '[]) nest acc where
+  route _ _ _ _ respond = respond $ NotMatched
+                   
 
 router :: ( Router server apis '(CUSTOM "", '[])
           ) => Proxy apis -> server -> RoutingApplication
