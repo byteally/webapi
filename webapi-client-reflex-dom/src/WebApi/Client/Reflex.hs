@@ -8,7 +8,7 @@
 {-# LANGUAGE LambdaCase #-}
 module WebApi.Client.Reflex where
 
-import Reflex.Dom hiding (Request, Response)
+import Reflex.Dom.Core hiding (Request, Response)
 import WebApi.Contract as WebApi
 import WebApi.Util
 import WebApi.Param as WebApi

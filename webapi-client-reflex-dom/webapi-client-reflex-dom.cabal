@@ -19,17 +19,18 @@ cabal-version:       >=1.10
 library
   exposed-modules:     WebApi.Client.Reflex
   -- other-modules:       
-  build-depends:       base            >=4.9    && < 5
-                     , webapi-contract == 0.4.*
-                     , reflex-dom      == 0.4.*
+  build-depends:       base             >=4.9    && < 5
+                     , webapi-contract  == 0.4.*
+                     , reflex            >= 0.6.4 && < 0.7
+                     , reflex-dom-core  >= 0.5.3 && < 0.6
                      , ghcjs-dom
                      , text
                      , bytestring
-                     , jsaddle
+                     , jsaddle          == 0.9.*        
                      , containers
-                     , case-insensitive
-                     , http-types
-                     , http-media
+                     , case-insensitive >= 1.2
+                     , http-types       >= 0.8
+                     , http-media       >= 0.7 && < 0.9
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options:         -Wall -Werror -O2

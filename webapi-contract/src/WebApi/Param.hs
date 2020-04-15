@@ -219,7 +219,7 @@ data CookieInfo a = CookieInfo
   , cookieDomain   :: Maybe ByteString
   , cookieHttpOnly :: Maybe Bool
   , cookieSecure   :: Maybe Bool
-  }
+  } deriving (Show, Eq)
 
 defCookieInfo :: a -> CookieInfo a
 defCookieInfo val = CookieInfo
