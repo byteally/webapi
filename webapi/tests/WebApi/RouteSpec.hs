@@ -7,7 +7,8 @@ import Test.Hspec
 import Test.Hspec.Wai
 import qualified Network.Wai as Wai
 
-withApp :: SpecWith Wai.Application -> Spec
+-- withApp :: SpecWith Wai.Application -> Spec
+withApp :: SpecWith ((),Wai.Application) -> Spec
 withApp = with (return routingSpecApp)
 
 routingSpecApp :: Wai.Application

@@ -30,7 +30,9 @@ import           Data.ByteString                    (ByteString)
 import           Data.ByteString.Builder            (toLazyByteString, Builder)
 import           Data.ByteString.Lazy               as LBS (toStrict)
 import           Data.List                          (find)
+#if !(MIN_VERSION_base(4,8,0))
 import           Data.Monoid                        ((<>))
+#endif
 import           Data.Maybe                         (fromMaybe)
 import           Data.Proxy
 import qualified Data.Text                          as T (pack)

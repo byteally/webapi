@@ -26,7 +26,7 @@ common lib-common
                      , bytestring         >= 0.10.6.0 && < 0.11
                      , http-types         >= 0.8.6    && < 0.13
                      , aeson              >= 0.9      && < 1.5
-                     , http-media         >= 0.6
+                     , http-media         >= 0.6      && < 0.9
                      , time               >= 1.5      && < 1.10
                      , bytestring-lexing  == 0.5.*
                      , bytestring-trie    == 0.2.*
@@ -56,6 +56,7 @@ test-suite webapi-contract-test
   type:                exitcode-stdio-1.0
     
   main-is:             Spec.hs
+  other-modules:       Param
   hs-source-dirs:      tests
   cpp-options:         -DTEST
     

@@ -10,7 +10,8 @@ import Test.Hspec.Wai
 import Test.QuickCheck
 import qualified Network.Wai as Wai
 
-withApp :: SpecWith Wai.Application -> Spec
+withApp :: SpecWith ((), Wai.Application) -> Spec
+--withApp :: Wai.Application -> Spec
 withApp = with (return mockApp)
 
 mockApp :: Wai.Application

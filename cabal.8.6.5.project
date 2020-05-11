@@ -3,10 +3,10 @@ packages:
   webapi-contract
   webapi
   webapi-client-reflex-dom
-  webapi-swagger
+--  webapi-swagger
   webapi-docs
   webapi-xml
-  webapi-hedgehog
-  ../hedgehog-gen
+--  webapi-hedgehog
+--  ../hedgehog-gen
   
   -- /tmp/bytestring-trie

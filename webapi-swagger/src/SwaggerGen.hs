@@ -9,6 +9,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE BangPatterns               #-}
+{-# LANGUAGE TypeSynonymInstances       #-}
 
 module SwaggerGen where
 

@@ -1,0 +1,15 @@
+compiler: ghc
+packages:
+  webapi-contract
+  webapi
+  webapi-client-reflex-dom
+--  webapi-swagger
+  webapi-docs
+  webapi-xml
+--  webapi-hedgehog
+--  ../hedgehog-gen
+  
+  -- /tmp/bytestring-trie
+
+allow-newer: reflex-dom-core:base, reflex-dom-core:primitive
+constraints: primitive >= 0.7.0.1

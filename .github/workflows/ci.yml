@@ -17,7 +17,7 @@ jobs:
         ghc:
           - "8.6.5"
           - "8.8.3"
-          - "8.10.1"
+#          - "8.10.1"
         exclude:
           - os: macOS-latest
             ghc: 8.8.3
@@ -48,11 +48,11 @@ jobs:
     - name: Build
       run: |
         cabal update
-        cabal build all --enable-tests --enable-benchmarks --write-ghc-environment-files=always
+        cabal build all --enable-tests --enable-benchmarks --write-ghc-environment-files=always --project-file cabal.${{ matrix.ghc }}.project
 
     - name: Test
       run: |
-        cabal test all --enable-tests
+        cabal test all --enable-tests  --project-file cabal.${{ matrix.ghc }}.project
 
   stack:
     name: stack / ghc ${{ matrix.ghc }}
@@ -80,8 +80,8 @@ jobs:
 
     - name: Build
       run: |
-        stack build --system-ghc --test --bench --no-run-tests --no-run-benchmarks
+        stack build --system-ghc --test --bench --no-run-tests --no-run-benchmarks --stack-yaml stack-ghc-${{ matrix.ghc }}.yaml
 
     - name: Test
       run: |
-        stack test --system-ghc
+        stack test --system-ghc  --stack-yaml stack-ghc-${{ matrix.ghc }}.yaml

@@ -19,7 +19,8 @@ import Data.CaseInsensitive (mk)
 import Network.HTTP.Types.Header (Header, hCookie)
 import Prelude hiding (FilePath)
 
-withApp :: SpecWith Wai.Application -> Spec
+--withApp :: SpecWith Wai.Application -> Spec
+withApp :: SpecWith ((),Wai.Application) -> Spec
 withApp = with (return reqSpecApp)
 
 reqSpecApp :: Wai.Application

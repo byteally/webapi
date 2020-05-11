@@ -208,8 +208,8 @@ largeJSON = "[{\"_id\":\"59c90cc280d66673e566992f\",\"index\":0,\"guid\":\"2d68e
 instance (Show (ApiErr m r)) => Show (ApiError m r) where
   show (ApiError s v _ _) = "Status: " ++ show s ++ ", " ++ "Value: " ++ show v
 
-instance Show OtherError where
-  show _ = "OtherError"
+-- instance Show OtherError where
+--   show _ = "OtherError"
 
 instance Eq (ApiError m r) where
   a == b = False

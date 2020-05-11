@@ -1,14 +1,12 @@
-resolver: lts-15.12
+resolver: lts-14.27
 
 packages:
 - webapi
 - webapi-docs
 - webapi-contract
-# - webapi-swagger
+- webapi-swagger
   
 extra-deps:
 - bytestring-trie-0.2.5.0@sha256:96498959cf2af0e3f1f3dfb526b78502c9fa8f21255a3506938ee2a26e61d653,3331
-
-allow-newer: true
   
 

@@ -14,7 +14,8 @@ import Data.Text
 import qualified Data.Text.Lazy as L
 import Data.Aeson (ToJSON (..))
 
-withApp :: SpecWith Wai.Application -> Spec
+--withApp :: SpecWith Wai.Application -> Spec
+withApp :: SpecWith ((), Wai.Application) -> Spec
 withApp = with (return respSpecApp)
 
 respSpecApp :: Wai.Application

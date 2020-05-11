@@ -129,7 +129,7 @@ runCodeGen swaggerJsonInputFilePath outputPath dhallFilePath projectName = do
     Left errMsg -> error $ errMsg -- "Panic: not a valid JSON or yaml"
     Right (swaggerData :: Swagger) -> do
       -- TODO: Read in the Config(s) from a file later
-      let config = Config {instanceTemplates = []}
+      -- let config = Config {instanceTemplates = []}
       instTemplates <- input auto (T.pack dhallFilePath) -- "/Users/kahlil/projects/ByteAlly/tmp/swaggerConfig.dhall"
               
       let config = Config {instanceTemplates = instTemplates}
@@ -221,8 +221,8 @@ generateContractFromContractState contractName contractState routeStateHM genDir
                     let routeNameStr = (constructRouteName . lookupRouteInRouteState) currentRoutePieces
                     in (routeNameStr, currentMethod:methodList)  ) ("", []) routeList
       
-  prettifyRouteName :: [RoutePiece Ref] -> String
-  prettifyRouteName routePieces = case routePieces of
+  _prettifyRouteName :: [RoutePiece Ref] -> String
+  _prettifyRouteName routePieces = case routePieces of
     [] -> error "Expected atleast one RoutePiece in the route! Got an empty list!"
     (Static ""):[] -> "BaseRoute"
     rPieces -> DL.concat $ flip fmap rPieces (\routePiece -> 

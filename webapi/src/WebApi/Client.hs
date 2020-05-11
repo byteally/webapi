@@ -61,7 +61,6 @@ module WebApi.Client
 import           Control.Exception
 import           Data.ByteString.Lazy                  (ByteString, fromStrict)
 import qualified Data.ByteString                       as B
-import qualified Data.ByteString                       as B (concat)
 import           Data.ByteString.Builder               (toLazyByteString)
 import           Data.Either                           (isRight)
 import           Data.List                             (find)
@@ -82,7 +81,7 @@ import           WebApi.Util
 import           Data.Maybe                            (fromJust)
 import           Data.Time.Clock                       (getCurrentTime)
 import qualified WebApi.AnonClient                     as Anon
-import           Data.String                           (IsString (..))
+--import           Data.String                           (IsString (..))
 import           GHC.Exts
 
 -- | Datatype representing the settings related to client.
