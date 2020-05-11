@@ -83,3 +83,5 @@ test-suite unit-tests
                      , binary            == 0.8.*
                      , webapi
                      , webapi-contract
+
+    build-tool-depends:  hspec-discover:hspec-discover >= 2.7.1

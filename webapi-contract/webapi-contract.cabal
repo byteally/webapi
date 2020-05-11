@@ -64,5 +64,6 @@ test-suite webapi-contract-test
                      , tasty-hunit        >= 0.10
                      , tasty-hedgehog     >= 1.0     && < 1.1.0
                      , hedgehog           >= 1.0     && < 1.1
-                     , tasty-discover     >= 4.2.0
                      , webapi-contract
+
+  build-tool-depends:  tasty-discover:tasty-discover  >= 4.2.0
