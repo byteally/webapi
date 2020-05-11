@@ -11,5 +11,5 @@ packages:
   
   -- /tmp/bytestring-trie
 
-allow-newer: reflex-dom-core:base, reflex-dom-core:primitive
-constraints: primitive >= 0.7.0.1
+allow-newer: all:base, reflex-dom-core:primitive, all:template-haskell, all:lens
+constraints: primitive >= 0.7.0.1, bytestring-trie >= 0.2.5.0
