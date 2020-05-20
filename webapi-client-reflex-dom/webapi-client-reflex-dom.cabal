@@ -21,7 +21,7 @@ library
   -- other-modules:       
   build-depends:       base             >=4.9    && < 5
                      , webapi-contract  == 0.4.*
-                     , reflex            >= 0.6.4 && < 0.7
+                     , reflex            >= 0.6.4 && < 0.8
                      , reflex-dom-core  >= 0.5.3 && < 0.6
                      , ghcjs-dom
                      , text

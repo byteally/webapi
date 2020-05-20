@@ -6,6 +6,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE PolyKinds #-}
 module WebApi.Client.Reflex where
 
 import Reflex.Dom.Core hiding (Request, Response)
@@ -35,7 +36,7 @@ import Control.Monad
 
 
 type family NamespaceOf (r :: *) where
-  NamespaceOf (ns :// r) = ns
+  NamespaceOf (ns :// (r :: k)) = ns
 
 client :: forall meth r t m.
   ( DomBuilder t m
