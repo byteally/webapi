@@ -2,7 +2,8 @@ compiler: ghc
 packages:
   webapi-contract
   webapi
-  webapi-client-reflex-dom
+--  Failing right now on reflex
+--  webapi-client-reflex-dom
 --  webapi-swagger
   webapi-docs
   webapi-xml
@@ -11,5 +12,5 @@ packages:
   
   -- /tmp/bytestring-trie
 
-allow-newer: all:base, reflex-dom-core:primitive, all:template-haskell, all:lens
-constraints: primitive >= 0.7.0.1, bytestring-trie >= 0.2.5.0
+allow-newer: all:base, reflex-dom-core:primitive, all:template-haskell, all:lens, reflex-dom-core:reflex
+constraints: primitive >= 0.7.0.1, bytestring-trie >= 0.2.5.0, reflex >= 0.7.0.0

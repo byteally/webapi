@@ -3,6 +3,7 @@ webapi
 
 Introduction to **WebApi**
 --------------------------
+![CI](https://github.com/byteally/webapi/workflows/CI/badge.svg)
 
 [`Webapi`](https://hackage.haskell.org/package/webapi) is a Haskell library that lets you
 

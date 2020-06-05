@@ -56,12 +56,13 @@ import           Data.Aeson.Encoding                (fromEncoding)
 import           Data.Aeson.Encode                  (encodeToBuilder)
 #endif
 import qualified Data.ByteString                    as SB
+import qualified Data.ByteString.Lazy               as LBS
 import           Data.ByteString.Lazy               (ByteString)
 import           Data.Maybe                         (fromMaybe)
 import           Data.Proxy
 import qualified Data.Text                          as T
 import qualified Data.Text.Lazy                     as LT
-import           Data.Text.Lazy.Encoding            (decodeUtf8)
+import           Data.Text.Lazy.Encoding            (decodeUtf8, encodeUtf8)
 import           Network.HTTP.Media.MediaType
 import           Network.HTTP.Media                 (mapContentMedia)
 import           WebApi.Util
@@ -176,6 +177,12 @@ instance FromText LT.Text where
 instance FromText () where
   fromText "" = Just ()
   fromText _  = Nothing
+
+instance FromText ByteString where
+  fromText = Just . encodeUtf8
+
+instance FromText SB.ByteString where
+  fromText = Just . LBS.toStrict . encodeUtf8  
 
 newtype Html = Html ByteString
 

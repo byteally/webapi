@@ -11,6 +11,7 @@ jobs:
     name: ${{ matrix.os }} / ghc ${{ matrix.ghc }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macOS-latest, windows-latest]
         cabal: ["3.2"]
@@ -52,7 +53,6 @@ jobs:
 
     - name: Build
       run: |
-        cabal update
         cabal build all --enable-tests --enable-benchmarks --write-ghc-environment-files=always --project-file cabal.${{ matrix.ghc }}.project
 
     - name: Test
