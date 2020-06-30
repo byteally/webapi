@@ -111,6 +111,7 @@ import           Data.ByteString.Lazy               (toStrict)
 import qualified Data.ByteString.Lex.Fractional     as LexF
 import           Data.ByteString.Lex.Integral
 import           Data.CaseInsensitive               as CI
+import           Data.Choice
 import           Data.Foldable                      as Fold (foldl')
 import           Data.Int
 import qualified Data.List                          as L (find)
@@ -604,6 +605,12 @@ instance (DecodeParam t, KnownSymbol sym) => DecodeParam (DelimitedCollection sy
         Nothing -> Nothing
       _ -> Nothing
 
+instance EncodeParam (Choice s) where
+  encodeParam = encodeParam . toBool
+
+instance DecodeParam (Choice s) where
+  decodeParam = fmap fromBool . decodeParam
+
 class GHttpParam f where
   gEncodeParam   :: f a -> ByteString
   gDecodeParam :: ByteString -> Maybe (f a)
@@ -938,7 +945,16 @@ instance EncodeParam a => ToParam 'FormParam (MultiSet a) where
   toParam _ pfx (MultiSet vals) = fmap (\v -> (pfx, encodeParam v)) $ MultiSet.toList vals
 
 instance EncodeParam a => ToParam 'Cookie (MultiSet a) where
-  toParam _ pfx (MultiSet vals) = fmap (\v -> (pfx, defCookieInfo $ encodeParam v)) $ MultiSet.toList vals  
+  toParam _ pfx (MultiSet vals) = fmap (\v -> (pfx, defCookieInfo $ encodeParam v)) $ MultiSet.toList vals
+
+instance KnownSymbol s => ToParam 'QueryParam (Choice s) where
+  toParam _ pfx _ = [(pfx, Nothing)]
+
+instance ToParam 'FormParam (Choice s) where
+  toParam pt pfx v = toParam pt pfx $ toBool v
+
+instance ToParam 'Cookie (Choice s) where
+  toParam pt pfx v = toParam pt pfx $ toBool v
 
 instance (FromJSON a) => FromParam 'QueryParam (JsonOf a) where
   fromParam pt key kvs = case lookupParam pt key kvs of
@@ -1472,6 +1488,20 @@ instance (FromParam par a) => FromParam par [a] where
           kvitems = Prelude.takeWhile (not . Prelude.null . snd)  (Prelude.map (\ix ->
             let ixkey = key `nest` (ASCII.pack $ show ix)
             in (ixkey, submap ixkey kvs')) [(0 :: Word) .. 2000])
+
+instance KnownSymbol s => FromParam 'QueryParam (Choice s) where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just (Just par) -> case decodeParam par of
+     Just v -> Validation $ Right v
+     _      -> Validation $ Left [ParseErr key $ "Unable to cast to (Choice \"" <> (T.pack $ symbolVal (Proxy :: Proxy s)) <>"\")"]
+   Just Nothing -> Validation $ Right $ fromBool True
+   Nothing -> Validation $ Right $ fromBool False
+
+instance FromParam 'FormParam (Choice s) where
+  fromParam pt key kvs = fromBool <$> fromParam pt key kvs
+
+instance FromParam 'Cookie (Choice s) where
+  fromParam pt key kvs = fromBool <$> fromParam pt key kvs  
 
 catValidations :: Foldable c => c (Validation [e] a) -> Validation [e] [a]
 catValidations res = Prelude.reverse <$> Fold.foldl' accRes (Validation $ Right []) res

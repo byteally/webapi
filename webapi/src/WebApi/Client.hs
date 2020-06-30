@@ -79,6 +79,8 @@ import           WebApi.Internal
 import           WebApi.Param
 import           WebApi.Util
 import           Data.Maybe                            (fromJust)
+import           Data.Text                             (Text)
+import qualified Data.Text                             as T
 import           Data.Time.Clock                       (getCurrentTime)
 import qualified WebApi.AnonClient                     as Anon
 --import           Data.String                           (IsString (..))
@@ -114,16 +116,16 @@ fromClientResponse hcResp = do
                <*> respHdr
                <*> respCk of
       Validation (Right success) -> success
-      Validation (Left _errs) ->
+      Validation (Left errs) ->
         case ApiError
               <$> pure status
               <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
               <*> (Just <$> respHdr)
               <*> (Just <$> respCk) of
            Validation (Right failure) -> (Failure . Left) failure
-           Validation (Left _errs) -> Failure $ Right (OtherError (toException UnknownClientException))
+           Validation (Left _errs) -> Failure $ Right (OtherError (toException $ UnknownClientException $ T.intercalate "\n" $ fmap (T.pack . show) errs))
     where toParamErr :: Either String a -> Either [ParamErr] a
-          toParamErr (Left _str) = Left []
+          toParamErr (Left _str) = Left [ParseErr "" $ T.pack _str]
           toParamErr (Right r)   = Right r
 
           decode' :: ( Decodings (ContentTypes m r) a
@@ -247,13 +249,13 @@ client sett req = do
                           -- TODO: Handle cookies
                           <*> pure Nothing of
                        Validation (Right failure) -> (Failure . Left) failure
-                       Validation (Left _errs) -> Failure $ Right (OtherError (toException UnknownClientException))
+                       Validation (Left errs) -> Failure $ Right (OtherError (toException $ UnknownClientException $ T.intercalate "\n" $ fmap (T.pack . show) errs))
                   _ -> return . Failure . Right . OtherError $ toException ex
                       )
     , Handler (\(ex :: IOException) -> return . Failure . Right . OtherError $ toException ex)
     ]
     where toParamErr :: Either String a -> Either [ParamErr] a
-          toParamErr (Left _str) = Left []
+          toParamErr (Left _str) = Left [ParseErr "" $ T.pack _str]
           toParamErr (Right r)   = Right r
 
           decode' :: ( Decodings (ContentTypes m r) a
@@ -270,7 +272,7 @@ client sett req = do
           firstRight = maybe (Left "Couldn't find matching Content-Type") id . find isRight
 
 -- | This exception is used to signal an irrecoverable error while deserializing the response.
-data UnknownClientException = UnknownClientException
+data UnknownClientException = UnknownClientException Text
                             deriving (Typeable, Show)
 
 instance Exception UnknownClientException where

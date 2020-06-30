@@ -52,7 +52,7 @@ import qualified Data.Text          as T
 import           Network.HTTP.Types
 import qualified Data.Aeson as A
 import qualified Data.HashMap.Strict as HMap
-
+import qualified Data.CaseInsensitive as CI
 
 data AnonApi t m r
 
@@ -222,6 +222,16 @@ instance ( ToParam 'FormParam (HParam xs)
 
 instance ToParam 'FormParam (HParam '[]) where
   toParam _ _ _ = []
+
+instance ToHeader (HParam '[]) where
+  toHeader _ = []
+
+instance ( KnownSymbol fld,
+           EncodeParam x,
+           ToHeader (HParam xs)
+         ) =>ToHeader (HParam (fld ::: x ': xs)) where
+  toHeader (Field t :& rest) = (CI.mk fld, encodeParam t) : toHeader rest
+    where fld = TE.encodeUtf8 (T.pack (symbolVal (Proxy :: Proxy fld)))
 
 instance (KnownSymbol fld, A.ToJSON x, A.ToJSON (HParam xs)) => A.ToJSON (HParam (fld ::: x ': xs)) where
   toJSON (Field v :& params) = case A.toJSON params of

@@ -162,6 +162,12 @@ instance ToText T.Text where
 instance ToText LT.Text where
   toText = id
 
+instance ToText ByteString where
+  toText = decodeUtf8
+
+instance ToText SB.ByteString where
+  toText = decodeUtf8 . LBS.fromStrict
+
 instance ToText () where
   toText _ = ""
 
