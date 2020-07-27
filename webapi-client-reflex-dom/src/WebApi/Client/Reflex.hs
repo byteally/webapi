@@ -136,7 +136,7 @@ clientOrigin baseUrl reqEvt = do
         status = mkStatus (fromIntegral $ _xhrResponse_status resp) (T.encodeUtf8 $ _xhrResponse_statusText resp)
 
         respHdrRaw :: ResponseHeaders
-        respHdrRaw = fmap (bimap (CI.mk . T.encodeUtf8) T.encodeUtf8)
+        respHdrRaw = fmap (bimap (CI.map T.encodeUtf8) T.encodeUtf8)
                      $ Map.toList $ _xhrResponse_headers resp
         respHdr = fromHeader $ respHdrRaw :: Validation [ParamErr] (HeaderOut meth r)
 
