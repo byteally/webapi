@@ -328,7 +328,7 @@ get :: forall r xs e o.
       , ToParams GET r xs
       , FromParams o e xs () ()
       ) => GClientSettings GET r -> Anon.HParam xs -> IO (Either e o)
-get cls = fmap respToEither . gclient cls
+get cls par = gclient cls par >>= respToEither
 
 get' :: forall r xs e o co ho.
       ( Anon.ParamCtx GET r o e xs co ho
@@ -342,7 +342,7 @@ post :: forall r xs e o.
        , ToParams POST r xs
        , FromParams o e xs () ()
        ) => GClientSettings POST r -> Anon.HParam xs -> IO (Either e o)
-post cls = fmap respToEither . gclient cls
+post cls par = gclient cls par >>= respToEither
 
 post' :: forall r xs e o co ho.
        ( Anon.ParamCtx POST r o e xs co ho
@@ -358,10 +358,10 @@ put :: forall r xs e o co ho.
        ) => GClientSettings PUT r -> Anon.HParam xs -> IO (Anon.Response o e co ho)
 put = gclient
 
-respToEither :: Anon.Response o e () () -> Either e o
-respToEither (Anon.Success _ o _ _)       = Right o
-respToEither (Anon.ServerFailure _ e _ _) = Left e
-respToEither (Anon.ClientFailure ex)      = error $ show ex
+respToEither :: Anon.Response o e () () -> IO (Either e o)
+respToEither (Anon.Success _ o _ _)       = pure (Right o)
+respToEither (Anon.ServerFailure _ e _ _) = pure (Left e)
+respToEither (Anon.ClientFailure (OtherError ex)) = throwIO ex
 
 mkClientSettings :: GClientSettings m r -> IO ClientSettings
 mkClientSettings acls = do
