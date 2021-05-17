@@ -83,7 +83,7 @@ module WebApi.Param
        , defaultParamSettings
        , link
        , renderUriPath
-         
+
        -- * Generic (De)Serialization fn
        , genericToQueryParam
        , genericFromQueryParam
@@ -220,7 +220,14 @@ data CookieInfo a = CookieInfo
   , cookieDomain   :: Maybe ByteString
   , cookieHttpOnly :: Maybe Bool
   , cookieSecure   :: Maybe Bool
+  , cookieSameSite :: Maybe SameSite
   } deriving (Show, Eq)
+
+data SameSite
+  = SameSiteStrict
+  | SameSiteLax
+  | SameSiteNone
+  deriving (Show, Eq)
 
 defCookieInfo :: a -> CookieInfo a
 defCookieInfo val = CookieInfo
@@ -231,6 +238,7 @@ defCookieInfo val = CookieInfo
   , cookieDomain   = Nothing
   , cookieHttpOnly = Nothing
   , cookieSecure   = Nothing
+  , cookieSameSite = Nothing
   }
 
 -- | Define result of serialization of a type of kind 'ParamK'.
@@ -301,7 +309,7 @@ routePaths p r = uriPathPieces (toPathParam p)
 
         toRoute :: route m r -> Proxy r
         toRoute = const Proxy
-      
+
 
 -- | Serialize a type into query params.
 toQueryParam :: (ToParam 'QueryParam a) => a -> Query
@@ -514,6 +522,12 @@ instance DecodeParam T.Text where
   decodeParam str = case decodeUtf8' str of
     Right txt -> Just txt
     Left _    -> Nothing
+
+instance (EncodeParam s, FoldCase s) => EncodeParam (CI s) where
+  encodeParam = encodeParam . original
+
+instance (DecodeParam s, FoldCase s) => DecodeParam (CI s) where
+  decodeParam = fmap mk . decodeParam
 
 instance EncodeParam Day where
   encodeParam day = ASCII.pack $ show day
@@ -837,6 +851,15 @@ instance ToParam 'FormParam T.Text where
 instance ToParam 'Cookie T.Text where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
+instance (EncodeParam s, FoldCase s) => ToParam 'QueryParam (CI s) where
+  toParam _ pfx val = [(pfx, Just $ encodeParam val)]
+
+instance (EncodeParam s, FoldCase s) => ToParam 'FormParam (CI s) where
+  toParam _ pfx val = [(pfx, encodeParam val)]
+
+instance (EncodeParam s, FoldCase s) => ToParam 'Cookie (CI s) where
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
+
 instance ToParam 'QueryParam ByteString where
   toParam _ pfx val = [(pfx, Just $ val)]
 
@@ -913,7 +936,7 @@ instance (EncodeParam a, KnownSymbol del) => ToParam 'FormParam (DelimitedCollec
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance (EncodeParam a, KnownSymbol del) => ToParam 'Cookie (DelimitedCollection del a) where
-  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]  
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance ToParam par a => ToParam par (Maybe a) where
   toParam pt pfx (Just val) = toParam pt pfx val
@@ -989,7 +1012,7 @@ instance (DecodeParam a, KnownSymbol del) => FromParam 'Cookie (DelimitedCollect
     Just par -> case decodeParam par of
       Just v -> Validation $ Right v
       _      -> Validation $ Left [ParseErr key "Unable to decode from DelimitedCollection"]
-    _ -> Validation $ Left [NotFound key]       
+    _ -> Validation $ Left [NotFound key]
 
 instance FromParam parK () where
   fromParam _ _ _ = pure ()
@@ -1457,6 +1480,27 @@ instance FromParam 'Cookie T.Text where
      _      -> Validation $ Left [ParseErr key "Unable to cast to Text"]
    _ ->  Validation $ Left [NotFound key]
 
+instance (DecodeParam s, FoldCase s) => FromParam 'QueryParam (CI s) where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just (Just par) -> case decodeParam par of
+     Just v -> Validation $ Right v
+     _      -> Validation $ Left [ParseErr key "Unable to cast to CI"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance (DecodeParam s, FoldCase s) => FromParam 'FormParam (CI s) where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case decodeParam par of
+     Just v -> Validation $ Right v
+     _      -> Validation $ Left [ParseErr key "Unable to cast to CI"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance (DecodeParam s, FoldCase s) => FromParam 'Cookie (CI s) where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case decodeParam par of
+     Just v -> Validation $ Right v
+     _      -> Validation $ Left [ParseErr key "Unable to cast to CI"]
+   _ ->  Validation $ Left [NotFound key]
+
 instance FromParam 'QueryParam Day where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of
@@ -1501,7 +1545,7 @@ instance FromParam 'FormParam (Choice s) where
   fromParam pt key kvs = fromBool <$> fromParam pt key kvs
 
 instance FromParam 'Cookie (Choice s) where
-  fromParam pt key kvs = fromBool <$> fromParam pt key kvs  
+  fromParam pt key kvs = fromBool <$> fromParam pt key kvs
 
 catValidations :: Foldable c => c (Validation [e] a) -> Validation [e] [a]
 catValidations res = Prelude.reverse <$> Fold.foldl' accRes (Validation $ Right []) res
@@ -1519,7 +1563,7 @@ instance (FromParam par a) => FromParam par (Vector a) where
 
 fromParamToSetLike :: forall a.(DecodeParam a) => ByteString -> [ByteString] -> Validation [ParamErr] [a]
 fromParamToSetLike _ [] = Validation $ Right []
-fromParamToSetLike key kvs' = 
+fromParamToSetLike key kvs' =
   let pars = Prelude.map (\(ix, kv) -> case decodeParam kv :: Maybe a of
                              Just v -> Validation $ Right v
                              Nothing -> Validation $ Left [ParseErr key $ "Unable to cast to Set elem at index: " <> (T.pack $ show ix)]
@@ -1528,7 +1572,7 @@ fromParamToSetLike key kvs' =
 
 instance (DecodeParam a, Ord a) => FromParam 'QueryParam (Set a) where
   fromParam _ key kvs = Set.fromList <$> fromParamToSetLike key (catMaybes $ Trie.elems $ submap key kvs)
-  
+
 instance (DecodeParam a, Ord a) => FromParam 'FormParam (Set a) where
   fromParam _ key kvs = Set.fromList <$> fromParamToSetLike key (Trie.elems $ submap key kvs)
 
@@ -1537,13 +1581,13 @@ instance (DecodeParam a, Ord a) => FromParam 'Cookie (Set a) where
 
 instance (DecodeParam a, Ord a) => FromParam 'QueryParam (MultiSet a) where
   fromParam _ key kvs = (MultiSet . MultiSet.fromList) <$> fromParamToSetLike key (catMaybes $ Trie.elems $ submap key kvs)
-  
+
 instance (DecodeParam a, Ord a) => FromParam 'FormParam (MultiSet a) where
   fromParam _ key kvs = (MultiSet . MultiSet.fromList) <$> fromParamToSetLike key (Trie.elems $ submap key kvs)
 
 instance (DecodeParam a, Ord a) => FromParam 'Cookie (MultiSet a) where
-  fromParam _ key kvs = (MultiSet . MultiSet.fromList) <$> fromParamToSetLike key (Trie.elems $ submap key kvs)  
-  
+  fromParam _ key kvs = (MultiSet . MultiSet.fromList) <$> fromParamToSetLike key (Trie.elems $ submap key kvs)
+
 instance (DecodeParam a) => FromParam 'QueryParam (OptValue a) where
   fromParam pt key kvs = case lookupParam pt key kvs of
    Just (Just par) -> case decodeParam par of

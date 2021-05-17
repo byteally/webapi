@@ -19,8 +19,26 @@ test_ParamRoundTrip =
     "http params round trip"
     [ testGroup
         "encode/decode param rountrip"
-        [ testProperty "minBound @Int" $ withTests 1 $ tripper tripParam $ minBoundOf Gen.int,
-          testProperty "maxBound @Int" $ withTests 1 $ tripper tripParam $ maxBoundOf Gen.int
+        [ testProperty "minBound @Int" $ withTests 1 $ tripper tripParam $ minBoundOf Gen.int
+        , testProperty "maxBound @Int" $ withTests 1 $ tripper tripParam $ maxBoundOf Gen.int
+        , testProperty "minBound @Int8" $ withTests 1 $ tripper tripParam $ minBoundOf Gen.int8
+        , testProperty "maxBound @Int8" $ withTests 1 $ tripper tripParam $ maxBoundOf Gen.int8
+        , testProperty "minBound @Int16" $ withTests 1 $ tripper tripParam $ minBoundOf Gen.int16
+        , testProperty "maxBound @Int16" $ withTests 1 $ tripper tripParam $ maxBoundOf Gen.int16
+        , testProperty "minBound @Int32" $ withTests 1 $ tripper tripParam $ minBoundOf Gen.int32
+        , testProperty "maxBound @Int32" $ withTests 1 $ tripper tripParam $ maxBoundOf Gen.int32
+        , testProperty "minBound @Int64" $ withTests 1 $ tripper tripParam $ minBoundOf Gen.int64
+        , testProperty "maxBound @Int64" $ withTests 1 $ tripper tripParam $ maxBoundOf Gen.int64
+        , testProperty "minBound @Word" $ withTests 1 $ tripper tripParam $ minBoundOf Gen.word
+        , testProperty "maxBound @Word" $ withTests 1 $ tripper tripParam $ maxBoundOf Gen.word
+        , testProperty "minBound @Word8" $ withTests 1 $ tripper tripParam $ minBoundOf Gen.word8
+        , testProperty "maxBound @Word8" $ withTests 1 $ tripper tripParam $ maxBoundOf Gen.word8
+        , testProperty "minBound @Word16" $ withTests 1 $ tripper tripParam $ minBoundOf Gen.word16
+        , testProperty "maxBound @Word16" $ withTests 1 $ tripper tripParam $ maxBoundOf Gen.word16
+        , testProperty "minBound @Word32" $ withTests 1 $ tripper tripParam $ minBoundOf Gen.word32
+        , testProperty "maxBound @Word32" $ withTests 1 $ tripper tripParam $ maxBoundOf Gen.word32
+        , testProperty "minBound @Word64" $ withTests 1 $ tripper tripParam $ minBoundOf Gen.word64
+        , testProperty "maxBound @Word64" $ withTests 1 $ tripper tripParam $ maxBoundOf Gen.word64
         ],
       testGroup
         "query param rountrip"
