@@ -6,7 +6,4 @@ packages:
   webapi-swagger
   webapi-docs
   webapi-xml
-  -- webapi-hedgehog
-  -- ../hedgehog-gen
-  
-  -- /tmp/bytestring-trie
+  webapi-openapi
