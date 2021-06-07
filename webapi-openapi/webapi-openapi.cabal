@@ -23,6 +23,16 @@ library
   build-depends:
       base                      >= 4.9   && < 5
     , text                      >= 1.2   && < 1.3
+    , aeson
+    , bytestring
+    , openapi3
+    , ghc-source-gen
+    , ghc
+    , ghc-paths
+    , insert-ordered-containers
+    , unordered-containers
+    , mtl
+    , containers
 
   default-language: Haskell2010
   ghc-options: -Wall -Werror -O2
