@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE NamedFieldPuns #-}
 
 module WebApi.OpenAPI where
 
@@ -21,11 +22,11 @@ import GHC.SourceGen
       newtype',
       prefixCon,
       recordCon,
+      exposing,
       import',
       module',
       occNameToStr,
       tuple,
-      putPpr,
       kindedVar,
       listTy,
       stringTy,
@@ -35,43 +36,101 @@ import GHC.SourceGen
       BVar(bvar),
       Var(var),
       HsDecl',
-      HsType',
-      exposing )
+      HsModule',
+      HsType' )
 import GHC.Paths (libdir)
 import GHC ( runGhc )
 import Data.HashMap.Strict.InsOrd(toList)
-import Data.Text as T ( unpack, Text, append, splitAt, toUpper, take )
-import GhcPlugins ( mkVarOcc )
-import Control.Monad.State.Class ( MonadState )
+import Data.Text as T ( unpack, Text, append, splitAt, toUpper, take, pack)
+import Data.Text.IO as T (writeFile)
+import GhcPlugins(getDynFlags,mkVarOcc)
+import Control.Monad.State.Class ( MonadState(get) )
 import Control.Monad.State.Lazy(evalState)
-import Data.Set (Set, empty)
+import Data.Set (Set, empty, fromList, member)
 import Data.String ( IsString(fromString) )
 import Data.Bifunctor ( Bifunctor(bimap) )
+import Outputable(ppr,showSDoc)
+import Ormolu
+    ( ormolu, defaultConfig, Config(cfgCheckIdempotence) )
+import System.Process
+import System.FilePath.Posix
+import System.Directory
 
 data ModelGenState =
     ModelGenState { seenVars :: Set Text
                   , imports :: Set Text
+                  , keywordsToAvoid :: Set Text
                   }
 
 generateModels ::
     FilePath -> FilePath -> IO ()
-generateModels fp _destFp = do
+generateModels fp destFp = do
     oApi <- readOpenAPI fp
     let compSchemas = toList . _componentsSchemas . _openApiComponents $ oApi
         modelList = evalState
                         (mapM createModelData compSchemas)
-                        (ModelGenState empty empty)
-        hsModule = module' (Just "OpenApiModels") Nothing imps (namedTy:modelList)
-    runGhc (Just libdir) $ putPpr hsModule
+                        (ModelGenState empty empty (fromList keywords))
+        hsModule = module' (Just modName) Nothing imps (namedTy:modelList)
+    writeModule (pkgHome </> "src") (modName <.> "hs") es hsModule
+    writeCabal pkgName modName pkgHome
 
-    where imps = [ import' "WebApi"
-                 , import' "Data.Int"
+    where imps = [ import' "Data.Int"
                  , exposing (import' "GHC.Types") [var "Symbol"]
                  , exposing (import' "Data.Text") [var "Text"]
                  ]
           namedTy = newtype' ":::" [kindedVar "fld" (var "Symbol") , bvar "a"]
                         (prefixCon "Field" [field $ var "a"]) []
+          es = [TypeOperators,KindSignatures,DataKinds,DuplicateRecordFields]
+          keywords = ["type"]
+          pkgName = T.unpack . flip T.append "-models" . T.pack . dropExtension . takeFileName $ fp
+          pkgHome = destFp </> pkgName
+          modName = "OpenApiModels"
 
+writeModule :: FilePath -> String -> [Extension] -> HsModule' -> IO ()
+writeModule destFp fName es hsModule = do
+    dynFlags <- runGhc (Just libdir) getDynFlags
+    let fileContent = concatMap ppExtension es <> showSDoc dynFlags (ppr hsModule)
+    txt <- ormolu defaultConfig { cfgCheckIdempotence = True } "" fileContent
+    createDirectoryIfMissing True destFp
+    T.writeFile (destFp </> fName) txt
+
+writeCabal :: String -> String -> FilePath ->IO ()
+writeCabal pkgName modName pkgHome = do
+    callCommand ("cd " ++ pkgHome ++ " ; " ++ str)
+    where str = "cabal init --non-interactive --overwrite"
+                 ++ " --package-name="
+                 ++ pkgName
+                 ++ " --author=\"Pankaj Singh Sijwali\""
+                 ++ " --email=pankajsijwali1@gmail.com"
+                 ++ " --lib"
+                 ++ " --source-dir=src"
+                 ++ iterateOption " --expose-module" xposedMods
+                 ++ iterateOption " --dependency" dpends
+          dpends = ["base","text", "ghc-prim"]
+          xposedMods = [modName]
+          iterateOption option = concatMap (\x -> option ++ "=" ++ x)
+
+data Extension =
+    DeriveGeneric
+  | DataKinds
+  | KindSignatures
+  | DuplicateRecordFields
+  | PatternSynonyms
+  | OverloadedStrings
+  | MultiParamTypeClasses
+  | MultiWayIf
+  | TypeApplications
+  | FlexibleContexts
+  | FlexibleInstances
+  | ScopedTypeVariables
+  | TypeFamilies
+  | UndecidableInstances
+  | StandaloneDeriving
+  | TypeOperators
+  deriving (Show, Eq)
+
+ppExtension :: Extension -> String
+ppExtension e = "{-# LANGUAGE " <> show e <> " #-}\n"
 
 createModelData ::
     (MonadState ModelGenState m) =>
@@ -79,10 +138,12 @@ createModelData ::
 createModelData (dName,dSchema) = do
     let reqParams =  _schemaRequired dSchema
     rFields <- mapM (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams)) (toList . _schemaProperties $ dSchema)
-    let frFields = bimap textToOccNameStr field <$> rFields
+    ModelGenState { keywordsToAvoid } <- get
+    let frFields = bimap textToOccNameStr field .
+                        (\(x,y)-> (if member x keywordsToAvoid
+                                   then T.append x "_"
+                                   else x,y)) <$> rFields
     return (data' (textToOccNameStr dName) [] [recordCon (textToOccNameStr dName) frFields] [])
-
-
 
 parseRecordFields ::
     (MonadState ModelGenState m) =>
@@ -105,7 +166,7 @@ parseInlineFields (Just OpenApiInteger) dName dSchema isReq =
     where parsedInt = parseIntegerFld (_schemaFormat dSchema)
 parseInlineFields (Just OpenApiBoolean) dName _dSchema isReq =
     return (dName,if isReq then var "Bool" else var "Maybe" @@ var "Bool")
-parseInlineFields (Just OpenApiArray ) dName dSchema _isReq = 
+parseInlineFields (Just OpenApiArray ) dName dSchema _isReq =
     case _schemaItems dSchema of
         Nothing -> error "No _schemaItems value for Array"
         Just (OpenApiItemsObject sch) -> do
@@ -147,6 +208,3 @@ readOpenAPI :: FilePath -> IO OpenApi
 readOpenAPI fp = do
     fileContent <- B.readFile fp
     return $ retOApi (decode fileContent :: Maybe OpenApi)
-
-runGenerateModels :: IO ()
-runGenerateModels = generateModels "petstore.json" ""

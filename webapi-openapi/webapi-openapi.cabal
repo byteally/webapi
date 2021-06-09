@@ -33,6 +33,10 @@ library
     , unordered-containers
     , mtl
     , containers
+    , fourmolu
+    , process
+    , filepath
+    , directory
 
   default-language: Haskell2010
   ghc-options: -Wall -Werror -O2
@@ -41,6 +45,8 @@ executable openapi-model-generator
   main-is:             Main.hs
   hs-source-dirs:      openapi-model-generator
   build-depends:       base                      >= 4.9   && < 5
+                     , optparse-applicative
+                     , webapi-openapi
 
   default-language:    Haskell2010
   ghc-options: -Wall -Werror -O2 -threaded -rtsopts -with-rtsopts=-N
