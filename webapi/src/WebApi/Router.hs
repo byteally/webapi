@@ -185,9 +185,10 @@ instance ( KnownSymbol piece, ApiHandler s m route
       [] | T.null $ symTxt (Proxy :: Proxy piece) -> respond . Matched =<< getResponse
       _ -> respond $ NotMatched
     where getResponse = do
-            apiResp' <- fromWaiRequest request () (\(req :: Request m route) -> toIO serv $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) req)
+            let wbReq = WebApiRequest { rawRequest = request }
+            apiResp' <- fromWaiRequest request () (\(req :: Request m route) -> toIO serv wbReq $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) req)
             response <- case apiResp' of
-              Validation (Right apiResp) -> return apiResp 
+              Validation (Right apiResp) -> return apiResp
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toWaiResponse request response
 
@@ -217,8 +218,9 @@ instance ( KnownSymbol lpiece
           pRoute :: ParsedRoute '(m, paths)
           pRoute = snocParsedRoute (snocParsedRoute parsedRoute $ SPiece (Proxy :: Proxy lpiece)) $ SPiece (Proxy :: Proxy rpiece)
           pathPar = fromParsedRoute pRoute
+          wbReq = WebApiRequest { rawRequest = request }
           getResponse = do
-            apiResp' <- fromWaiRequest request pathPar (\(req :: Request m route) -> toIO serv $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) req)
+            apiResp' <- fromWaiRequest request pathPar (\(req :: Request m route) -> toIO serv wbReq $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) req)
             response <- case apiResp' of
               Validation (Right apiResp) -> return apiResp
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
@@ -251,7 +253,8 @@ instance ( KnownSymbol rpiece
           getResponse dynVal = do
             let pRoute :: ParsedRoute '(m, paths)
                 pRoute = snocParsedRoute (snocParsedRoute parsedRoute $ DPiece dynVal) $ SPiece (Proxy :: Proxy rpiece)
-            apiResp' <- fromWaiRequest request (fromParsedRoute pRoute) (\(req :: Request m route) -> toIO serv $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) req)
+                wbReq = WebApiRequest { rawRequest = request }
+            apiResp' <- fromWaiRequest request (fromParsedRoute pRoute) (\(req :: Request m route) -> toIO serv wbReq $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) req)
             response <- case apiResp' of
               Validation (Right apiResp) -> return apiResp
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
@@ -280,7 +283,8 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
     where getResponse dynVal = do
             let pRoute :: ParsedRoute '(m, (pp :++ '[DynamicPiece t]))
                 pRoute = snocParsedRoute parsedRoute $ DPiece dynVal
-            apiResp' <- fromWaiRequest request (fromParsedRoute pRoute) (\(req :: Request m route) -> toIO serv $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) req)
+                wbReq = WebApiRequest { rawRequest = request }
+            apiResp' <- fromWaiRequest request (fromParsedRoute pRoute) (\(req :: Request m route) -> toIO serv wbReq $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) req)
             response <- case apiResp' of
               Validation (Right apiResp) -> return apiResp
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
@@ -308,7 +312,8 @@ instance ( PathParam m (ns :// piece) ~ ()
       [] | T.null $ symTxt (Proxy :: Proxy piece) -> respond . Matched =<< getResponse
       _ -> respond $ NotMatched
     where getResponse = do
-            apiResp' <- fromWaiRequest request () (\(req :: Request m (ns :// piece)) -> toIO serv $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) req)
+            let wbReq = WebApiRequest { rawRequest = request }
+            apiResp' <- fromWaiRequest request () (\(req :: Request m (ns :// piece)) -> toIO serv wbReq $ apiHandler (toTagged (Proxy :: Proxy '[]) serv) req)
             response <- case apiResp' of
               Validation (Right apiResp) -> return apiResp 
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
