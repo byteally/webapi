@@ -21,7 +21,7 @@ import Data.OpenApi
              _schemaProperties),
       Definitions,
       Param(_paramName, _paramSchema),
-      Operation(_operationParameters) )
+      Operation(_operationParameters))
 import GHC.SourceGen
     ( data',
       field,
@@ -44,7 +44,10 @@ import GHC.SourceGen
       HsDecl',
       HsModule',
       HsType',
-      type')
+      type',
+      listPromotedTy,
+      instance',
+      tyFamInst)
 import GHC.Paths (libdir)
 import GHC ( runGhc )
 import Data.HashMap.Strict.InsOrd as HMO (toList,lookup)
@@ -53,9 +56,9 @@ import Data.Text.IO as T (writeFile)
 import GhcPlugins(getDynFlags,mkVarOcc)
 import Control.Monad.State.Class ( MonadState(get), modify )
 import Control.Monad.State.Lazy(evalState)
-import Data.Set (Set, empty, fromList, member, insert,)
+import Data.Set as S(Set, empty, fromList, member, insert,difference,null,toList)
 import Data.String ( IsString(fromString) )
-import Data.Bifunctor ( Bifunctor(bimap) ,first)
+import Data.Bifunctor ( Bifunctor(bimap))
 import Outputable(ppr,showSDoc)
 import Ormolu
     ( ormolu, defaultConfig, Config(cfgCheckIdempotence) )
@@ -65,7 +68,8 @@ import System.FilePath.Posix
 import System.Directory ( createDirectoryIfMissing )
 import Data.List as L (delete)
 import Data.HashMap.Internal as HM (HashMap, singleton, unions, lookup)
-import Data.Maybe ( catMaybes )
+import Language.Haskell.TH (Extension(..))
+
 
 data ModelGenState =
     ModelGenState { seenVars :: Set Text
@@ -73,23 +77,33 @@ data ModelGenState =
                   , keywordsToAvoid :: Set Text
                   }
 
+data PkgConfig = 
+    PkgConfig { authorName :: Text
+              , email :: Text
+              }
+
+mkPkgConfig :: PkgConfig
+mkPkgConfig = PkgConfig "\"Pankaj Singh Sijwali\"" "pankajsijwali1@gmail.com"
+
 generateModels ::
     FilePath -> FilePath -> IO ()
 generateModels fp destFp = do
     oApi <- readOpenAPI fp
     let compSchemas =  _componentsSchemas . _openApiComponents $ oApi
         compParams = _componentsParameters . _openApiComponents $ oApi
+        oApiName =  "PetStore" --_infoTitle . _openApiInfo $ oApi
         modelList = evalState
-                        (mapM createModelData (toList compSchemas))
-                        (ModelGenState empty empty (fromList keywords))
+                        (mapM createModelData (HMO.toList compSchemas))
+                        (ModelGenState S.empty S.empty (fromList keywords))
         hsModuleModel = module' (Just modName) Nothing impsModel (namedTy:modelList)
-        typeSynList = evalState
-                        (mapM (createTypeSynData compParams) (toList . _openApiPaths $ oApi))
-                        (ModelGenState empty empty empty)
-        hsModuleTypeSyn = module' (Just typeSynName) Nothing impsTypeSyn (Prelude.concat typeSynList)
+        (routeInfo,typeSynList) =  unzip . Prelude.concat $
+                                      evalState
+                                        (mapM (createTypeSynData compParams) (HMO.toList . _openApiPaths $ oApi))
+                                        (ModelGenState S.empty S.empty S.empty)
+        hsModuleTypeSyn = module' (Just typeSynName) Nothing impsTypeSyn (typeSynList ++ webApiInstance oApiName routeInfo)
     writeModule (pkgHome </> "src") (modName <.> "hs") es hsModuleModel
     writeModule (pkgHome </> "src") (typeSynName <.> "hs") es2 hsModuleTypeSyn
-    writeCabal pkgName modName [typeSynName] pkgHome
+    writeCabal pkgName mkPkgConfig modName [typeSynName] pkgHome
 
     where impsModel =
                  [ import' "Data.Int"
@@ -110,80 +124,72 @@ generateModels fp destFp = do
           pkgHome = destFp </> pkgName
           modName = "OpenApiModels"
           typeSynName = "WebApiInstances"
+          dataTypeForOApi a = data' (textToOccNameStr a) [] [] []
+          webApiInstance a b = [dataTypeForOApi a,
+                                    instance' (var "WebApi" @@ var (textToRdrNameStr a))
+                                              [tyFamInst "Apis" [var $ textToRdrNameStr a] (listPromotedTy (oneRoute <$> b))]]
+          oneRoute (tName,methList) = var "Route" @@ listPromotedTy (var . textToRdrNameStr <$> methList) @@ var  (textToRdrNameStr tName)
 
 createTypeSynData ::
     (MonadState ModelGenState m) =>
-    Definitions Param -> (FilePath,PathItem) -> m [HsDecl']
+    Definitions Param -> (FilePath,PathItem) -> m [((Text,[Text]),HsDecl')]
 createTypeSynData compsParam  (fp,PathItem _ _ piGet piPut piPost piDelete piOptions piHead piPatch piTrace _ piParams) = do
     let paramsMap = refParamsToParams compsParam piParams
         commonParams =
             (\case
                Right b ->
-                 (Right b, case HM.lookup b paramsMap of
+                 Right (b, case HM.lookup b paramsMap of
                               Nothing -> Nothing
                               x -> x)
-               a -> (a,Nothing))  <$> parseFilePath fp
-        opList = [("Get",piGet), ("Put",piPut), ("Post",piPost), ("Delete",piDelete), ("Options",piOptions), ("Head",piHead), ("Patch",piPatch), ("Trace",piTrace)]
-        overridesParam = fmap (handleOverridenParams compsParam commonParams)  <$> opList
-    if null (catMaybes (snd <$> overridesParam))
-    then  (: []) <$> createTypSynonym (Nothing, Nothing) commonParams
-    else mapM (`createTypSynonym` commonParams) 
-              (first Just <$> filter (\(_,y) -> case y of
-                                                    Nothing -> False
-                                                    _ -> True) overridesParam)
+               Left a -> Left a) <$> parseFilePath fp
+        opList = fetchJusts [("GET",piGet), ("PUT",piPut), ("POST",piPost), ("DELETE",piDelete), ("OPTIONS",piOptions), ("HEAD",piHead), ("PATCH",piPatch), ("TRACE",piTrace)]
+        overridesParam = fetchJusts $ fmap (handleOverridenParams compsParam commonParams)  <$> opList
+    typSyns <- mapM createTypSynonym overridesParam
+    commonTypSyn <- let diff = S.difference (pairLisToSet opList) (pairLisToSet overridesParam)
+                     in if S.null diff
+                         then return []
+                         else do
+                             ((a,_b),c) <- createTypSynonym ("",commonParams)
+                             return [((a,S.toList diff),c)]
+
+    return $ commonTypSyn ++ typSyns
+    where justVal = \case
+                        (_,Nothing) -> error "Unexpected Value"
+                        (a,Just b) -> (a,b)
+          filterJusts = \case
+                           (_,Nothing) -> False
+                           _ -> True
+          fetchJusts = fmap justVal  . filter filterJusts
+          pairLisToSet = S.fromList . fmap fst
 
 createTypSynonym ::
     (MonadState ModelGenState m) =>
-    (Maybe String , Maybe [(Either Text Text, Maybe (Bool, Param))]) ->
-    [(Either Text Text, Maybe (Bool, Param))] -> m HsDecl'
-createTypSynonym (Nothing,_) baseParams = do
-    varName <- mkUnseenVar (mkTypeSynName baseParams "R")
-    let typInfo = parseTypeSynInfo baseParams
-    return $ type' (textToOccNameStr varName)
-                   []
-                   (foldr1 (`op` ":/") typInfo)
-createTypSynonym (Just _, Nothing ) _ = error "Invalid State"
-createTypSynonym (Just vName,Just ovParams) baseParams = do
-    varName <- mkUnseenVar (mkTypeSynName baseParams (T.append (T.pack vName) "R"))
-    let overrides = if length baseParams /= length ovParams
-                    then error "Invalid State"
-                    else zipWith applyOverride ovParams baseParams
-        typInfo = parseTypeSynInfo overrides
-    return $ type' (textToOccNameStr varName)
-                   []
-                   (foldr1 (`op` ":/") typInfo)
-
-applyOverride ::
-    (Either Text Text, Maybe (Bool, Param)) ->
-    (Either Text Text, Maybe (Bool, Param)) ->
-    (Either Text Text, Maybe (Bool, Param))
-applyOverride (Left x,_) (Left y,_) =
-    if x == y then (Left x,Nothing) else error "Invalid State"
-applyOverride (Right _, Nothing) (Right _, Nothing) =
-    error "No type info found"
-applyOverride (Right x, Nothing) (Right y, Just z) =
-    if x == y then (Right x,Just z) else error "Invalid State"
-applyOverride (Right x, a) (Right y,_) =
-    if x == y then (Right x, a) else error "Invalid State"
-applyOverride _ _ = error "Invalid State"
+    (Text ,[Either Text (Text, Maybe (Bool, Param))]) ->
+    m ((Text,[Text]),HsDecl')
+createTypSynonym (oName,params) = do
+    varName <- mkUnseenVar (mkTypeSynName params (T.append oName "R"))
+    let typInfo = parseTypeSynInfo params
+    return ((varName, [oName]), type' (textToOccNameStr varName)
+                                    []
+                                    (foldr1 (`op` ":/") typInfo))
 
 parseTypeSynInfo ::
-    [(Either Text Text, Maybe (Bool, Param))] ->
+    [Either Text (Text, Maybe (Bool, Param))] ->
     [HsType']
 parseTypeSynInfo = fmap
                     (\case
-                      (Left x,_) -> stringTy $ T.unpack x
-                      (Right _, Nothing) -> error "Type Not Found"
-                      (Right _, Just (_,y)) ->
+                      Left x -> stringTy $ T.unpack x
+                      Right (_, Nothing) -> error "Type Not Found"
+                      Right( _, Just (_,y)) ->
                           case _paramSchema y of
                              Nothing -> error "No Parameter Schema"
                              Just s  ->  snd $ parseRecordFields ("",s) True
                     )
 
 
-mkTypeSynName :: [(Either Text Text, Maybe (Bool, Param))] -> Text -> Text
+mkTypeSynName :: [Either Text (Text, Maybe (Bool, Param))] -> Text -> Text
 mkTypeSynName a = T.append
-    (T.concat $ upperFirstChar . leftVal . fst <$> filter (\(x,_) -> isLeft x) a)
+    (T.concat $ upperFirstChar . leftVal <$> filter isLeft a)
     where isLeft = \case
                         Left _ -> True
                         _      -> False
@@ -212,23 +218,27 @@ updateSeenVars v (ModelGenState x y z) =
 
 handleOverridenParams ::
     Definitions Param ->
-    [(Either Text Text, Maybe (Bool, Param))] ->
-    Maybe Operation ->
-    Maybe [(Either Text Text, Maybe (Bool, Param))]
-handleOverridenParams _ _ Nothing = Nothing
-handleOverridenParams compsParam pathList (Just x) =
+    [Either Text (Text, Maybe (Bool, Param))] ->
+    Operation ->
+    Maybe [Either Text (Text, Maybe (Bool, Param))]
+handleOverridenParams compsParam pathList x =
     let pMap = refParamsToParams compsParam . _operationParameters $ x
         overParams =  (\case
-                            (Right a,p) ->
-                                (Right a , let pVal = HM.lookup a pMap
-                                           in if pVal == p
-                                              then Nothing
-                                              else pVal)
-                            (Left a,_) ->  (Left a, Nothing)
+                            Right (a,p) ->
+                                Right (a ,case HM.lookup a pMap of
+                                            Nothing -> (False,p)
+                                            s -> if p == s
+                                                 then (False,p)
+                                                 else (True,s))
+                            Left a ->  Left a
                       ) <$> pathList
-    in if null (catMaybes (snd <$> overParams))
-        then Nothing
-        else Just overParams
+    in if or $ (\case
+                   Left _ -> False
+                   Right (_,(y,_)) -> y) <$> overParams
+        then Just $ (\case
+                        Right (a,(_,b)) -> Right (a,b)
+                        Left a -> Left a ) <$> overParams
+        else Nothing
 
 refSchemaToSchema :: Definitions Schema -> Referenced Schema -> Either (Text,Schema) Schema
 refSchemaToSchema compSchemas (Ref (Reference a)) =
@@ -264,14 +274,14 @@ writeModule destFp fName es hsModule = do
     createDirectoryIfMissing True destFp
     T.writeFile (destFp </> fName) txt
 
-writeCabal :: String -> String -> [String] -> FilePath ->IO ()
-writeCabal pkgName modName exposMods pkgHome = do
+writeCabal :: String -> PkgConfig -> String -> [String] -> FilePath ->IO ()
+writeCabal pkgName (PkgConfig aName aEmail) modName exposMods pkgHome = do
     callCommand ("cd " ++ pkgHome ++ " ; " ++ str)
     where str = "cabal init --non-interactive --overwrite"
                  ++ " --package-name="
                  ++ pkgName
-                 ++ " --author=\"Pankaj Singh Sijwali\""
-                 ++ " --email=pankajsijwali1@gmail.com"
+                 ++ " --author=" ++ T.unpack aName
+                 ++ " --email=" ++ T.unpack aEmail
                  ++ " --lib"
                  ++ " --source-dir=src"
                  ++ iterateOption " --expose-module" xposedMods
@@ -279,25 +289,6 @@ writeCabal pkgName modName exposMods pkgHome = do
           dpends = ["base","text", "ghc-prim"]
           xposedMods = modName:exposMods
           iterateOption option = concatMap (\x -> option ++ "=" ++ x)
-
-data Extension =
-    DeriveGeneric
-  | DataKinds
-  | KindSignatures
-  | DuplicateRecordFields
-  | PatternSynonyms
-  | OverloadedStrings
-  | MultiParamTypeClasses
-  | MultiWayIf
-  | TypeApplications
-  | FlexibleContexts
-  | FlexibleInstances
-  | ScopedTypeVariables
-  | TypeFamilies
-  | UndecidableInstances
-  | StandaloneDeriving
-  | TypeOperators
-  deriving (Show, Eq)
 
 ppExtension :: Extension -> String
 ppExtension e = "{-# LANGUAGE " <> show e <> " #-}\n"
@@ -307,7 +298,7 @@ createModelData ::
     (Text,Schema) -> m HsDecl'
 createModelData (dName,dSchema) = do
     let reqParams =  _schemaRequired dSchema
-        rFields = (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams)) <$> (toList . _schemaProperties $ dSchema)
+        rFields = (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams)) <$> (HMO.toList . _schemaProperties $ dSchema)
     ModelGenState { keywordsToAvoid } <- get
     let frFields = bimap textToOccNameStr field .
                         (\(x,y)-> (if member x keywordsToAvoid
@@ -346,7 +337,7 @@ parseInlineFields (Just OpenApiNull ) _dName _dSchema _isReq =
 parseInlineFields (Just OpenApiObject ) dName dSchema isReq = do
     (dName,if isReq then typeTuple else var "Maybe" @@ typeTuple)
     where reqParams =  _schemaRequired dSchema
-          childInlines = (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams)) <$> (toList . _schemaProperties $ dSchema)
+          childInlines = (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams)) <$> (HMO.toList . _schemaProperties $ dSchema)
           typeTuple =  tuple $ (\(x,y)-> op (stringTy $ T.unpack x) ":::" y) <$> childInlines
 parseInlineFields Nothing _dName _dSchema _isReq = error "No Type Defined"
 
