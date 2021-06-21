@@ -34,7 +34,6 @@ import GHC.SourceGen
       occNameToStr,
       tuple,
       kindedVar,
-      listTy,
       stringTy,
       OccNameStr,
       RdrNameStr,
@@ -108,6 +107,7 @@ generateModels fp destFp = do
 
     where impsModel =
                  [ import' "Data.Int"
+                 , import' "Data.Vector"
                  , exposing (import' "GHC.Types") [var "Symbol"]
                  , exposing (import' "Data.Text") [var "Text"]
                  ]
@@ -289,7 +289,7 @@ writeCabal pkgName (PkgConfig aName aEmail) modName exposMods pkgHome =
                  ++ " --source-dir=src"
                  ++ iterateOption " --expose-module" xposedMods
                  ++ iterateOption " --dependency" dpends
-          dpends = ["base","text", "ghc-prim"]
+          dpends = ["base","text", "ghc-prim","vector"]
           xposedMods = modName:exposMods
           iterateOption option = concatMap (\x -> option ++ "=" ++ x)
 
@@ -336,7 +336,7 @@ parseInlineFields (Just OpenApiArray ) dName dSchema _isReq =
         Nothing -> error "No _schemaItems value for Array"
         Just (OpenApiItemsObject sch) -> do
             ((dName2,dType),childTypes) <- parseRecordFields (dName,sch) True
-            return ((dName2,listTy dType),childTypes)
+            return ((dName2,var "Vector" @@ dType),childTypes)
         Just (OpenApiItemsArray _) -> error "OpenApiItemsArray Array type"
 parseInlineFields (Just OpenApiNull ) _dName _dSchema _isReq =
     error "Null OpenApi Type"
