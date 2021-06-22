@@ -20,8 +20,9 @@ import Data.OpenApi
       Schema(_schemaType, _schemaFormat, _schemaItems, _schemaRequired,
              _schemaProperties, _schemaOneOf),
       Definitions,
-      Param(_paramName, _paramSchema),
-      Operation(_operationParameters))
+      Param(_paramName, _paramSchema, _paramIn),
+      Operation(_operationParameters),
+      ParamLocation(ParamHeader, ParamCookie, ParamQuery))
 import GHC.SourceGen
     ( data',
       field,
@@ -66,9 +67,10 @@ import System.FilePath.Posix
     ( (<.>), (</>), dropExtension, takeFileName, splitDirectories )
 import System.Directory ( createDirectoryIfMissing )
 import Data.List as L (delete)
-import Data.HashMap.Internal as HM (HashMap, singleton, unions, lookup, empty, insert)
+import Data.HashMap.Internal as HM (HashMap, singleton, unions, lookup, empty, insert, union, toList)
 import Language.Haskell.TH (Extension(..))
 import Test.FitSpec.Utils(contained)
+
 
 data ModelGenState =
     ModelGenState { seenVars :: Set Text
@@ -91,16 +93,18 @@ generateModels fp destFp = do
     oApi <- readOpenAPI fp
     let compSchemas =  _componentsSchemas . _openApiComponents $ oApi
         compParams = _componentsParameters . _openApiComponents $ oApi
-        oApiName =  "NetSuites" --_infoTitle . _openApiInfo $ oApi
+        oApiName = "NetSuites" --_infoTitle . _openApiInfo $ oApi
         modelList = evalState
                         (mapM createModelData (HMO.toList compSchemas))
                         (ModelGenState S.empty S.empty (fromList keywords) HM.empty)
         hsModuleModel = module' (Just modName) Nothing impsModel (namedTy: Prelude.concat modelList)
-        (routeInfo,typeSynList) =  unzip . Prelude.concat $
+        (routeInfo,typeSynList) = bimap Prelude.concat Prelude.concat . unzip $
                                       evalState
                                         (mapM (createTypeSynData compParams) (HMO.toList . _openApiPaths $ oApi))
-                                        (ModelGenState S.empty S.empty S.empty HM.empty)
-        hsModuleTypeSyn = module' (Just typeSynName) Nothing impsTypeSyn (Prelude.concat typeSynList ++ webApiInstance oApiName routeInfo)
+                                        (ModelGenState (fromList seenVariables) S.empty S.empty HM.empty)
+        simplifiedRouteInfo = (fmap . fmap) (map fst) routeInfo
+        apiContractInstances =  Prelude.concat $ mkApiContractInstances oApiName <$> routeInfo
+        hsModuleTypeSyn = module' (Just typeSynName) Nothing impsTypeSyn (untypedDef:typeSynList ++ webApiInstance oApiName simplifiedRouteInfo ++ apiContractInstances)
     writeModule (pkgHome </> "src") (modName <.> "hs") es hsModuleModel
     writeModule (pkgHome </> "src") (typeSynName <.> "hs") es2 hsModuleTypeSyn
     writeCabal pkgName mkPkgConfig modName [typeSynName] pkgHome
@@ -112,15 +116,19 @@ generateModels fp destFp = do
                  , exposing (import' "Data.Text") [var "Text"]
                  ]
           impsTypeSyn =
-                 [ import' "WebApi"
+                 [ import' "WebApi.Contract"
                  , import' modName
                  , import' "Data.Int"
+                 , exposing (import' "GHC.Types") [var "Symbol"]
+                 , exposing (import' "Data.Text") [var "Text"]
+                 , import' "Data.Vector"
                  ]
           namedTy = newtype' ":::" [kindedVar "fld" (var "Symbol") , bvar "a"]
                         (prefixCon "Field" [field $ var "a"]) []
           es = [TypeOperators,KindSignatures,DataKinds,DuplicateRecordFields]
-          es2 = []
+          es2 = [DataKinds,TypeOperators,TypeSynonymInstances,FlexibleInstances,MultiParamTypeClasses,TypeFamilies]
           keywords = ["type","class"]
+          seenVariables = ["Untyped"]
           pkgName = T.unpack . flip T.append "-models" . T.pack . dropExtension . takeFileName $ fp
           pkgHome = destFp </> pkgName
           modName = "OpenApiModels"
@@ -130,10 +138,28 @@ generateModels fp destFp = do
                                     instance' (var "WebApi" @@ var (textToRdrNameStr a))
                                               [tyFamInst "Apis" [var $ textToRdrNameStr a] (listPromotedTy (oneRoute <$> b))]]
           oneRoute (tName,methList) = var "Route" @@ listPromotedTy (var . textToRdrNameStr <$> methList) @@ var  (textToRdrNameStr tName)
+          untypedDef = data' "Untyped" [] [prefixCon "Maybe" [field (var "Text")]] []
+
+mkApiContractInstances :: 
+    Text -> 
+    (Text, [(Text, (Maybe HsType', Maybe HsType', Maybe HsType'))]) ->
+    [HsDecl']
+mkApiContractInstances oApiName (typName,instanceInfo) =
+    mkOneInstance <$> instanceInfo
+    where mkOneInstance (methName,(headInfo,queryInfo,cookieInfo)) =
+                instance' (var "ApiContract" @@ var (textToRdrNameStr oApiName) @@ var (textToRdrNameStr methName) @@ var (textToRdrNameStr typName))
+                          (Prelude.concat (mkTypeSyns methName <$> [("HeaderIn",headInfo),("QueryParam",queryInfo),("CookieIn",cookieInfo)]))
+          mkTypeSyns _ (_,Nothing) = []
+          mkTypeSyns methName (tName,Just typ) = [tyFamInst (textToRdrNameStr tName)
+                                                            [var (textToRdrNameStr methName),var (textToRdrNameStr typName) ]
+                                                            typ]
+
 
 createTypeSynData ::
     (MonadState ModelGenState m) =>
-    Definitions Param -> (FilePath,PathItem) -> m [((Text,[Text]),[HsDecl'])]
+    Definitions Param ->
+    (FilePath,PathItem) ->
+    m ([(Text, [(Text, (Maybe HsType', Maybe HsType', Maybe HsType'))])],[HsDecl'])
 createTypeSynData compsParam  (fp,PathItem _ _ piGet piPut piPost piDelete piOptions piHead piPatch piTrace _ piParams) = do
     let paramsMap = refParamsToParams compsParam piParams
         commonParams =
@@ -145,23 +171,62 @@ createTypeSynData compsParam  (fp,PathItem _ _ piGet piPut piPost piDelete piOpt
                Left a -> Left a) <$> parseFilePath fp
         opList = fetchJusts [("GET",piGet), ("PUT",piPut), ("POST",piPost), ("DELETE",piDelete), ("OPTIONS",piOptions), ("HEAD",piHead), ("PATCH",piPatch), ("TRACE",piTrace)]
         overridesParam = fetchJusts $ fmap (handleOverridenParams compsParam commonParams)  <$> opList
-    typSyns <- mapM createTypSynonym overridesParam
-    commonTypSyn <- let diff = S.difference (pairLisToSet opList) (pairLisToSet overridesParam)
-                     in if S.null diff
-                         then return []
-                         else do
-                             ((a,_b),c) <- createTypSynonym ("",commonParams)
-                             return [((a,S.toList diff),c)]
+    (typSyns,ct1) <- unzip <$> mapM createTypSynonym overridesParam
+    (commonTypSyn,ct2) <- unzip <$> let diff = S.difference (pairLisToSet opList) (pairLisToSet overridesParam)
+                              in if S.null diff
+                              then return []
+                              else do
+                                 ((a,_b),c) <- createTypSynonym ("",commonParams)
+                                 return [((a,S.toList diff),c)]
+    (apiConInsData,ct3) <- bimap unions Prelude.concat . unzip
+                                        <$> mapM (createApiContractInsData compsParam paramsMap) opList
+    return ((fmap . fmap) (applyApiContractInfo apiConInsData) <$> commonTypSyn ++ typSyns, Prelude.concat ct1 ++ Prelude.concat ct2 ++ ct3)
+    where pairLisToSet = S.fromList . fmap fst
+          applyApiContractInfo apiInfoMap a =
+                    case HM.lookup a apiInfoMap of
+                        Nothing -> error "No api info for this method"
+                        (Just x) -> (a,x)
 
-    return $ commonTypSyn ++ typSyns
+fetchJusts :: [(a, Maybe b)] -> [(a, b)]
+fetchJusts =
+    fmap justVal  . filter filterJusts
     where justVal = \case
                         (_,Nothing) -> error "Unexpected Value"
                         (a,Just b) -> (a,b)
           filterJusts = \case
                            (_,Nothing) -> False
                            _ -> True
-          fetchJusts = fmap justVal  . filter filterJusts
-          pairLisToSet = S.fromList . fmap fst
+
+
+createApiContractInsData ::
+    (MonadState ModelGenState m) =>
+    Definitions Param ->
+    HashMap Text (Bool, Param) ->
+    (Text,Operation) ->
+    m (HashMap Text (Maybe HsType',Maybe HsType',Maybe HsType'),[HsDecl'])
+createApiContractInsData compsParam commonParamMap (opName,operationData) = do
+    let opParamsMap = refParamsToParams compsParam (_operationParameters operationData)
+        overrideParams = HM.toList $ opParamsMap `union` commonParamMap
+    (headtypTyple,ct1)  <- createType ParamHeader overrideParams
+    (querytypTuple,ct2)  <- createType ParamQuery  overrideParams
+    (cookietypTuple,ct3) <- createType ParamCookie overrideParams
+    return (HM.singleton opName (headtypTyple,querytypTuple,cookietypTuple),ct1 ++ ct2 ++ ct3)
+    where mFilter x = filter (\(_a,(_b,c)) -> _paramIn c == x)
+          createType a b = mkTypeTuple $ fmap (\ (_, x) -> _paramSchema x) <$> mFilter a b
+          mkTypeTuple [] = return (Nothing,[])
+          mkTypeTuple schemas = do
+              (schemaList,childTypes) <-
+                               unzip <$> mapM
+                                  (\case
+                                     (x,Nothing) -> mkUntypedType x
+                                     (x,Just y) -> parseRecordFields (x,y) True) schemas
+              let typeTuple =  tuple $ (\(x,y)-> op (stringTy $ T.unpack x) ":::" y) <$> schemaList
+              return (Just typeTuple,Prelude.concat childTypes)
+
+mkUntypedType ::
+    (MonadState ModelGenState m) =>
+    Text -> m ((Text, HsType' ), [HsDecl' ])
+mkUntypedType x = return ((x,var "Untyped"),[])
 
 createTypSynonym ::
     (MonadState ModelGenState m) =>
@@ -172,7 +237,9 @@ createTypSynonym (oName,params) = do
     (typInfo,childTypes) <-unzip <$> mapM parseTypeSynInfo params
     return ((varName, [oName]), type' (textToOccNameStr varName)
                                        []
-                                       (foldr1 (`op` ":/") typInfo): Prelude.concat childTypes)
+                                       (case typInfo of
+                                           [x] -> var "Static" @@ x
+                                           _ -> foldr1 (`op` ":/") typInfo): Prelude.concat childTypes)
 
 parseTypeSynInfo ::
     (MonadState ModelGenState m) =>
@@ -289,7 +356,7 @@ writeCabal pkgName (PkgConfig aName aEmail) modName exposMods pkgHome =
                  ++ " --source-dir=src"
                  ++ iterateOption " --expose-module" xposedMods
                  ++ iterateOption " --dependency" dpends
-          dpends = ["base","text", "ghc-prim","vector"]
+          dpends = ["base","text", "ghc-prim","vector","webapi-contract"]
           xposedMods = modName:exposMods
           iterateOption option = concatMap (\x -> option ++ "=" ++ x)
 
@@ -364,7 +431,7 @@ parseInlineFields Nothing dName dSchema isReq =
                 let oneOfTyp = data' (textToOccNameStr vName) [] ((\(a,b) -> prefixCon (textToOccNameStr a) [field b]) <$> typList) []
                 return ((dName,if isReq then var (textToRdrNameStr vName) else var "Maybe" @@ var (textToRdrNameStr vName)), oneOfTyp : Prelude.concat childTypes)
 
-registerSumType :: 
+registerSumType ::
     MonadState ModelGenState m =>
      Text -> [Referenced Schema] -> HashMap Text [Referenced Schema] -> m (Bool,Text)
 registerSumType tName schemaList hm =
