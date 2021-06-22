@@ -4,13 +4,13 @@
 name:                webapi-client-reflex-dom
 version:             0.1.0.0
 synopsis:            Type safe XHR client for webapi using reflex-dom
--- description:         
+-- description:
 homepage:            https://github.com/byteally/webapi
 license:             BSD3
 license-file:        LICENSE
 author:              Magesh
 maintainer:          magesh85@gmail.com
--- copyright:           
+-- copyright:
 category:            Web
 build-type:          Simple
 extra-source-files:  ChangeLog.md
@@ -18,15 +18,15 @@ cabal-version:       >=1.10
 
 library
   exposed-modules:     WebApi.Client.Reflex
-  -- other-modules:       
+  -- other-modules:
   build-depends:       base             >=4.9    && < 5
                      , webapi-contract  == 0.4.*
-                     , reflex           >= 0.6.4 && < 0.8
-                     , reflex-dom-core  >= 0.6.0.0
+                     , reflex           >= 0.6.4 && < 0.9
+                     , reflex-dom-core  >= 0.6 && < 0.7
                      , ghcjs-dom
                      , text
                      , bytestring
-                     , jsaddle          == 0.9.*        
+                     , jsaddle          >= 0.9.0.0 && < 0.10
                      , containers
                      , case-insensitive >= 1.2
                      , http-types       >= 0.8
