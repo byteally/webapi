@@ -11,7 +11,7 @@ import Data.ByteString.Lazy as B (readFile)
 import Data.Aeson ( decode )
 import Data.OpenApi
     ( Components(_componentsSchemas, _componentsParameters),
-      OpenApi(_openApiComponents, _openApiPaths),
+      OpenApi(_openApiComponents, _openApiPaths, _openApiInfo),
       OpenApiItems(OpenApiItemsArray, OpenApiItemsObject),
       OpenApiType(..),
       PathItem(PathItem),
@@ -22,7 +22,8 @@ import Data.OpenApi
       Definitions,
       Param(_paramName, _paramSchema, _paramIn),
       Operation(_operationParameters),
-      ParamLocation(ParamHeader, ParamCookie, ParamQuery))
+      ParamLocation(ParamHeader, ParamCookie, ParamQuery),
+      Info(_infoTitle))
 import GHC.SourceGen
     ( data',
       field,
@@ -93,7 +94,7 @@ generateModels fp destFp = do
     oApi <- readOpenAPI fp
     let compSchemas =  _componentsSchemas . _openApiComponents $ oApi
         compParams = _componentsParameters . _openApiComponents $ oApi
-        oApiName = "NetSuites" --_infoTitle . _openApiInfo $ oApi
+        oApiName = _infoTitle . _openApiInfo $ oApi
         modelList = evalState
                         (mapM createModelData (HMO.toList compSchemas))
                         (ModelGenState S.empty S.empty (fromList keywords) HM.empty)
@@ -381,23 +382,28 @@ parseRecordFields ::
     (MonadState ModelGenState m) =>
     (Text, Referenced Schema) -> Bool -> m ((Text,HsType'),[HsDecl'])
 parseRecordFields (dName,Ref (Reference x)) isReq =
-    return ((dName,if isReq
-                   then var $ textToRdrNameStr . upperFirstChar $ x
-                   else var "Maybe" @@ var ( textToRdrNameStr . upperFirstChar $ x)),[])
+    return ((dName, createHsType isReq (upperFirstChar x)),[])
 parseRecordFields (dName,Inline dSchema) isReq = parseInlineFields (_schemaType dSchema) dName dSchema isReq
+
+createHsType :: Bool -> Text -> HsType'
+createHsType isReq x = 
+    let rdrx = textToRdrNameStr x 
+    in if isReq 
+       then var rdrx
+       else var "Maybe" @@ var rdrx
 
 parseInlineFields ::
     (MonadState ModelGenState m) =>
     Maybe OpenApiType -> Text -> Schema -> Bool -> m ((Text,HsType'),[HsDecl'])
 parseInlineFields (Just OpenApiString) dName _dSchema isReq =
-    return ((dName, if isReq then var "Text" else var "Maybe" @@ var "Text"),[])
+    return ((dName, createHsType isReq "Text"),[])
 parseInlineFields (Just OpenApiNumber ) dName _dSchema isReq =
-    return ((dName, if isReq then var "Double" else var "Maybe" @@ var "Double"),[])
+    return ((dName, createHsType isReq "Double"),[])
 parseInlineFields (Just OpenApiInteger) dName dSchema isReq =
-    return ((dName, if isReq then var $ textToRdrNameStr parsedInt else var "Maybe" @@ var (textToRdrNameStr parsedInt)),[])
+    return ((dName, createHsType isReq parsedInt),[])
     where parsedInt = parseIntegerFld (_schemaFormat dSchema)
 parseInlineFields (Just OpenApiBoolean) dName _dSchema isReq =
-    return ((dName,if isReq then var "Bool" else var "Maybe" @@ var "Bool"),[])
+    return ((dName, createHsType isReq "Bool"),[])
 parseInlineFields (Just OpenApiArray ) dName dSchema _isReq =
     case _schemaItems dSchema of
         Nothing -> error "No _schemaItems value for Array"
@@ -415,21 +421,20 @@ parseInlineFields (Just OpenApiObject ) dName dSchema isReq = do
 
 parseInlineFields Nothing dName dSchema isReq =
     case _schemaOneOf dSchema of
-        Nothing -> let props = HMO.toList . _schemaProperties $ dSchema
-                   in case props of
-                       [] -> error "Unexpected Schema type"
-                       _ -> parseInlineFields (Just OpenApiObject) dName dSchema isReq
+        Nothing -> if Prelude.null (_schemaProperties dSchema)
+                   then error "Unexpected Schema type"
+                   else parseInlineFields (Just OpenApiObject) dName dSchema isReq
         Just x -> do
             ModelGenState { createdSums } <- get
             (isReg,vName) <- registerSumType (upperFirstChar dName) x createdSums
             if isReg
-            then return ((dName,if isReq then var (textToRdrNameStr vName) else var "Maybe" @@ var (textToRdrNameStr vName)), [])
+            then return ((dName,createHsType isReq vName), [])
             else do
                 let newVarList = mkNewVariables vName (length x)
                 unSeenVars <- mapM mkUnseenVar newVarList
                 (typList,childTypes) <- unzip <$> mapM (\(a,b) -> parseRecordFields (a,b) True)  (zip unSeenVars x)
                 let oneOfTyp = data' (textToOccNameStr vName) [] ((\(a,b) -> prefixCon (textToOccNameStr a) [field b]) <$> typList) []
-                return ((dName,if isReq then var (textToRdrNameStr vName) else var "Maybe" @@ var (textToRdrNameStr vName)), oneOfTyp : Prelude.concat childTypes)
+                return ((dName,createHsType isReq vName), oneOfTyp : Prelude.concat childTypes)
 
 registerSumType ::
     MonadState ModelGenState m =>
@@ -449,8 +454,7 @@ registerSumType tName schemaList hm =
                  return (False,unseenVar)
 
 mkNewVariables :: Text -> Int -> [Text]
-mkNewVariables _dName 0 = []
-mkNewVariables dName x =  mkNewVariables dName (x-1)  ++ [T.concat [dName,"C", T.pack . show $ x]]
+mkNewVariables dName x =  [T.concat [dName,"C", T.pack . show $ a] | a <- [1..x]]
 
 parseIntegerFld :: Maybe Text -> Text
 parseIntegerFld (Just x) = let y = upperFirstChar x
@@ -460,7 +464,7 @@ parseIntegerFld (Just x) = let y = upperFirstChar x
 parseIntegerFld Nothing = "Int"
 
 removeUnsupportedSymbols :: Text -> Text
-removeUnsupportedSymbols = removeSymbol '-' . removeSymbol '!' . removeSymbol ':'
+removeUnsupportedSymbols = removeSymbol '-' . removeSymbol '!' . removeSymbol ':' . removeSymbol ' '
 
 textToOccNameStr :: Text -> OccNameStr
 textToOccNameStr = occNameToStr . mkVarOcc . unpack . removeUnsupportedSymbols
