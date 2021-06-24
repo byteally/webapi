@@ -10,7 +10,7 @@ module WebApi.OpenAPI where
 import Data.ByteString.Lazy as B (readFile)
 import Data.Aeson ( decode )
 import Data.OpenApi
-    ( Components(_componentsSchemas, _componentsParameters),
+    ( Components(_componentsSchemas, _componentsParameters, _componentsRequestBodies),
       OpenApi(_openApiComponents, _openApiPaths, _openApiInfo),
       OpenApiItems(OpenApiItemsArray, OpenApiItemsObject),
       OpenApiType(..),
@@ -21,9 +21,11 @@ import Data.OpenApi
              _schemaProperties, _schemaOneOf),
       Definitions,
       Param(_paramName, _paramSchema, _paramIn),
-      Operation(_operationParameters),
+      Operation(_operationParameters, _operationRequestBody),
       ParamLocation(ParamHeader, ParamCookie, ParamQuery),
-      Info(_infoTitle))
+      Info(_infoTitle),
+      RequestBody(_requestBodyContent),
+      MediaTypeObject(_mediaTypeObjectSchema))
 import GHC.SourceGen
     ( data',
       field,
@@ -68,9 +70,11 @@ import System.FilePath.Posix
     ( (<.>), (</>), dropExtension, takeFileName, splitDirectories )
 import System.Directory ( createDirectoryIfMissing )
 import Data.List as L (delete)
-import Data.HashMap.Internal as HM (HashMap, singleton, unions, lookup, empty, insert, union, toList)
+import Data.HashMap.Internal as HM (HashMap, singleton, unions, lookup, empty, insert, union, toList, fromList)
 import Language.Haskell.TH (Extension(..))
 import Test.FitSpec.Utils(contained)
+import Network.HTTP.Media ( MediaType , (//), (/:), parseAccept)
+import Data.Maybe ( fromMaybe ) 
 
 
 data ModelGenState =
@@ -94,15 +98,16 @@ generateModels fp destFp = do
     oApi <- readOpenAPI fp
     let compSchemas =  _componentsSchemas . _openApiComponents $ oApi
         compParams = _componentsParameters . _openApiComponents $ oApi
+        compReqBodies = _componentsRequestBodies . _openApiComponents $ oApi
         oApiName = _infoTitle . _openApiInfo $ oApi
         modelList = evalState
                         (mapM createModelData (HMO.toList compSchemas))
-                        (ModelGenState S.empty S.empty (fromList keywords) HM.empty)
+                        (ModelGenState S.empty S.empty (S.fromList keywords) HM.empty)
         hsModuleModel = module' (Just modName) Nothing impsModel (namedTy: Prelude.concat modelList)
         (routeInfo,typeSynList) = bimap Prelude.concat Prelude.concat . unzip $
                                       evalState
-                                        (mapM (createTypeSynData compParams) (HMO.toList . _openApiPaths $ oApi))
-                                        (ModelGenState (fromList seenVariables) S.empty S.empty HM.empty)
+                                        (mapM (createTypeSynData compParams compReqBodies) (HMO.toList . _openApiPaths $ oApi))
+                                        (ModelGenState (S.fromList seenVariables) S.empty S.empty HM.empty)
         simplifiedRouteInfo = (fmap . fmap) (map fst) routeInfo
         apiContractInstances =  Prelude.concat $ mkApiContractInstances oApiName <$> routeInfo
         hsModuleTypeSyn = module' (Just typeSynName) Nothing impsTypeSyn (untypedDef:typeSynList ++ webApiInstance oApiName simplifiedRouteInfo ++ apiContractInstances)
@@ -141,15 +146,15 @@ generateModels fp destFp = do
           oneRoute (tName,methList) = var "Route" @@ listPromotedTy (var . textToRdrNameStr <$> methList) @@ var  (textToRdrNameStr tName)
           untypedDef = data' "Untyped" [] [prefixCon "Maybe" [field (var "Text")]] []
 
-mkApiContractInstances :: 
-    Text -> 
-    (Text, [(Text, (Maybe HsType', Maybe HsType', Maybe HsType'))]) ->
+mkApiContractInstances ::
+    Text ->
+    (Text, [(Text, (Maybe HsType', Maybe HsType', Maybe HsType', Maybe HsType'))]) ->
     [HsDecl']
 mkApiContractInstances oApiName (typName,instanceInfo) =
     mkOneInstance <$> instanceInfo
-    where mkOneInstance (methName,(headInfo,queryInfo,cookieInfo)) =
+    where mkOneInstance (methName,(headInfo,queryInfo,cookieInfo,reqBodyInfo)) =
                 instance' (var "ApiContract" @@ var (textToRdrNameStr oApiName) @@ var (textToRdrNameStr methName) @@ var (textToRdrNameStr typName))
-                          (Prelude.concat (mkTypeSyns methName <$> [("HeaderIn",headInfo),("QueryParam",queryInfo),("CookieIn",cookieInfo)]))
+                          (Prelude.concat (mkTypeSyns methName <$> [("HeaderIn",headInfo),("QueryParam",queryInfo),("CookieIn",cookieInfo),("RequestBody",reqBodyInfo)]))
           mkTypeSyns _ (_,Nothing) = []
           mkTypeSyns methName (tName,Just typ) = [tyFamInst (textToRdrNameStr tName)
                                                             [var (textToRdrNameStr methName),var (textToRdrNameStr typName) ]
@@ -159,9 +164,10 @@ mkApiContractInstances oApiName (typName,instanceInfo) =
 createTypeSynData ::
     (MonadState ModelGenState m) =>
     Definitions Param ->
+    Definitions RequestBody ->
     (FilePath,PathItem) ->
-    m ([(Text, [(Text, (Maybe HsType', Maybe HsType', Maybe HsType'))])],[HsDecl'])
-createTypeSynData compsParam  (fp,PathItem _ _ piGet piPut piPost piDelete piOptions piHead piPatch piTrace _ piParams) = do
+    m ([(Text, [(Text, (Maybe HsType', Maybe HsType', Maybe HsType', Maybe HsType'))])],[HsDecl'])
+createTypeSynData compsParam compReqBodies (fp,PathItem _ _ piGet piPut piPost piDelete piOptions piHead piPatch piTrace _ piParams) = do
     let paramsMap = refParamsToParams compsParam piParams
         commonParams =
             (\case
@@ -180,7 +186,7 @@ createTypeSynData compsParam  (fp,PathItem _ _ piGet piPut piPost piDelete piOpt
                                  ((a,_b),c) <- createTypSynonym ("",commonParams)
                                  return [((a,S.toList diff),c)]
     (apiConInsData,ct3) <- bimap unions Prelude.concat . unzip
-                                        <$> mapM (createApiContractInsData compsParam paramsMap) opList
+                                        <$> mapM (createApiContractInsData compsParam compReqBodies paramsMap) opList
     return ((fmap . fmap) (applyApiContractInfo apiConInsData) <$> commonTypSyn ++ typSyns, Prelude.concat ct1 ++ Prelude.concat ct2 ++ ct3)
     where pairLisToSet = S.fromList . fmap fst
           applyApiContractInfo apiInfoMap a =
@@ -202,27 +208,70 @@ fetchJusts =
 createApiContractInsData ::
     (MonadState ModelGenState m) =>
     Definitions Param ->
+    Definitions RequestBody ->
     HashMap Text (Bool, Param) ->
     (Text,Operation) ->
-    m (HashMap Text (Maybe HsType',Maybe HsType',Maybe HsType'),[HsDecl'])
-createApiContractInsData compsParam commonParamMap (opName,operationData) = do
+    m (HashMap Text (Maybe HsType',Maybe HsType',Maybe HsType', Maybe HsType'),[HsDecl'])
+createApiContractInsData compsParam compsReqBodies commonParamMap (opName,operationData) = do
     let opParamsMap = refParamsToParams compsParam (_operationParameters operationData)
         overrideParams = HM.toList $ opParamsMap `union` commonParamMap
-    (headtypTyple,ct1)  <- createType ParamHeader overrideParams
+        opReqBody = _operationRequestBody operationData
+    (headtypTuple,ct1)  <- createType ParamHeader overrideParams
     (querytypTuple,ct2)  <- createType ParamQuery  overrideParams
     (cookietypTuple,ct3) <- createType ParamCookie overrideParams
-    return (HM.singleton opName (headtypTyple,querytypTuple,cookietypTuple),ct1 ++ ct2 ++ ct3)
+    (reqBody,ct4) <- createReqBody compsReqBodies opReqBody
+    return (HM.singleton opName (headtypTuple,querytypTuple,cookietypTuple,reqBody),ct1 ++ ct2 ++ ct3 ++ ct4)
     where mFilter x = filter (\(_a,(_b,c)) -> _paramIn c == x)
           createType a b = mkTypeTuple $ fmap (\ (_, x) -> _paramSchema x) <$> mFilter a b
           mkTypeTuple [] = return (Nothing,[])
           mkTypeTuple schemas = do
               (schemaList,childTypes) <-
-                               unzip <$> mapM
-                                  (\case
-                                     (x,Nothing) -> mkUntypedType x
-                                     (x,Just y) -> parseRecordFields (x,y) True) schemas
+                               unzip <$> mapM mayBeSchemaToHsType schemas
               let typeTuple =  tuple $ (\(x,y)-> op (stringTy $ T.unpack x) ":::" y) <$> schemaList
               return (Just typeTuple,Prelude.concat childTypes)
+
+mayBeSchemaToHsType ::
+    MonadState ModelGenState m =>
+    (Text, Maybe (Referenced Schema)) -> m ((Text, HsType'), [HsDecl'])
+mayBeSchemaToHsType = \case
+                        (x,Nothing) -> mkUntypedType x
+                        (x,Just y) -> parseRecordFields (x,y) True
+
+createReqBody ::
+    (MonadState ModelGenState m) =>
+    Definitions RequestBody ->
+    Maybe (Referenced RequestBody) ->
+    m (Maybe HsType',[HsDecl'])
+createReqBody _ Nothing = return (Nothing,[])
+createReqBody compReqBodies (Just refReqBody) = do
+    let reqBody = refValToVal compReqBodies refReqBody
+    let reqBodyInfo =  HMO.toList . _requestBodyContent $ reqBody
+    case reqBodyInfo of
+        [(mediaTyp,mediaTypObj)] ->
+            case HM.lookup mediaTyp mediaTypeMap of
+                Nothing -> error $ "Unknown media type " ++ show mediaTyp
+                (Just typName) -> do
+                    ((_,desiredType),childTypes) <- mayBeSchemaToHsType ("requestBody", _mediaTypeObjectSchema mediaTypObj)
+                    let finalType = if typName == "JSON"
+                                    then listPromotedTy [desiredType]
+                                    else listPromotedTy [var "Content" @@ listPromotedTy [var $ textToRdrNameStr typName] @@ desiredType]
+                    return (Just finalType,childTypes)
+        _ -> error "Invalid Request Body"
+
+mediaTypeMap :: HashMap MediaType Text
+mediaTypeMap = HM.fromList
+                    [ ("text" // "plain" /: ("charset", "utf-8"),"PlainText")
+                    , ("application" // "json","JSON")
+                    , ("text" // "html" /: ("charset", "utf-8"),"HTML")
+                    , ("application" // "octet-stream","OctetStream")
+                    , ("multipart" // "form-data", "MultipartFormData")
+                    , ("application" // "x-www-form-urlencoded", "UrlEncoded")
+                    , (textToMediaType "application/vnd.oracle.resource+json;type=singular","JSON")
+                    , (textToMediaType "application/vnd.oracle.resource+json;type=error","JSON")
+                    ]
+
+textToMediaType :: String -> MediaType
+textToMediaType t = fromMaybe "MEDIA TYPE PARSE ERROR" (parseAccept $ fromString t)
 
 mkUntypedType ::
     (MonadState ModelGenState m) =>
@@ -311,12 +360,12 @@ handleOverridenParams compsParam pathList x =
                         Left a -> Left a ) <$> overParams
         else Nothing
 
-refSchemaToSchema :: Definitions Schema -> Referenced Schema -> Either (Text,Schema) Schema
-refSchemaToSchema compSchemas (Ref (Reference a)) =
-    Left (a,case HMO.lookup a compSchemas of
-                Nothing -> error "Reference Schema Not Found"
-                Just x -> x)
-refSchemaToSchema _compSchemas (Inline x) = Right x
+refValToVal :: Definitions a -> Referenced a -> a
+refValToVal compVals (Ref (Reference a)) =
+        case HMO.lookup a compVals of
+                Nothing -> error "Reference Value Not Found"
+                Just x -> x
+refValToVal _compVals (Inline x) = x
 
 refParamsToParams ::
     Definitions Param ->
@@ -386,9 +435,9 @@ parseRecordFields (dName,Ref (Reference x)) isReq =
 parseRecordFields (dName,Inline dSchema) isReq = parseInlineFields (_schemaType dSchema) dName dSchema isReq
 
 createHsType :: Bool -> Text -> HsType'
-createHsType isReq x = 
-    let rdrx = textToRdrNameStr x 
-    in if isReq 
+createHsType isReq x =
+    let rdrx = textToRdrNameStr x
+    in if isReq
        then var rdrx
        else var "Maybe" @@ var rdrx
 
