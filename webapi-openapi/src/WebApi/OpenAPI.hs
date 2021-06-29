@@ -579,6 +579,7 @@ parseInlineFields Nothing dName dSchema isReq =
 mkSumType :: 
     MonadState ModelGenState m =>
     Text -> Bool -> [Referenced Schema] -> m ((Text, HsType'), [HsDecl'])
+mkSumType dName isReq [a] = parseRecordFields (dName,a) isReq
 mkSumType dName isReq x = do
             ModelGenState { createdSums } <- get
             (isReg,vName) <- registerSumType (upperFirstChar dName) x createdSums
