@@ -58,7 +58,7 @@ import GHC.SourceGen
 import GHC.Paths (libdir)
 import GHC ( runGhc )
 import Data.HashMap.Strict.InsOrd as HMO (toList,lookup, empty, fromList, delete)
-import Data.Text as T ( unpack, Text, append, splitAt, toUpper, take, pack, dropEnd, concat, split, toLower)
+import Data.Text as T ( unpack, Text, append, splitAt, toUpper, take, pack, dropEnd, concat, split, toLower, breakOnEnd)
 import Data.Text.IO as T (writeFile)
 import GhcPlugins(getDynFlags,mkVarOcc)
 import Control.Monad.State.Class ( MonadState(get), modify )
@@ -236,7 +236,10 @@ createApiContractInsData compsParam compsReqBodies compResponses compHeaders com
         opResponses = _responsesResponses . _operationResponses $ operationData
         responseList = fmap (refValToVal compResponses) <$> HMO.toList opResponses
         defaultResponse = _responsesDefault . _operationResponses $ operationData
-        headerOutSchemas = headersToSchema . responseToHeader <$> responseList
+        headerOutSchemas = headersToSchema <$>  filter (not . Prelude.null)
+                                                    (responseToHeader <$> ( case defaultResponse of
+                                                                        Nothing -> responseList
+                                                                        (Just x) -> (0,refValToVal compResponses x):responseList))
     (headtypTuple,ct1)  <- createType ParamHeader overrideParams
     (querytypTuple,ct2)  <- createType ParamQuery  overrideParams
     (cookietypTuple,ct3) <- createType ParamCookie overrideParams
@@ -273,6 +276,7 @@ createHeaderOut x = do
     return (Just typ,childTypes)
 
 headersToSchema :: [(Text, Maybe (Referenced Schema))] -> Referenced Schema
+headersToSchema [] = error "Impossible state"
 headersToSchema hdrs = 
     Inline $ let Schema { .. } = mkEmptySchema
              in mkEmptySchema { _schemaType = Just OpenApiObject
@@ -587,6 +591,7 @@ mkSumType dName isReq x = do
                 let oneOfTyp = data' (textToOccNameStr vName) [] ((\(a,b) -> prefixCon (textToOccNameStr a) [field b]) <$> typList) []
                 return ((dName,createHsType isReq vName), oneOfTyp : Prelude.concat childTypes)
 
+
 registerSumType ::
     MonadState ModelGenState m =>
      Text -> [Referenced Schema] -> HashMap Text [Referenced Schema] -> m (Bool,Text)
@@ -597,12 +602,25 @@ registerSumType tName schemaList hm =
             modify (updateSumTypes (unseenVar,schemaList))
             return (False,unseenVar)
         Just x -> do
-            if contained x schemaList && contained schemaList x
+            if areSchemasSame x schemaList
              then return (True,tName)
              else do
                  unseenVar <- mkUnseenVar tName
-                 modify (updateSumTypes (unseenVar,schemaList))
-                 return (False,unseenVar)
+                 let maxNo = read  (T.unpack . snd $ T.breakOnEnd tName unseenVar) :: Int
+                     doesTypeExist = checkTypExistence [ findDups a | a <- [0..maxNo]]
+                 case doesTypeExist of
+                     Nothing -> do
+                        modify (updateSumTypes (unseenVar,schemaList))
+                        return (False,unseenVar)
+                     Just tName' -> return (True,tName')
+    where findDups a = let x = T.append tName (T.pack . show $ a)
+                       in (x,HM.lookup x hm)
+          areSchemasSame x y = contained x y && contained y x
+          checkTypExistence x = findTyp $ filter (areSchemasSame schemaList . snd) (fetchJusts x)
+          findTyp x = case x of
+                        [] -> Nothing
+                        [(a,_b)] -> Just a
+                        _ -> error "How did this happen"
 
 mkNewVariables :: Text -> Int -> [Text]
 mkNewVariables dName x =  [T.concat [dName,"C", T.pack . show $ a] | a <- [1..x]]
