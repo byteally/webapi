@@ -29,7 +29,7 @@ import Data.OpenApi
       MediaTypeObject(_mediaTypeObjectSchema),
       Response(_responseContent,_responseHeaders),
       Header(_headerSchema),
-      Responses(_responsesResponses,_responsesDefault))
+      Responses(_responsesResponses,_responsesDefault,Responses))
 import GHC.SourceGen
     ( data',
       field,
@@ -57,7 +57,7 @@ import GHC.SourceGen
       tyFamInst)
 import GHC.Paths (libdir)
 import GHC ( runGhc )
-import Data.HashMap.Strict.InsOrd as HMO (toList,lookup, empty, fromList, delete)
+import Data.HashMap.Strict.InsOrd as HMO (toList,lookup, empty, fromList, delete, InsOrdHashMap, elems)
 import Data.Text as T ( unpack, Text, append, splitAt, toUpper, take, pack, dropEnd, concat, split, toLower, breakOnEnd)
 import Data.Text.IO as T (writeFile)
 import GhcPlugins(getDynFlags,mkVarOcc)
@@ -73,12 +73,12 @@ import System.Process ( callCommand )
 import System.FilePath.Posix
     ( (<.>), (</>), dropExtension, takeFileName, splitDirectories )
 import System.Directory ( createDirectoryIfMissing )
-import Data.List as L (delete)
+import Data.List as L (delete, nub)
 import Data.HashMap.Internal as HM (HashMap, singleton, unions, lookup, empty, insert, union, toList, fromList)
 import Language.Haskell.TH (Extension(..))
 import Test.FitSpec.Utils(contained)
 import Network.HTTP.Media ( MediaType , (//), (/:), parseAccept)
-import Data.Maybe ( fromMaybe, catMaybes ) 
+import Data.Maybe ( fromMaybe, catMaybes )
 
 
 data ModelGenState =
@@ -107,7 +107,7 @@ generateModels fp destFp = do
         compHeaders = _componentsHeaders . _openApiComponents $ oApi
         oApiName = _infoTitle . _openApiInfo $ oApi
         modelList = evalState
-                        (mapM createModelData (HMO.toList compSchemas))
+                        (mapM (\(x,y) -> createModelData (_schemaType y) (x,y)) (HMO.toList compSchemas))
                         (ModelGenState S.empty S.empty (S.fromList keywords) HM.empty)
         hsModuleModel = module' (Just modName) Nothing impsModel (namedTy: Prelude.concat modelList)
         (routeInfo,typeSynList) = bimap Prelude.concat Prelude.concat . unzip $
@@ -151,6 +151,53 @@ generateModels fp destFp = do
                                               [tyFamInst "Apis" [var $ textToRdrNameStr a] (listPromotedTy (oneRoute <$> b))]]
           oneRoute (tName,methList) = var "Route" @@ listPromotedTy (var . textToRdrNameStr <$> methList) @@ var  (textToRdrNameStr tName)
           untypedDef = data' "Untyped" [] [prefixCon "Maybe" [field (var "Text")]] []
+
+collectSchemasForSerializing :: 
+    Definitions RequestBody -> 
+    Definitions Response ->  
+    PathItem -> 
+    [(ContentTypesOApi,Text)]
+collectSchemasForSerializing compReqBodies compResponses (PathItem _ _ piGet piPut piPost piDelete piOptions piHead piPatch piTrace _ _) =
+    nub . Prelude.concat $ 
+        collectOperationSchemas compReqBodies compResponses <$> [piGet,piPut,piPost,piDelete,piOptions,piHead,piPatch,piTrace]
+
+collectOperationSchemas :: 
+    Definitions RequestBody -> 
+    Definitions Response -> 
+    Maybe Operation -> 
+    [(ContentTypesOApi,Text)]
+collectOperationSchemas _ _ Nothing = []
+collectOperationSchemas compReqBodies compResponses (Just operationData) = nub $
+                                               collectRequestSchemas compReqBodies (_operationRequestBody operationData)
+                                               ++ collectResponseSchemas compResponses (_operationResponses operationData)
+
+collectResponseSchemas :: Definitions Response -> Responses -> [(ContentTypesOApi, Text)]
+collectResponseSchemas compResponses (Responses resDef resps) = 
+    let mResps = case resDef of
+                    Nothing -> HMO.elems resps
+                    Just x -> x:HMO.elems resps
+    in  Prelude.concat $ mediaTypeObjMapToSchema . _responseContent . refValToVal compResponses <$> mResps
+
+collectRequestSchemas ::
+    Definitions RequestBody
+    -> Maybe (Referenced RequestBody) ->
+    [(ContentTypesOApi, Text)]
+collectRequestSchemas _ Nothing = []
+collectRequestSchemas compReqBodies (Just reqBody) =
+        mediaTypeObjMapToSchema (_requestBodyContent (refValToVal compReqBodies reqBody))
+
+mediaTypeObjMapToSchema :: InsOrdHashMap MediaType MediaTypeObject -> [(ContentTypesOApi, Text)]
+mediaTypeObjMapToSchema x = fetchJusts $ bimap findMediaType findMediaTypeObjSchema <$> HMO.toList x
+
+findMediaType :: MediaType -> ContentTypesOApi
+findMediaType x = case HM.lookup x mediaTypeMap of
+                    Nothing -> error "Invalid MediaType"
+                    (Just a) -> a
+
+findMediaTypeObjSchema :: MediaTypeObject -> Maybe Text
+findMediaTypeObjSchema x = case _mediaTypeObjectSchema x of
+                                (Just (Ref (Reference a))) -> Just a
+                                _ -> Nothing
 
 mkApiContractInstances ::
     Text ->
@@ -267,7 +314,7 @@ createApiContractInsData compsParam compsReqBodies compResponses compHeaders com
                                         _ -> error "More than One ApiOut Type"
           findResponseApiErr hmap = foldr HMO.delete hmap [200..299]
 
-createHeaderOut :: 
+createHeaderOut ::
     MonadState ModelGenState m =>
     [Referenced Schema] -> m (Maybe HsType', [HsDecl'])
 createHeaderOut [] = return (Nothing,[])
@@ -277,18 +324,18 @@ createHeaderOut x = do
 
 headersToSchema :: [(Text, Maybe (Referenced Schema))] -> Referenced Schema
 headersToSchema [] = error "Impossible state"
-headersToSchema hdrs = 
+headersToSchema hdrs =
     Inline $ let Schema { .. } = mkEmptySchema
              in mkEmptySchema { _schemaType = Just OpenApiObject
                               , _schemaRequired = fst <$> hdrs
                               , _schemaProperties = HMO.fromList $ fmap maySchemaToSchema <$> hdrs
                               }
 
-createApiOut :: 
+createApiOut ::
     MonadState ModelGenState m =>
     Definitions Response ->
-    Maybe (Referenced Response) -> 
-    Maybe (Referenced Response) -> 
+    Maybe (Referenced Response) ->
+    Maybe (Referenced Response) ->
     m (Maybe HsType', [HsDecl'])
 createApiOut _ Nothing Nothing = return (Just $ var "()",[])
 createApiOut hMap Nothing x = createApiOut hMap x Nothing
@@ -304,10 +351,10 @@ createApiOut hMap (Just res) defRes = do
         ((_,typ),childTypes) <- mayBeSchemaToHsType ("ApiOutType",maySchema)
         return (Just typ,childTypes)
 
-createApiErr :: 
+createApiErr ::
     MonadState ModelGenState m =>
     Definitions Response ->
-    Maybe (Referenced Response) -> 
+    Maybe (Referenced Response) ->
     [(Int, Referenced Response)] -> m (Maybe HsType', [HsDecl'])
 createApiErr _ Nothing [] = return (Just $ var "()",[])
 createApiErr hMap (Just x) [] = createApiErr hMap Nothing [(0,x)]
@@ -360,21 +407,23 @@ mediaTypeObjToSchema :: [(MediaType, MediaTypeObject)] -> (Text, Maybe (Referenc
 mediaTypeObjToSchema [(mediaTyp,mediaTypObj)] =
     case HM.lookup mediaTyp mediaTypeMap of
         Nothing -> error $ "Unknown media type " ++ show mediaTyp
-        Just typName -> (typName,_mediaTypeObjectSchema mediaTypObj)
+        Just typName -> (T.pack . show $ typName,_mediaTypeObjectSchema mediaTypObj)
 mediaTypeObjToSchema x = error $ "Invalid Request Body" ++ show x
 
-mediaTypeMap :: HashMap MediaType Text
+mediaTypeMap :: HashMap MediaType ContentTypesOApi
 mediaTypeMap = HM.fromList
-                    [ ("text" // "plain" /: ("charset", "utf-8"),"PlainText")
-                    , ("application" // "json","JSON")
-                    , ("text" // "html" /: ("charset", "utf-8"),"HTML")
-                    , ("application" // "octet-stream","OctetStream")
-                    , ("multipart" // "form-data", "MultipartFormData")
-                    , ("application" // "x-www-form-urlencoded", "UrlEncoded")
-                    , (textToMediaType "application/vnd.oracle.resource+json;type=singular","JSON")
-                    , (textToMediaType "application/vnd.oracle.resource+json;type=error","JSON")
-                    , (textToMediaType "application/vnd.oracle.resource+json;type=collection","JSON")
+                    [ ("text" // "plain" /: ("charset", "utf-8"),PlainText)
+                    , ("application" // "json",JSON)
+                    , ("text" // "html" /: ("charset", "utf-8"),HTML)
+                    , ("application" // "octet-stream",OctetStream)
+                    , ("multipart" // "form-data", MultipartFormData)
+                    , ("application" // "x-www-form-urlencoded", UrlEncoded)
+                    , (textToMediaType "application/vnd.oracle.resource+json;type=singular",JSON)
+                    , (textToMediaType "application/vnd.oracle.resource+json;type=error",JSON)
+                    , (textToMediaType "application/vnd.oracle.resource+json;type=collection",JSON)
                     ]
+data ContentTypesOApi = PlainText | JSON | HTML | OctetStream | MultipartFormData | UrlEncoded deriving (Show, Eq)
+
 
 textToMediaType :: String -> MediaType
 textToMediaType t = fromMaybe "MEDIA TYPE PARSE ERROR" (parseAccept $ fromString t)
@@ -516,8 +565,8 @@ ppExtension e = "{-# LANGUAGE " <> show e <> " #-}\n"
 
 createModelData ::
     (MonadState ModelGenState m) =>
-    (Text,Schema) -> m [HsDecl']
-createModelData (dName,dSchema) = do
+    Maybe OpenApiType ->  (Text,Schema) -> m [HsDecl']
+createModelData (Just OpenApiObject) (dName,dSchema) = do
     let reqParams =  _schemaRequired dSchema
     unseenVar <- mkUnseenVar (upperFirstChar dName)
     (rFields,childTypes) <- unzip <$> mapM (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams))  (HMO.toList . _schemaProperties $ dSchema)
@@ -527,6 +576,15 @@ createModelData (dName,dSchema) = do
                                    then T.append x "_"
                                    else x,y)) <$> rFields
     return $ Prelude.concat childTypes ++ [data' (textToOccNameStr unseenVar) [] [recordCon (textToOccNameStr . upperFirstChar $ dName) frFields] []]
+createModelData Nothing (dName,dSchema) =
+    case _schemaOneOf dSchema of
+        Nothing -> error "Unexpected Schema type"
+        Just [] -> error "Bad OneOf Specification"
+        Just [_x] -> error "Bad OneOf Specification"
+        Just x -> do
+            (_a,b) <- mkSumType dName True x
+            return b
+createModelData _ _ = error "Unknown Top Level Schema"
 
 parseRecordFields ::
     (MonadState ModelGenState m) =>
@@ -650,9 +708,9 @@ lowerFirstChar x = let (fir,res) = T.splitAt 1 x in append (toLower fir) res
 
 removeSymbol :: Char -> Text -> Text
 removeSymbol c x = T.concat $
-    let elems = T.split (== c) x
-        fir = head elems
-    in fir : (upperFirstChar <$> tail elems)
+    let selems = T.split (== c) x
+        fir = head selems
+    in fir : (upperFirstChar <$> tail selems)
 
 
 retOApi :: Maybe p -> p
