@@ -58,7 +58,7 @@ import GHC.SourceGen
 import GHC.Paths (libdir)
 import GHC ( runGhc )
 import Data.HashMap.Strict.InsOrd as HMO (toList,lookup, empty, fromList, delete, InsOrdHashMap, elems)
-import Data.Text as T ( unpack, Text, append, splitAt, toUpper, take, pack, dropEnd, concat, split, toLower, breakOnEnd)
+import Data.Text as T ( unpack, Text, append, splitAt, toUpper, take, pack, dropEnd, concat, split, toLower, breakOnEnd, isPrefixOf)
 import Data.Text.IO as T (writeFile)
 import GhcPlugins(getDynFlags,mkVarOcc)
 import Control.Monad.State.Class ( MonadState(get), modify )
@@ -97,8 +97,8 @@ mkPkgConfig :: PkgConfig
 mkPkgConfig = PkgConfig "\"Pankaj Singh Sijwali\"" "pankajsijwali1@gmail.com"
 
 generateModels ::
-    FilePath -> FilePath -> IO ()
-generateModels fp destFp = do
+    FilePath -> FilePath  -> FilePath -> IO ()
+generateModels fp destFp reqPrefix = do
     oApi <- readOpenAPI fp
     let compSchemas =  _componentsSchemas . _openApiComponents $ oApi
         compParams = _componentsParameters . _openApiComponents $ oApi
@@ -112,7 +112,7 @@ generateModels fp destFp = do
         hsModuleModel = module' (Just modName) Nothing impsModel (namedTy: Prelude.concat modelList)
         (routeInfo,typeSynList) = bimap Prelude.concat Prelude.concat . unzip $
                                       evalState
-                                        (mapM (createTypeSynData compParams compReqBodies compResponses compHeaders) (HMO.toList . _openApiPaths $ oApi))
+                                        (mapM (createTypeSynData compParams compReqBodies compResponses compHeaders) (filter ( T.isPrefixOf (T.pack reqPrefix) . T.pack . fst) (HMO.toList . _openApiPaths $ oApi)))
                                         (ModelGenState (S.fromList seenVariables) S.empty S.empty HM.empty)
         simplifiedRouteInfo = (fmap . fmap) (map fst) routeInfo
         apiContractInstances =  Prelude.concat $ mkApiContractInstances oApiName <$> routeInfo

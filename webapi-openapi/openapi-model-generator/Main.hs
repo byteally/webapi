@@ -18,7 +18,8 @@ import WebApi.OpenAPI (generateModels)
 data CliArgs
   = CliArgs
       { inputJsonFP :: FilePath,
-        outDirBaseFp :: FilePath
+        outDirBaseFp :: FilePath,
+        reqFilePathPrefix :: FilePath
       }
 
 cliParser :: Parser CliArgs
@@ -26,11 +27,12 @@ cliParser =
   CliArgs
     <$> strOption (long "inputJsonFP")
     <*> strOption (long "outDirBaseFp")
+    <*> strOption (long "reqFilePathPrefix")
 
 main :: IO ()
 main = do
   CliArgs {..} <- execParser opts
-  generateModels inputJsonFP outDirBaseFp
+  generateModels inputJsonFP outDirBaseFp reqFilePathPrefix
   where opts =
           info
             (cliParser <**> helper)
