@@ -319,7 +319,7 @@ createHeaderOut ::
     [Referenced Schema] -> m (Maybe HsType', [HsDecl'])
 createHeaderOut [] = return (Nothing,[])
 createHeaderOut x = do
-    ((_,typ),childTypes) <- mkSumType "HeaderOutSumType" True x
+    ((_,typ),childTypes) <- mkSumType "HeaderOutSumType" True x True
     return (Just typ,childTypes)
 
 headersToSchema :: [(Text, Maybe (Referenced Schema))] -> Referenced Schema
@@ -368,7 +368,7 @@ createApiErr hMap defRes resList = do
     then createApiErr hMap Nothing []
     else do
         let neMediaTypList = maySchemaToSchema . snd . mediaTypeObjToSchema <$> filter (not . Prelude.null) mediaTypList
-        ((_,typ),childTypes) <- mkSumType "ApiErrSumType" True neMediaTypList
+        ((_,typ),childTypes) <- mkSumType "ApiErrSumType" True neMediaTypList True
         return (Just typ,childTypes)
 
 mkEmptySchema :: Schema
@@ -575,14 +575,14 @@ createModelData (Just OpenApiObject) (dName,dSchema) = do
                         (\(x,y)-> (if member x keywordsToAvoid
                                    then T.append x "_"
                                    else x,y)) <$> rFields
-    return $ Prelude.concat childTypes ++ [data' (textToOccNameStr unseenVar) [] [recordCon (textToOccNameStr . upperFirstChar $ dName) frFields] []]
+    return $ Prelude.concat childTypes ++ [data' (textToOccNameStr unseenVar) [] [recordCon (textToOccNameStr unseenVar) frFields] []]
 createModelData Nothing (dName,dSchema) =
     case _schemaOneOf dSchema of
         Nothing -> error "Unexpected Schema type"
         Just [] -> error "Bad OneOf Specification"
         Just [_x] -> error "Bad OneOf Specification"
         Just x -> do
-            (_a,b) <- mkSumType dName True x
+            (_a,b) <- mkSumType dName True x True
             return b
 createModelData _ _ = error "Unknown Top Level Schema"
 
@@ -632,15 +632,16 @@ parseInlineFields Nothing dName dSchema isReq =
         Nothing -> if Prelude.null (_schemaProperties dSchema)
                    then error "Unexpected Schema type"
                    else parseInlineFields (Just OpenApiObject) dName dSchema isReq
-        Just x -> mkSumType dName isReq x
+        Just x -> mkSumType dName isReq x False
 
 mkSumType :: 
     MonadState ModelGenState m =>
-    Text -> Bool -> [Referenced Schema] -> m ((Text, HsType'), [HsDecl'])
-mkSumType dName isReq [a] = parseRecordFields (dName,a) isReq
-mkSumType dName isReq x = do
+    Text -> Bool -> [Referenced Schema] -> Bool -> m ((Text, HsType'), [HsDecl'])
+mkSumType dName isReq [a] _isTopLevel = parseRecordFields (dName,a) isReq
+mkSumType dName isReq x isTopLevel = do
+            let dName' = if isTopLevel then dName else T.append dName "SumType"
             ModelGenState { createdSums } <- get
-            (isReg,vName) <- registerSumType (upperFirstChar dName) x createdSums
+            (isReg,vName) <- registerSumType (upperFirstChar dName') x createdSums
             if isReg
             then return ((dName,createHsType isReq vName), [])
             else do
