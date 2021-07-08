@@ -107,12 +107,23 @@ data PkgConfig =
               , email :: Text
               }
 
+newtype ChildType = ChildType HsDecl'
+newtype Instance = Instance HsDecl'
+
+data DataTypeInfo =
+    DataTypeInfo {
+        pName :: Text,
+        typ :: HsType',
+        child_types :: [ChildType],
+        child_instances :: [Instance]
+    }
+
 mkPkgConfig :: PkgConfig
 mkPkgConfig = PkgConfig "\"Pankaj Singh Sijwali\"" "pankajsijwali1@gmail.com"
 
 generateModels ::
     FilePath -> FilePath  -> FilePath -> IO ()
-generateModels fp destFp _reqPrefix = do
+generateModels fp destFp reqPrefix = do
     oApi <- readOpenAPI fp
     let compSchemas =  _componentsSchemas . _openApiComponents $ oApi
         compParams = _componentsParameters . _openApiComponents $ oApi
@@ -123,15 +134,16 @@ generateModels fp destFp _reqPrefix = do
         modelList = evalState
                         (mapM (\(x,y) -> createModelData (_schemaType y) compSchemas (x,y)) (HMO.toList compSchemas))
                         (ModelGenState S.empty S.empty (S.fromList keywords) HM.empty (S.fromList seenVariables))
-        hsModuleModel = module' (Just modName) Nothing impsModel (namedTy: Prelude.concat modelList)
-        (routeInfo,typeSynList) = bimap Prelude.concat Prelude.concat . unzip $
-                                      evalState
-                                        (mapM (createTypeSynData compSchemas compParams compReqBodies compResponses compHeaders) (filter ( T.isPrefixOf ("/salesOrder/{id}/!transform/itemFulfillment") . T.pack . fst) (HMO.toList . _openApiPaths $ oApi)))
-                                        (ModelGenState (S.fromList seenVariables) S.empty (S.fromList keywords) HM.empty (S.fromList seenVariables))
-    
+        hsModuleModel = module' (Just modName) Nothing impsModel (namedTy:rmChildTypeLayer (Prelude.concat modelList))
+        (routeInfo,typeSynList,instances) = (\(a,b,c) -> (Prelude.concat a,Prelude.concat b,Prelude.concat c))
+                                   (unzip3 $
+                                       evalState
+                                        (mapM (createTypeSynData compSchemas compParams compReqBodies compResponses compHeaders) (filter ( T.isPrefixOf (T.pack reqPrefix) . T.pack . fst) (HMO.toList . _openApiPaths $ oApi)))
+                                        (ModelGenState (S.fromList seenVariables) S.empty (S.fromList keywords) HM.empty (S.fromList seenVariables)))
+
     let simplifiedRouteInfo = (fmap . fmap) (map fst) routeInfo
         apiContractInstances =  Prelude.concat $ mkApiContractInstances oApiName <$> routeInfo
-        hsModuleTypeSyn = module' (Just typeSynName) Nothing impsTypeSyn (untypedDef:typeSynList ++ webApiInstance oApiName simplifiedRouteInfo ++ apiContractInstances)
+        hsModuleTypeSyn = module' (Just typeSynName) Nothing impsTypeSyn (untypedDef:rmChildTypeLayer typeSynList ++ webApiInstance oApiName simplifiedRouteInfo ++ apiContractInstances ++ rmInstanceLayer instances)
     writeModule (pkgHome </> "src") (modName <.> "hs") es hsModuleModel
     writeModule (pkgHome </> "src") (typeSynName <.> "hs") es2 hsModuleTypeSyn
     writeCabal pkgName mkPkgConfig modName [typeSynName] pkgHome
@@ -168,6 +180,8 @@ generateModels fp destFp _reqPrefix = do
                                               [tyFamInst "Apis" [var $ textToRdrNameStr a] (listPromotedTy (oneRoute <$> b))]]
           oneRoute (tName,methList) = var "Route" @@ listPromotedTy (var . textToRdrNameStr <$> methList) @@ var  (textToRdrNameStr tName)
           untypedDef = data' "Untyped" [] [prefixCon "Maybe" [field (var "Text")]] []
+          rmChildTypeLayer = fmap (\(ChildType x) -> x)
+          rmInstanceLayer = fmap (\(Instance x) -> x)
 
 mkApiContractInstances ::
     Text ->
@@ -199,7 +213,7 @@ createTypeSynData ::
     Definitions Response ->
     Definitions Header ->
     (FilePath,PathItem) ->
-    m ([(Text, [(Text, (Maybe HsType', Maybe HsType', Maybe HsType', Maybe HsType',Maybe HsType',Maybe HsType', Maybe HsType'))])],[HsDecl'])
+    m ([(Text, [(Text, (Maybe HsType', Maybe HsType', Maybe HsType', Maybe HsType',Maybe HsType',Maybe HsType', Maybe HsType'))])],[ChildType],[Instance])
 createTypeSynData compSchemas compsParam compReqBodies compResponses compHeaders (fp,PathItem _ _ piGet piPut piPost piDelete piOptions piHead piPatch piTrace _ piParams) = do
     let paramsMap = refParamsToParams compsParam piParams
         commonParams =
@@ -218,9 +232,10 @@ createTypeSynData compSchemas compsParam compReqBodies compResponses compHeaders
                               else do
                                  ((a,_b),c) <- createTypSynonym compSchemas ("",commonParams)
                                  return [((a,S.toList diff),c)]
-    (apiConInsData,ct3) <- bimap unions Prelude.concat . unzip
-                                        <$> mapM (createApiContractInsData compSchemas compsParam compReqBodies compResponses compHeaders paramsMap) opList
-    return ((fmap . fmap) (applyApiContractInfo apiConInsData) <$> commonTypSyn ++ typSyns, Prelude.concat ct1 ++ Prelude.concat ct2 ++ ct3)
+    (apiConInsData,ct3,ci3) <-  unzip3 <$> mapM (createApiContractInsData compSchemas compsParam compReqBodies compResponses compHeaders paramsMap) opList
+    return ((fmap . fmap) (applyApiContractInfo (unions apiConInsData)) <$> commonTypSyn ++ typSyns
+           , Prelude.concat ct1 ++ Prelude.concat ct2 ++ Prelude.concat ct3
+           , Prelude.concat ci3)
     where pairLisToSet = S.fromList . fmap fst
           applyApiContractInfo apiInfoMap a =
                     case HM.lookup a apiInfoMap of
@@ -247,7 +262,7 @@ createApiContractInsData ::
     Definitions Header ->
     HashMap Text (Bool, Param) ->
     (Text,Operation) ->
-    m (HashMap Text (Maybe HsType',Maybe HsType',Maybe HsType', Maybe HsType',Maybe HsType',Maybe HsType', Maybe HsType'),[HsDecl'])
+    m (HashMap Text (Maybe HsType',Maybe HsType',Maybe HsType', Maybe HsType',Maybe HsType',Maybe HsType', Maybe HsType'),[ChildType],[Instance])
 createApiContractInsData compSchemas compsParam compsReqBodies compResponses compHeaders commonParamMap (opName,operationData) = do
     let opParamsMap = refParamsToParams compsParam (_operationParameters operationData)
         overrideParams = HM.toList $ opParamsMap `union` commonParamMap
@@ -262,22 +277,24 @@ createApiContractInsData compSchemas compsParam compsReqBodies compResponses com
     (headtypTuple,ct1)  <- createType ParamHeader overrideParams
     (querytypTuple,ct2)  <- createType ParamQuery  overrideParams
     (cookietypTuple,ct3) <- createType ParamCookie overrideParams
-    (reqBody,ct4) <- createReqBody compSchemas compsReqBodies opReqBody
-    (apiOutType,ct5) <- createApiOut
+    (reqBody,ct4,ci4) <- createReqBody compSchemas compsReqBodies opReqBody
+    (apiOutType,ct5,ci5) <- createApiOut
                             compSchemas
                             compResponses
                             (findResponseApiOut opResponses)
                             defaultResponse
-    (apiErrType,ct6) <- createApiErr compSchemas compResponses defaultResponse (HMO.toList(findResponseApiErr opResponses))
+    (apiErrType,ct6,ci6) <- createApiErr compSchemas compResponses defaultResponse (HMO.toList(findResponseApiErr opResponses))
     (headerOutType,ct7) <- createHeaderOut compSchemas headerOutSchemas
     return ( HM.singleton opName (headtypTuple,querytypTuple,cookietypTuple,reqBody,apiOutType,apiErrType,headerOutType)
-           , ct1 ++ ct2 ++ ct3 ++ ct4 ++ ct5 ++ ct6 ++ ct7)
+           , ct1 ++ ct2 ++ ct3 ++ ct4 ++ ct5 ++ ct6 ++ ct7
+           , ci4 ++ ci5 ++ ci6
+           )
     where mFilter x = filter (\(_a,(_b,c)) -> _paramIn c == x)
           createType a b = mkTypeTuple $ fmap (\ (_, x) -> _paramSchema x) <$> mFilter a b
           mkTypeTuple [] = return (Nothing,[])
           mkTypeTuple schemas = do
-              (schemaList,childTypes,_) <-
-                               unzip3 <$> mapM (\x -> mayBeSchemaToHsType x False Nothing compSchemas) schemas
+              dataTypeInfoList <- mapM (\x -> mayBeSchemaToHsType x False Nothing compSchemas) schemas
+              let (schemaList,childTypes) = unzip $ (\(DataTypeInfo a b c _) -> ((a,b),c) ) <$> dataTypeInfoList
               let typeTuple =  tuple $ (\(x,y)-> op (stringTy $ T.unpack x) ":::" y) <$> schemaList
               return (Just typeTuple,Prelude.concat childTypes)
           responseToHeader (_,res) = fmap (_headerSchema . refValToVal compHeaders) <$> (HMO.toList . _responseHeaders $ res)
@@ -289,11 +306,11 @@ createApiContractInsData compSchemas compsParam compsReqBodies compResponses com
 
 createHeaderOut ::
     MonadState ModelGenState m =>
-    Definitions Schema -> [Referenced Schema] -> m (Maybe HsType', [HsDecl'])
+    Definitions Schema -> [Referenced Schema] -> m (Maybe HsType', [ChildType])
 createHeaderOut _compSchemas [] = return (Nothing,[])
 createHeaderOut compSchemas x = do
-    ((_,typ),childTypes,_) <- mkSumType "HeaderOutSumType" True x True False Nothing compSchemas
-    return (Just typ,childTypes)
+    DataTypeInfo {typ, child_types} <- mkSumType "HeaderOutSumType" True x True False Nothing compSchemas
+    return (Just typ,child_types)
 
 headersToSchema :: [(Text, Maybe (Referenced Schema))] -> Referenced Schema
 headersToSchema [] = error "Impossible state"
@@ -310,8 +327,8 @@ createApiOut ::
     Definitions Response ->
     Maybe (Referenced Response) ->
     Maybe (Referenced Response) ->
-    m (Maybe HsType', [HsDecl'])
-createApiOut _ _ Nothing Nothing = return (Just $ var "()",[])
+    m (Maybe HsType', [ChildType],[Instance])
+createApiOut _ _ Nothing Nothing = return (Just $ var "()",[],[])
 createApiOut compSchemas hMap Nothing x = createApiOut compSchemas hMap x Nothing
 createApiOut compSchemas hMap (Just res) defRes = do
     let inlineResp = refValToVal hMap res
@@ -322,16 +339,16 @@ createApiOut compSchemas hMap (Just res) defRes = do
             x -> createApiOut compSchemas hMap x Nothing
     else do
         let (cType,maySchema) =  mediaTypeObjToSchema mediaTypList
-        ((_,typ),childTypes,childInstances) <- mayBeSchemaToHsType ("ApiOutType",maySchema) True (Just cType) compSchemas
-        return (Just typ,childTypes ++ childInstances)
+        DataTypeInfo {typ,child_types,child_instances} <- mayBeSchemaToHsType ("ApiOutType",maySchema) True (Just cType) compSchemas
+        return (Just typ,child_types, child_instances)
 
 createApiErr ::
     MonadState ModelGenState m =>
     Definitions Schema ->
     Definitions Response ->
     Maybe (Referenced Response) ->
-    [(Int, Referenced Response)] -> m (Maybe HsType', [HsDecl'])
-createApiErr _ _ Nothing [] = return (Just $ var "()",[])
+    [(Int, Referenced Response)] -> m (Maybe HsType', [ChildType],[Instance])
+createApiErr _ _ Nothing [] = return (Just $ var "()",[],[])
 createApiErr compSchemas hMap (Just x) [] = createApiErr compSchemas hMap Nothing [(0,x)]
 createApiErr compSchemas hMap defRes resList = do
     let resList' = case defRes of
@@ -346,9 +363,9 @@ createApiErr compSchemas hMap defRes resList = do
             ctype' = case nub cType of
                         [a] -> a
                         _ -> error "Conflicting ApiErr Type"
-        ((_,typ),childTypes,childInstances) <- mkSumType "ApiErrSumType" True neMediaTypList True True (Just ctype') compSchemas
+        DataTypeInfo {typ,child_types,child_instances} <- mkSumType "ApiErrSumType" True neMediaTypList True True (Just ctype') compSchemas
 
-        return (Just typ,childTypes ++ childInstances)
+        return (Just typ,child_types,child_instances)
 
 mkEmptySchema :: Schema
 mkEmptySchema = Schema Nothing Nothing [] Nothing Nothing Nothing Nothing Nothing HMO.empty  Nothing
@@ -362,7 +379,7 @@ mayBeSchemaToHsType ::
     Bool ->
     Maybe ContentTypesOApi ->
     Definitions Schema ->
-    m ((Text, HsType'), [HsDecl'],[HsDecl'])
+    m DataTypeInfo
 mayBeSchemaToHsType (x,y) = parseRecordFields (x,maySchemaToSchema y) True
 
 maySchemaToSchema ::
@@ -376,16 +393,16 @@ createReqBody ::
     Definitions Schema ->
     Definitions RequestBody ->
     Maybe (Referenced RequestBody) ->
-    m (Maybe HsType',[HsDecl'])
-createReqBody _ _ Nothing = return (Nothing,[])
+    m (Maybe HsType',[ChildType],[Instance])
+createReqBody _ _ Nothing = return (Nothing,[],[])
 createReqBody compSchemas compReqBodies (Just refReqBody) = do
     let reqBody = refValToVal compReqBodies refReqBody
     let (typName,maySchema) = mediaTypeObjToSchema . HMO.toList . _requestBodyContent $ reqBody
-    ((_,desiredType),childTypes,childInstances) <- mayBeSchemaToHsType ("requestBody",maySchema) True (Just typName) compSchemas
+    DataTypeInfo {typ,child_types,child_instances} <- mayBeSchemaToHsType ("requestBody",maySchema) True (Just typName) compSchemas
     let finalType = if typName == JSON
-                    then listPromotedTy [desiredType]
-                    else listPromotedTy [var "Content" @@ listPromotedTy [var $ textToRdrNameStr (T.pack . show $ typName)] @@ desiredType]
-    return (Just finalType,childTypes ++ childInstances)
+                    then listPromotedTy [typ]
+                    else listPromotedTy [var "Content" @@ listPromotedTy [var $ textToRdrNameStr (T.pack . show $ typName)] @@ typ]
+    return (Just finalType,child_types, child_instances)
 
 mediaTypeObjToSchema :: [(MediaType, MediaTypeObject)] -> (ContentTypesOApi, Maybe (Referenced Schema))
 mediaTypeObjToSchema [(mediaTyp,mediaTypObj)] =
@@ -416,29 +433,30 @@ createTypSynonym ::
     (MonadState ModelGenState m) =>
     Definitions Schema ->
     (Text ,[Either Text (Text, Maybe (Bool, Param))]) ->
-    m ((Text,[Text]),[HsDecl'])
+    m ((Text,[Text]),[ChildType])
 createTypSynonym compSchemas(oName,params) = do
     varName <- mkUnseenVar (mkTypeSynName params (T.append oName "R"))
     (typInfo,childTypes) <-unzip <$> mapM (parseTypeSynInfo compSchemas) params
-    return ((varName, [oName]), type' (textToOccNameStr varName)
-                                       []
-                                       (case typInfo of
+    return ((varName, [oName]), ChildType (
+                                  type' (textToOccNameStr varName)
+                                        []
+                                        (case typInfo of
                                            [x] -> var "Static" @@ x
-                                           _ -> foldr1 (`op` ":/") typInfo): Prelude.concat childTypes)
+                                           _ -> foldr1 (`op` ":/") typInfo)): Prelude.concat childTypes)
 
 parseTypeSynInfo ::
     (MonadState ModelGenState m) =>
     Definitions Schema ->
     Either Text (Text, Maybe (Bool, Param)) ->
-    m (HsType',[HsDecl'])
+    m (HsType',[ChildType])
 parseTypeSynInfo _ (Left x) = return (stringTy $ T.unpack x,[])
 parseTypeSynInfo _ (Right (_,Nothing)) = error "Type Not Found"
 parseTypeSynInfo compSchemas (Right (x,Just (_,y))) =
     case _paramSchema y of
         Nothing -> error "No Parameter Schema"
         Just s  -> do
-            ((_,typ),childTypes,_) <- parseRecordFields (x,s) True False Nothing compSchemas
-            return (typ,childTypes)
+            DataTypeInfo {typ, child_types} <- parseRecordFields (x,s) True False Nothing compSchemas
+            return (typ,child_types)
 
 
 mkTypeSynName :: [Either Text (Text, Maybe (Bool, Param))] -> Text -> Text
@@ -555,23 +573,25 @@ ppExtension e = "{-# LANGUAGE " <> show e <> " #-}\n"
 
 createModelData ::
     (MonadState ModelGenState m) =>
-    Maybe OpenApiType -> Definitions Schema -> (Text,Schema) -> m [HsDecl']
+    Maybe OpenApiType -> Definitions Schema -> (Text,Schema) -> m [ChildType]
 createModelData (Just OpenApiObject) compSchemas (dName,dSchema) = do
     let reqParams =  _schemaRequired dSchema
     unseenVar <- mkUnseenVar (upperFirstChar dName)
-    (rFields,childTypes,_) <- unzip3 <$> mapM (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams) False Nothing compSchemas)  (HMO.toList . _schemaProperties $ dSchema)
+    dataTypeInfoList <- mapM (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams) False Nothing compSchemas)  (HMO.toList . _schemaProperties $ dSchema)
+    let (rFields,childTypes) = unzip $ (\(DataTypeInfo a b c _) -> ((a,b),c)) <$> dataTypeInfoList
     ModelGenState { keywordsToAvoid } <- get
     let frFields = (\(x,y)-> (textToOccNameStr $ avoidKeywords x keywordsToAvoid,y)) .
                       bimap (removeUnsupportedSymbols . lowerFirstChar) field  <$> rFields
-    return $ Prelude.concat childTypes ++ [data' (textToOccNameStr unseenVar) [] [recordCon (textToOccNameStr unseenVar) frFields] []]
+    return $ Prelude.concat childTypes ++
+             [ChildType $ data' (textToOccNameStr unseenVar) [] [recordCon (textToOccNameStr unseenVar) frFields] []]
 createModelData Nothing compSchemas (dName,dSchema) =
     case _schemaOneOf dSchema of
         Nothing -> error "Unexpected Schema type"
         Just [] -> error "Bad OneOf Specification"
         Just [_x] -> error "Bad OneOf Specification"
         Just x -> do
-            (_a,b,_c) <- mkSumType dName True x True False Nothing compSchemas
-            return b
+            DataTypeInfo {child_types} <- mkSumType dName True x True False Nothing compSchemas
+            return child_types
 createModelData _ _ _ = error "Unknown Top Level Schema"
 
 avoidKeywords :: Text -> Set Text -> Text
@@ -586,15 +606,15 @@ parseRecordFields ::
     Bool ->
     Maybe ContentTypesOApi ->
     Definitions Schema ->
-    m ((Text,HsType'),[HsDecl'], [HsDecl'])
+    m DataTypeInfo
 parseRecordFields (dName,Ref (Reference x)) isReq generateInstance instanceType compSchemas = do
     let sName = removeUnsupportedSymbols . upperFirstChar $ x
     if generateInstance
     then do
         let schemaVal = refValToVal compSchemas (Ref (Reference x))
         instanceList <- createInstanceData instanceType sName schemaVal compSchemas
-        return ((dName, createHsType isReq sName),[],instanceList)
-    else return ((dName, createHsType isReq sName),[],[])
+        return $ DataTypeInfo dName (createHsType isReq sName) [] instanceList
+    else return $ DataTypeInfo  dName (createHsType isReq sName) [] []
 parseRecordFields (dName,Inline dSchema) isReq generateInstance instanceType compSchemas =
     parseInlineFields (_schemaType dSchema) dName dSchema isReq generateInstance instanceType compSchemas
 
@@ -604,7 +624,7 @@ createInstanceData ::
     Text ->
     Schema ->
     Definitions Schema ->
-    m [HsDecl']
+    m [Instance]
 createInstanceData (Just JSON) schemaName schemaVal compSchemas = do
     ModelGenState {jsonInstances} <- get
     --traceM $ show (schemaName,member schemaName jsonInstances)
@@ -621,12 +641,11 @@ createJsonInstances ::
     Text ->
     Schema ->
     Definitions Schema ->
-    m [HsDecl']
+    m [Instance]
 createJsonInstances (Just OpenApiObject) schemaName schemaVal compSchemas = do
     let reqParams =  _schemaRequired schemaVal
         schemaProperties = HMO.toList . _schemaProperties $ schemaVal
-    (_,_,childInstances) <- unzip3 <$> mapM (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams) True (Just JSON) compSchemas) schemaProperties
-    f schemaName $ Prelude.concat childInstances
+    childInstances <- fmap child_instances <$> mapM (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams) True (Just JSON) compSchemas) schemaProperties
     fromJsonInstance <- createFromJsonInstancesRecord schemaName schemaVal compSchemas
     toJsonInstance <- createToJsonInstancesRecord schemaName schemaVal
     return $ Prelude.concat childInstances ++ [fromJsonInstance, toJsonInstance]
@@ -637,7 +656,7 @@ createFromJsonInstancesRecord ::
     Text ->
     Schema ->
     Definitions Schema ->
-    m HsDecl'
+    m Instance
 createFromJsonInstancesRecord dName schemaVal compSchemas = do
     let reqParams =  _schemaRequired schemaVal
         schemaProperties = HMO.toList . _schemaProperties $ schemaVal
@@ -648,7 +667,7 @@ createFromJsonInstancesRecord dName schemaVal compSchemas = do
                                                   "$"
                                                   (lambda [conP_ "v"] fromjsonExpr)
                                               )]
-    return fromjsonInst
+    return $ Instance fromjsonInst
 
 createFromJsonFieldExpr ::
     (MonadState ModelGenState m) =>
@@ -679,7 +698,7 @@ createToJsonInstancesRecord ::
     (MonadState ModelGenState m) =>
     Text ->
     Schema ->
-    m HsDecl'
+    m Instance
 createToJsonInstancesRecord schemaName schemaVal = do
     ModelGenState {keywordsToAvoid} <- get
     let schemaProperties = HMO.toList . _schemaProperties $ schemaVal
@@ -688,7 +707,7 @@ createToJsonInstancesRecord schemaName schemaVal = do
         associationList = list $ (\x -> op (string . T.unpack $ x) ".=" (var . textToRdrNameStr $x)) <$> sFields
     let toJsonInst = instance' (var "ToJSON" @@ var (textToRdrNameStr schemaName))
                                [funBind "toJSON" (match [conP (textToRdrNameStr schemaName) rFieldList] (var "object" @@ associationList) ) ]
-    return toJsonInst
+    return $ Instance toJsonInst
 
 createHsType :: Bool -> Text -> HsType'
 createHsType isReq x =
@@ -706,29 +725,33 @@ parseInlineFields ::
     Bool ->
     Maybe ContentTypesOApi ->
     Definitions Schema ->
-    m ((Text,HsType'),[HsDecl'],[HsDecl'])
+    m DataTypeInfo
 parseInlineFields (Just OpenApiString) dName _dSchema isReq _ _ _=
-    return ((dName, createHsType isReq "Text"),[],[])
+    return $ DataTypeInfo dName (createHsType isReq "Text") [] []
 parseInlineFields (Just OpenApiNumber ) dName _dSchema isReq _ _ _=
-    return ((dName, createHsType isReq "Double"),[],[])
+    return $ DataTypeInfo dName (createHsType isReq "Double") [] []
 parseInlineFields (Just OpenApiInteger) dName dSchema isReq _ _ _=
-    return ((dName, createHsType isReq parsedInt),[],[])
+    return $ DataTypeInfo dName (createHsType isReq parsedInt) [] []
     where parsedInt = parseIntegerFld (_schemaFormat dSchema)
 parseInlineFields (Just OpenApiBoolean) dName _dSchema isReq _ _ _=
-    return ((dName, createHsType isReq "Bool"),[],[])
+    return $ DataTypeInfo dName (createHsType isReq "Bool") [] []
 parseInlineFields (Just OpenApiArray ) dName dSchema _isReq generateInstance instanceType compSchemas=
     case _schemaItems dSchema of
         Nothing -> error "No _schemaItems value for Array"
         Just (OpenApiItemsObject sch) -> do
-            ((dName2,dType),childTypes,childInstances) <- parseRecordFields (dName,sch) True generateInstance instanceType compSchemas
-            return ((dName2,var "Vector" @@ dType),childTypes,childInstances)
+            DataTypeInfo {..} <- parseRecordFields (dName,sch) True generateInstance instanceType compSchemas
+            return $ DataTypeInfo pName (var "Vector" @@ typ) child_types child_instances
         Just (OpenApiItemsArray _) -> error "OpenApiItemsArray Array type"
 parseInlineFields (Just OpenApiNull ) _dName _dSchema _isReq _ _ _=
     error "Null OpenApi Type"
 parseInlineFields (Just OpenApiObject ) dName dSchema isReq generateInstance instanceType compSchemas = do
-    (childInlines,childTypes,childInstances) <- unzip3 <$> mapM (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams) generateInstance instanceType compSchemas) (HMO.toList . _schemaProperties $ dSchema)
+    dataTypeInfoList <- mapM (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams) generateInstance instanceType compSchemas) (HMO.toList . _schemaProperties $ dSchema)
+    let (childInlines,childTypes,childInstances) = unzip3 $ (\(DataTypeInfo a b c d) -> ((a,b),c,d)) <$> dataTypeInfoList
     let typeTuple =  tuple $ (\(x,y)-> op (stringTy $ T.unpack x) ":::" y) <$> childInlines
-    return ((dName,if isReq then typeTuple else var "Maybe" @@ typeTuple),Prelude.concat childTypes,Prelude.concat childInstances)
+    return $ DataTypeInfo dName
+                          (if isReq then typeTuple else var "Maybe" @@ typeTuple)
+                          (Prelude.concat childTypes)
+                          (Prelude.concat childInstances)
     where reqParams =  _schemaRequired dSchema
 
 parseInlineFields Nothing dName dSchema isReq generateInstance instanceType compSchemas=
@@ -737,31 +760,6 @@ parseInlineFields Nothing dName dSchema isReq generateInstance instanceType comp
                    then error "Unexpected Schema type"
                    else parseInlineFields (Just OpenApiObject) dName dSchema isReq generateInstance instanceType compSchemas
         Just x -> mkSumType dName isReq x False generateInstance instanceType compSchemas
-
-mkSumTypeTemp ::
-    MonadState ModelGenState m =>
-    Text ->
-    Bool ->
-    [Referenced Schema] ->
-    Bool ->
-    Bool ->
-    Maybe ContentTypesOApi ->
-    Definitions Schema ->
-    m ((Text, HsType'), [HsDecl'],[HsDecl'])
-mkSumTypeTemp dName isReq [a] _isTopLevel generateInstance instanceType compSchemas =
-    parseRecordFields (dName,a) isReq generateInstance instanceType compSchemas
-mkSumTypeTemp dName isReq x isTopLevel generateInstance instanceType compSchemas = do
-            let dName' = if isTopLevel then dName else T.append dName "SumType"
-            ModelGenState { createdSums } <- get
-            (isReg,vName) <- registerSumType (upperFirstChar dName') x createdSums
-            if isReg
-            then return ((dName,createHsType isReq vName), [],[])
-            else do
-                let newVarList = mkNewVariables vName (length x)
-                unSeenVars <- mapM mkUnseenVar newVarList
-                (typList,childTypes,childInstances) <- unzip3 <$> mapM (\(a,b) -> parseRecordFields (a,b) True generateInstance instanceType compSchemas)  (zip unSeenVars x)
-                let oneOfTyp = data' (textToOccNameStr vName) [] ((\(a,b) -> prefixCon (textToOccNameStr a) [field b]) <$> typList) []
-                return ((dName,createHsType isReq vName), oneOfTyp : Prelude.concat childTypes,Prelude.concat childInstances)
 
 mkSumType ::
     MonadState ModelGenState m =>
@@ -772,7 +770,7 @@ mkSumType ::
     Bool ->
     Maybe ContentTypesOApi ->
     Definitions Schema ->
-    m ((Text, HsType'), [HsDecl'],[HsDecl'])
+    m DataTypeInfo
 mkSumType dName isReq [a] _isTopLevel generateInstance instanceType compSchemas =
     parseRecordFields (dName,a) isReq generateInstance instanceType compSchemas
 mkSumType dName isReq x isTopLevel generateInstance instanceType compSchemas = do
@@ -781,19 +779,20 @@ mkSumType dName isReq x isTopLevel generateInstance instanceType compSchemas = d
             (isReg,vName) <- registerSumType (upperFirstChar dName') x createdSums
             let newVarList = mkNewVariables vName (length x)
             unSeenVars <- if isReg then return newVarList else mapM mkUnseenVar newVarList
-            (typList,childTypes,childInstances) <- unzip3 <$> mapM (\(a,b) -> parseRecordFields (a,b) True generateInstance instanceType compSchemas)  (zip unSeenVars x)
+            dataTypeInfoList <- mapM (\(a,b) -> parseRecordFields (a,b) True generateInstance instanceType compSchemas)  (zip unSeenVars x)
+            let (typList,childTypes,childInstances) = unzip3 $ (\(DataTypeInfo a b c d) -> ((a,b),c,d)) <$> dataTypeInfoList
             encodeDecodeInstances <- if generateInstance
-                                     then createInstancesSumType (Prelude.concat childInstances) instanceType vName (fst <$> typList)
+                                     then (Prelude.concat childInstances ++)  <$> createInstancesSumType instanceType vName (fst <$> typList)
                                      else return []
-
             if isReg
-            then return ((dName,createHsType isReq vName), [],encodeDecodeInstances)
+            then return $ DataTypeInfo dName (createHsType isReq vName) [] encodeDecodeInstances
             else do
-                let oneOfTyp = data' (textToOccNameStr vName) [] ((\(a,b) -> prefixCon (textToOccNameStr a) [field b]) <$> typList) []
-                return ((dName,createHsType isReq vName)
-                       , oneOfTyp : Prelude.concat childTypes
-                       , encodeDecodeInstances
-                       )
+                let oneOfTyp = ChildType $ data' (textToOccNameStr vName) [] ((\(a,b) -> prefixCon (textToOccNameStr a) [field b]) <$> typList) []
+                return $ DataTypeInfo dName
+                                      (createHsType isReq vName)
+                                      (oneOfTyp : Prelude.concat childTypes)
+                                       encodeDecodeInstances
+
 f :: Monad m => Text -> [HsDecl'] -> m ()
 f a xs = do
     traceM $ "Trace Message : " ++ show a
@@ -801,12 +800,11 @@ f a xs = do
 
 createInstancesSumType ::
     MonadState ModelGenState m =>
-    [HsDecl'] ->
     Maybe ContentTypesOApi ->
     Text ->
     [Text] ->
-    m [HsDecl']
-createInstancesSumType childInstances (Just JSON) tName consList = do
+    m [Instance]
+createInstancesSumType (Just JSON) tName consList = do
     ModelGenState {jsonInstances} <- get
     --traceM $ show (tName,member tName jsonInstances)
     if member tName jsonInstances
@@ -814,17 +812,16 @@ createInstancesSumType childInstances (Just JSON) tName consList = do
     else do
         modify (updateJsonInstances tName)
         when (tName == "ItemSumType") $ trace "ItemType" (return ())
-        let fromJsonInst = if tName == "ItemSumType" then  error $ "fromJson undefined " ++ show tName 
-                           else createFromJsonInstanceSumType tName consList
+        let fromJsonInst = createFromJsonInstanceSumType tName consList
             toJsonInst = createToJsonInstanceSumType tName consList
-        return (childInstances ++[fromJsonInst,toJsonInst])
-createInstancesSumType _ _ _ _= error "Unhandled MediaType Sum"
+        return [fromJsonInst,toJsonInst]
+createInstancesSumType _ _ _= error "Unhandled MediaType Sum"
 
 createFromJsonInstanceSumType ::
     Text ->
     [Text] ->
-    HsDecl'
-createFromJsonInstanceSumType tName consList =
+    Instance
+createFromJsonInstanceSumType tName consList = Instance $
     instance' (var "FromJSON" @@ var (textToRdrNameStr tName))
               [funBind "parseJSON" $ match [bvar "v"] fieldInfo]
     where fieldInfo = foldl1 (`op` "<|>") $ (\x -> op (var (textToRdrNameStr x)) "<$>" (var "parseJSON" @@ var "v")) <$> consList
@@ -833,8 +830,8 @@ createFromJsonInstanceSumType tName consList =
 createToJsonInstanceSumType ::
     Text ->
     [Text] ->
-    HsDecl'
-createToJsonInstanceSumType tName consList =
+    Instance
+createToJsonInstanceSumType tName consList = Instance $
     instance' (var "ToJSON" @@ var (textToRdrNameStr tName))
               [funBinds "toJSON" matchList]
     where matchList = (`match` (var "toJSON" @@ var "x")) . (\x -> [conP x [bvar "x"]]) . textToRdrNameStr <$> consList
