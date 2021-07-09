@@ -138,7 +138,7 @@ generateModels fp destFp reqPrefix = do
         (routeInfo,typeSynList,instances) = (\(a,b,c) -> (Prelude.concat a,Prelude.concat b,Prelude.concat c))
                                    (unzip3 $
                                        evalState
-                                        (mapM (createTypeSynData compSchemas compParams compReqBodies compResponses compHeaders) (filter ( T.isPrefixOf (T.pack reqPrefix) . T.pack . fst) (HMO.toList . _openApiPaths $ oApi)))
+                                        (mapM (createTypeSynData compSchemas compParams compReqBodies compResponses compHeaders) (filter (T.isPrefixOf (T.pack reqPrefix) . T.pack . fst) (HMO.toList . _openApiPaths $ oApi)))
                                         (ModelGenState (S.fromList seenVariables) S.empty (S.fromList keywords) HM.empty (S.fromList seenVariables)))
 
     let simplifiedRouteInfo = (fmap . fmap) (map fst) routeInfo
