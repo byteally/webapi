@@ -92,6 +92,7 @@ import           WebApi.Method
 import           WebApi.ContentTypes  (JSON, PlainText, Accept (..))
 import           Network.HTTP.Media.RenderHeader
 import           Data.ByteString
+import           WebApi.Security
 
 -- | Describes a collection of web apis.
 class WebApi (p :: *) where
@@ -101,6 +102,12 @@ class WebApi (p :: *) where
   type Apis p :: [*]
 
   type Version p = ()
+
+  type SecuritySchemes p :: [(Symbol, SecuritySchemeType Symbol)]
+  type SecuritySchemes p = '[]
+
+  type ApiSecurityRequirement p :: [SecurityRequirement Symbol]
+  type ApiSecurityRequirement p = '[]
 
 
 {- NOTE:
@@ -163,6 +170,9 @@ class ( SingMethod m
   -- If it is @[]@, Content-Type is decided by @FormParam m r@ and @FileParam m r@.
   -- Defaults to @[]@
   type RequestBody m r :: [*]
+
+  type OpSecurityRequirement m r :: [SecurityRequirement Symbol]
+  type OpSecurityRequirement m r = '[]
 
   type PathParam m r    = PathParam' m r
   type QueryParam m r   = ()
