@@ -199,10 +199,10 @@ class ( MonadCatch (HandlerM p)
   -- provides common defaulting information for api handlers
 
   -- | Create a value of @IO a@ from @HandlerM p a@.
-  toIO :: p -> HandlerM p a -> IO a
+  toIO :: p -> WebApiRequest -> HandlerM p a -> IO a
 
-  default toIO :: (HandlerM p ~ IO) => p -> HandlerM p a -> IO a
-  toIO _ = id
+  default toIO :: (HandlerM p ~ IO) => p -> WebApiRequest -> HandlerM p a -> IO a
+  toIO _ _ = id
 
   type HandlerM p = IO
 
@@ -281,3 +281,5 @@ matchAcceptHeaders :: forall m r ctypes.
                        ) => ByteString -> Request m r -> Maybe (Encoding m r)
 matchAcceptHeaders b _ =
   mapAccept (getEncodingType (Proxy :: Proxy ctypes)) b
+
+data WebApiRequest = WebApiRequest { rawRequest :: Wai.Request }

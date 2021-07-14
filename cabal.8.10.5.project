@@ -3,7 +3,10 @@ packages:
   webapi-contract
   webapi
   webapi-client-reflex-dom
-  webapi-swagger
   webapi-docs
   webapi-xml
   webapi-openapi
+
+with-compiler: ghc-8.10.5
+index-state: 2021-06-21T10:46:43Z
+allow-newer: bytestring-trie:binary

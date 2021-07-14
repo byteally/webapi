@@ -17,7 +17,7 @@ Comparing with the "WebApi.Contract", 'WebApi' and 'ApiContract' has the same re
 {-# LANGUAGE TypeOperators         #-}
 module WebApi.Server
        (
-       -- * Creating a WAI application  
+       -- * Creating a WAI application
          serverApp
        , serverSettings
        , nestedServerApp
@@ -26,10 +26,12 @@ module WebApi.Server
        , mount
        , ServerSettings
 
-       -- * Implementation of Api 
+       -- * Implementation of Api
        , ApiHandler (..)
        , ApiException (..)
-       , WebApiServer (..)  
+       , WebApiServer (..)
+       , WebApiRequest
+       , rawRequest
        , respond
        , respondWith
        , raise
@@ -38,8 +40,8 @@ module WebApi.Server
        -- * Wrapping and unwrapping a 'Tagged'
        , unTagged
        , toTagged
-         
-       -- * Routing  
+
+       -- * Routing
        , module WebApi.Router
        ) where
 
