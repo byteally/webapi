@@ -592,7 +592,30 @@ createModelData Nothing compSchemas (dName,dSchema) =
         Just x -> do
             DataTypeInfo {child_types} <- mkSumType dName True x True False Nothing compSchemas
             return child_types
-createModelData _ _ _ = error "Unknown Top Level Schema"
+createModelData (Just OpenApiArray) compSchemas (dName,dSchema) = do
+    case _schemaItems dSchema of
+        Nothing -> error "No _schemaItems value for Array"
+        Just (OpenApiItemsArray _) -> error "OpenApiItemsArray Array type"
+        Just (OpenApiItemsObject sch) -> do
+            unseenVar <- mkUnseenVar (upperFirstChar dName)
+            let occUnseenVar = textToOccNameStr unseenVar
+            DataTypeInfo {typ,child_types} <- parseRecordFields (dName,sch) True False Nothing compSchemas
+            let toptype = type' occUnseenVar [] (var "Vector" @@ typ)
+            return $ (ChildType toptype):child_types
+
+createModelData (Just a) _ (dName,dSchema) = do
+    unseenVar <- mkUnseenVar (upperFirstChar dName)
+    let occUnseenVar = textToOccNameStr unseenVar
+    return $ mkTopLevelBaseType (findTopType a) occUnseenVar
+    where findTopType OpenApiString = "Text"
+          findTopType OpenApiNumber = "Double"
+          findTopType OpenApiInteger = parseIntegerFld (_schemaFormat dSchema)
+          findTopType OpenApiBoolean = "Bool"
+          findTopType OpenApiNull = error "Top Level Schema Type: Null"
+          findTopType _ = error "Top Level Schema : Invalid State"
+
+mkTopLevelBaseType :: Text -> OccNameStr -> [ChildType]
+mkTopLevelBaseType x occ = [ChildType $ type' occ []  (var $ textToRdrNameStr x)]
 
 avoidKeywords :: Text -> Set Text -> Text
 avoidKeywords x keywordsToAvoid = if member x keywordsToAvoid
@@ -649,7 +672,7 @@ createJsonInstances (Just OpenApiObject) schemaName schemaVal compSchemas = do
     fromJsonInstance <- createFromJsonInstancesRecord schemaName schemaVal compSchemas
     toJsonInstance <- createToJsonInstancesRecord schemaName schemaVal
     return $ Prelude.concat childInstances ++ [fromJsonInstance, toJsonInstance]
-createJsonInstances _ _ _ _ = error "Unhandled Top Level Referenced Schema Type"
+createJsonInstances _ _ _ _ = return []
 
 createFromJsonInstancesRecord ::
     MonadState ModelGenState m =>
