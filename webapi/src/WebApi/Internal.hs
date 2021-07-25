@@ -12,6 +12,8 @@
 {-# LANGUAGE FlexibleInstances         #-}
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE UndecidableInstances      #-}
+{-# LANGUAGE NamedFieldPuns            #-}
+{-# LANGUAGE TupleSections             #-}
 
 
 #if __GLASGOW_HASKELL__ >= 800
@@ -20,37 +22,41 @@
 
 module WebApi.Internal where
 
-import           Data.Text.Encoding                 (encodeUtf8Builder)
 import           Control.Exception
-import           Control.Monad.Catch                (MonadCatch)
-import           Control.Monad.IO.Class             (MonadIO)
+import           Control.Monad.Catch (MonadCatch)
+import           Control.Monad.IO.Class (MonadIO)
 import           Control.Monad.Trans.Resource       (runResourceT,
                                                      withInternalState)
-import           Data.ByteString                    (ByteString)
-import           Data.ByteString.Builder            (toLazyByteString, Builder)
-import           Data.ByteString.Lazy               as LBS (toStrict)
-import           Data.List                          (find)
+import           Data.ByteString (ByteString)
+import           Data.ByteString.Builder (toLazyByteString, Builder)
+import           Data.ByteString.Lazy as LBS (toStrict)
+import           Data.List (find)
+import           Data.Text.Encoding (encodeUtf8Builder)
 #if !(MIN_VERSION_base(4,8,0))
-import           Data.Monoid                        ((<>))
+import           Data.Monoid ((<>))
 #endif
-import           Data.Maybe                         (fromMaybe)
+import           Data.Maybe (fromMaybe)
 import           Data.Proxy
-import qualified Data.Text                          as T (pack)
-import           Data.Typeable                      (Typeable)
+import qualified Data.Text as T (pack)
+import           Data.Typeable (Typeable)
 import           Network.HTTP.Media                 (MediaType, mapAcceptMedia,
                                                      matchAccept, matchContent
                                                     , mapAccept)
-import           Network.HTTP.Media.RenderHeader    (renderHeader)
-import           Network.HTTP.Types                 hiding (Query)
-import qualified Network.Wai                        as Wai
-import qualified Network.Wai.Parse                  as Wai
+import           Network.HTTP.Media.RenderHeader (renderHeader)
+import           Network.HTTP.Types hiding (Query)
+import qualified Network.Wai as Wai
+import qualified Network.Wai.Parse as Wai
 import           Web.Cookie
 import           WebApi.ContentTypes
 import           WebApi.Contract
 import           WebApi.Param
 import           WebApi.Util
-import qualified Data.Text.Encoding                 as TE
-import GHC.TypeLits
+import qualified Data.Text.Encoding as TE
+import           GHC.TypeLits
+import           Data.Kind
+import           Type.Reflection
+import           Data.Functor.Identity
+import           Data.Dependent.Sum
 
 data RouteResult a = NotMatched | Matched a
 
@@ -68,10 +74,10 @@ type FromWaiRequestCtx m r =
   , FromParam 'FileParam (FileParam m r)
   , FromHeader (HeaderIn m r)
   , FromParam 'Cookie (CookieIn m r)
-  , ToHListRecTuple (StripContents (RequestBody m r))
+  -- , ToHListRecTuple (StripContents (RequestBody m r))
   , PartDecodings (RequestBody m r)
   , SingMethod m
-  , EncodingType m r (ContentTypes m r)
+  -- , EncodingType m r (ContentTypes m r)
   )
 
 fromWaiRequest :: forall m r. FromWaiRequestCtx m r =>
@@ -91,30 +97,33 @@ fromWaiRequest waiReq pathPar handlerFn = do
                               <*> (fromFileParam (fmap fromWaiFile filePar))
                               <*> (fromHeader $ Wai.requestHeaders waiReq)
                               <*> (fromCookie $ maybe [] parseCookies (getCookie waiReq))
-                              <*> (fromBody [])
-        handler' (acceptHeaderType accHdr <$> request)
+                              <*> undefined
+        handler' ({-acceptHeaderType accHdr <$>-} request)
     Nothing -> do
-      bdy <- Wai.lazyRequestBody waiReq
-      let rBody = [(fromMaybe (renderHeader $ contentType (Proxy :: Proxy OctetStream)) mContentTy, bdy)]
-      let request = Request <$> pure pathPar
+      reqBdy <- Wai.lazyRequestBody waiReq
+      let reqBodyHdr = fromMaybe (renderHeader $ contentType (Proxy :: Proxy OctetStream)) mContentTy
+          request = Request <$> pure pathPar
                             <*> (fromQueryParam $ Wai.queryString waiReq)
                             <*> (fromFormParam [])
                             <*> (fromFileParam [])
                             <*> (fromHeader $ Wai.requestHeaders waiReq)
                             <*> (fromCookie $ maybe [] parseCookies (getCookie waiReq))
-                            <*> (fromBody rBody)
-      handler' (acceptHeaderType accHdr <$> request)
+                            <*> (fromBody reqBodyHdr reqBdy)
+      handler' ({-acceptHeaderType accHdr <$>-} request)
   where
     accHdr = getAcceptType (Wai.requestHeaders waiReq)
     handler' (Validation (Right req)) = handlerFn req >>= \resp -> return $ Validation (Right resp)
     handler' (Validation (Left parErr)) = return $ Validation (Left parErr)
     hasFormData x = matchContent [contentType (Proxy :: Proxy MultipartFormData), contentType (Proxy :: Proxy UrlEncoded)] =<< x
-    acceptHeaderType :: Maybe ByteString -> Request m r -> Request m r
-    acceptHeaderType (Just x) r =
-      fromMaybe r $ 
-      (\(Encoding t _ _) -> setAcceptHeader t r) <$> matchAcceptHeaders x r
-    acceptHeaderType Nothing r = r
-    fromBody x = Validation $ either (\e -> Left [NotFound (bspack e)]) (Right . fromRecTuple (Proxy :: Proxy (StripContents (RequestBody m r)))) $ partDecodings (Proxy :: Proxy (RequestBody m r)) x
+    -- acceptHeaderType :: Maybe ByteString -> Request m r -> Request m r
+    -- acceptHeaderType (Just x) r =
+    --   fromMaybe r $
+    --   (\(Encoding t _ _) -> setAcceptHeader t r) <$> matchAcceptHeaders x r
+    -- acceptHeaderType Nothing r = r
+    fromBody reqBodyHdr reqBody =
+      Validation $ either (\e -> Left [NotFound (bspack e)])
+                          (\rb -> Right $ ApiRequestBody { getApiRequestBody = rb })
+                          (partDecodings (Proxy :: Proxy (RequestBody m r)) reqBodyHdr reqBody)
     bspack = TE.encodeUtf8 . T.pack
     fromWaiFile :: Wai.File FilePath -> (ByteString, FileInfo)
     fromWaiFile (fname, waiFileInfo) = (fname, FileInfo
@@ -123,51 +132,68 @@ fromWaiRequest waiReq pathPar handlerFn = do
                                          , fileContent     = Wai.fileContent waiFileInfo
                                          })
 
-toWaiResponse :: ( ToHeader (HeaderOut m r)
-                  , ToParam 'Cookie (CookieOut m r)
-                  , Encodings (ContentTypes m r) (ApiOut m r)
-                  , Encodings (ContentTypes m r) (ApiErr m r)
-                  ) => Wai.Request -> Response m r -> Wai.Response
+-- | Encoding for a Response
+class ResponseEncodings (outs :: [Type]) where
+  responseEncodings :: Proxy outs -> DSum TypeRep Identity -> Wai.Response
+
+instance
+  ( Typeable m
+  , Typeable r
+  , Typeable s
+  , Typeable ct
+  , Typeable o
+  , Typeable c
+  , Typeable h
+  , ResponseEncodings outs
+  , ToHeader h
+  , ToParam 'Cookie c
+  , Encode ct o
+  ) => ResponseEncodings (ApiOutput m r s ct o c h ': outs) where
+  responseEncodings _ dsum =
+    case extract dsum of
+      Just ao -> go ao
+      Nothing -> responseEncodings (Proxy :: Proxy outs) dsum
+
+    where
+      go :: ApiOutput m r s ct o c h -> Wai.Response
+      go ApiOutput { code, output, cookie, header } =
+        encodeResponse code (toCookie cookie) (toHeader header) (encode (Proxy :: Proxy ct) output)
+
+encodeResponse :: Status -> [(ByteString, CookieInfo ByteString)] -> [Header] -> Builder -> Wai.Response
+encodeResponse code cookies headers =
+  Wai.responseBuilder code headers0
+
+  where
+    headers0 =
+      headers <> setCookie cookies
+
+    setCookie :: [(ByteString, CookieInfo ByteString)] -> [Header]
+    setCookie =
+      map ((hSetCookie, ) . uncurry renderSC)
+
+    renderSC k v = toStrict . toLazyByteString . renderSetCookie $ def
+      { setCookieName = k
+      , setCookieValue = cookieValue v
+      , setCookiePath = cookiePath v
+      , setCookieExpires = cookieExpires v
+      , setCookieMaxAge  = cookieMaxAge v
+      , setCookieDomain = cookieDomain v
+      , setCookieHttpOnly = fromMaybe False (cookieHttpOnly v)
+      , setCookieSecure   = fromMaybe False (cookieSecure v)
+      }
+
+instance ResponseEncodings '[] where
+  responseEncodings _ _ = error "Panic: impossible case @responseEncodings"
+
+toWaiResponse ::
+  forall m r.
+  ( ResponseEncodings (Responses m r (OutContentTypes m r))
+  , ResponseEncodings (Responses m r (ErrContentTypes m r))
+  ) => Wai.Request -> Response m r -> Wai.Response
 toWaiResponse wreq resp = case resp of
-  Success status out hdrs cookies -> case encode' resp out of
-    Just (ctype, o') -> let hds = (hContentType, renderHeader ctype) : handleHeaders' (toHeader hdrs) (toCookie cookies)
-                        in Wai.responseBuilder status hds o'
-    Nothing -> Wai.responseBuilder notAcceptable406 [] "Matching content type not found"
-  Failure (Left (ApiError status errs hdrs cookies)) -> case encode' resp errs of
-    Just (ctype, errs') -> let hds = (hContentType, renderHeader ctype) : handleHeaders (toHeader <$> hdrs) (toCookie <$> cookies)
-                           in Wai.responseBuilder status hds errs'
-    Nothing -> Wai.responseBuilder notAcceptable406 [] "Matching content type not found"
-  Failure (Right (OtherError ex)) -> Wai.responseBuilder internalServerError500 [] (encodeUtf8Builder (T.pack (displayException ex)))
-
-  where encode' :: ( Encodings (ContentTypes m r) a
-                 ) => apiRes m r -> a -> Maybe (MediaType, Builder)
-        encode' r o = case getAccept wreq of
-          Just acc -> let ecs = encodings (reproxy r) o
-                      in (,) <$> matchAccept (map fst ecs) acc <*> mapAcceptMedia ecs acc
-          Nothing  -> case encodings (reproxy r) o of
-            (x : _)  -> Just x
-            _        -> Nothing
-
-        reproxy :: apiRes m r -> Proxy (ContentTypes m r)
-        reproxy = const Proxy
-
-        handleHeaders :: Maybe [Header] -> Maybe [(ByteString, CookieInfo ByteString)] -> [Header]
-        handleHeaders hds cks = handleHeaders' (maybe [] id hds) (maybe [] id cks)
-
-        handleHeaders' :: [Header] -> [(ByteString, CookieInfo ByteString)] -> [Header]
-        handleHeaders' hds cookies = let ckHs = map (\(ck, cv) -> (hSetCookie , renderSC ck cv)) cookies
-                                     in hds <> ckHs
-        renderSC k v = toStrict . toLazyByteString . renderSetCookie $ def
-          { setCookieName = k
-          , setCookieValue = cookieValue v
-          , setCookiePath = cookiePath v
-          , setCookieExpires = cookieExpires v
-          , setCookieMaxAge  = cookieMaxAge v
-          , setCookieDomain = cookieDomain v
-          , setCookieHttpOnly = fromMaybe False (cookieHttpOnly v)
-          , setCookieSecure   = fromMaybe False (cookieSecure v)
-          }
-
+  ApiSuccess dsum  -> responseEncodings (Proxy :: Proxy (Responses m r (OutContentTypes m r))) dsum
+  ApiFailure dsum  -> responseEncodings (Proxy :: Proxy (Responses m r (ErrContentTypes m r))) dsum
+  OtherFailure err -> Wai.responseBuilder internalServerError500 [] (encodeUtf8Builder (T.pack (displayException (exception err))))
 
 -- | Describes the implementation of a single API end point corresponding to @ApiContract (ApiInterface p) m r@
 class (ApiContract (ApiInterface p) m r) => ApiHandler (p :: *) (m :: *) (r :: *) where
@@ -225,21 +251,21 @@ newtype ApiComponent c = ApiComponent Wai.Application
 nestedApi :: NestedApplication '[]
 nestedApi = NestedApplication []
 
-data NestedR = NestedR 
+data NestedR = NestedR
 
--- | Type of Exception raised in a handler.
-data ApiException m r = ApiException { apiException :: ApiError m r }
+-- -- -- | Type of Exception raised in a handler.
+-- data ApiException m r = ApiException { apiException :: ApiError m r }
 
-instance Show (ApiException m r) where
-  show (ApiException _) = "ApiException"
+-- instance Show (ApiException m r) where
+--   show (ApiException _) = "ApiException"
 
-instance (Typeable m, Typeable r) => Exception (ApiException m r) where
+-- instance (Typeable m, Typeable r) => Exception (ApiException m r) where
 
-handleApiException :: (query ~ '[], Monad (HandlerM p)) => p -> ApiException m r -> (HandlerM p) (Query (Response m r) query)
-handleApiException _ = return . Failure . Left . apiException
+-- handleApiException :: (query ~ '[], Monad (HandlerM p)) => p -> ApiException m r -> (HandlerM p) (Query (Response m r) query)
+-- handleApiException _ = return . Failure . Left . apiException
 
-handleSomeException :: (query ~ '[], Monad (HandlerM p)) => p -> SomeException -> (HandlerM p) (Query (Response m r) query)
-handleSomeException _ = return . Failure . Right . OtherError
+-- handleSomeException :: (query ~ '[], Monad (HandlerM p)) => p -> SomeException -> (HandlerM p) (Query (Response m r) query)
+-- handleSomeException _ = return . Failure . Right . OtherError
 
 getCookie :: Wai.Request -> Maybe ByteString
 getCookie = fmap snd . find ((== hCookie) . fst) . Wai.requestHeaders
@@ -261,6 +287,7 @@ newtype Tagged (s :: [*]) b = Tagged { unTagged :: b }
 toTagged :: Proxy s -> b -> Tagged s b
 toTagged _ = Tagged
 
+{-
 class EncodingType m r (ctypes :: [*]) where
   getEncodingType :: Proxy ctypes -> [(MediaType, Encoding m r)]
 
@@ -281,5 +308,13 @@ matchAcceptHeaders :: forall m r ctypes.
                        ) => ByteString -> Request m r -> Maybe (Encoding m r)
 matchAcceptHeaders b _ =
   mapAccept (getEncodingType (Proxy :: Proxy ctypes)) b
+-}
 
 data WebApiRequest = WebApiRequest { rawRequest :: Wai.Request }
+
+-- getResponseStatus :: ApiOut m r -> Status
+-- getResponseStatus out =
+--   case from out of
+--     M1 (L1 l) 
+
+

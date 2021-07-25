@@ -64,13 +64,16 @@ respond :: ( Monad handM
 respond out = respondWith ok200 out () ()
 
 -- | Creates a successful response from its components.
+{-# WARNING respondWith "The status argument is not used, it will be fetched from `ResponseCodes` " #-}
 respondWith :: ( Monad handM
                 ) => Status
                   -> ApiOut m r
                   -> HeaderOut m r
                   -> CookieOut m r
                   -> handM (Response m r)
-respondWith status out hdrs cook = return $ Success status out hdrs cook
+respondWith _status out hdrs cook = do
+  let responseCode = getResponseCode out
+  return $ Success status out hdrs cook
 
 -- | This function short circuits returning an `ApiError`.It is assumed that 'HeaderOut' and 'CookieOut' has default definitions.
 raise :: ( MonadThrow handM

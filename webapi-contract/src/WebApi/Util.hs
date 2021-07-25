@@ -9,10 +9,15 @@
 
 module WebApi.Util where
 
+import Data.Dependent.Sum
+import Data.Functor.Identity
 import Data.Proxy (Proxy (..))
 import Data.Text (Text, pack)
-import GHC.TypeLits
+import Data.Unique.Tag
 import GHC.Exts
+import GHC.TypeLits
+import Type.Reflection
+
 
 type family HListToTuple (xs :: [*]) :: * where
   HListToTuple '[]   = ()
@@ -193,3 +198,14 @@ type family Elem' t ts ots :: Constraint where
                                      'Text " is not a member of " ':<>:
                                      'ShowType ots
                                     )
+
+inject :: forall a.( Typeable a ) => a -> DSum TypeRep Identity
+inject v = typeOf v ==> v
+
+extract :: forall a. ( Typeable a ) => DSum TypeRep Identity -> Maybe a
+extract (t2 :=> x) = do
+    Refl <- geq t1 t2
+    return (runIdentity x)
+
+      where
+        t1 = typeRep :: TypeRep a

@@ -165,14 +165,10 @@ instance (Router s (MarkDyn rest) '(m, (pp :++ '[StaticPiece piece])), KnownSymb
 
 
 -- Base Cases
-instance ( KnownSymbol piece, ApiHandler s m route
-         , ToHeader (HeaderOut m route)
-         , ToParam 'Cookie (CookieOut m route)
+instance ( KnownSymbol piece
+         , ApiHandler s m route
          , FromWaiRequestCtx m route
-         , Encodings (ContentTypes m route) (ApiOut m route)
-         , Encodings (ContentTypes m route) (ApiErr m route)
          , PathParam m route ~ ()
-         , ParamErrToApiErr (ApiErr m route)
          , Typeable m
          , Typeable route
          , WebApiServer s
@@ -199,11 +195,6 @@ instance ( KnownSymbol lpiece
          , route ~ (FromPieces paths)
          , ApiHandler s m route
          , PathParam m route ~ HListToTuple (FilterDynP paths)
-         , Encodings (ContentTypes m route) (ApiErr m route)
-         , Encodings (ContentTypes m route) (ApiOut m route)
-         , ToHeader (HeaderOut m route)
-         , ToParam 'Cookie (CookieOut m route)
-         , ParamErrToApiErr (ApiErr m route)
          , FromWaiRequestCtx m route
          , Typeable m
          , Typeable route
@@ -232,12 +223,7 @@ instance ( KnownSymbol rpiece
          , route ~ (FromPieces paths)
          , ApiHandler s m route
          , PathParam m route ~ HListToTuple (FilterDynP paths)
-         , Encodings (ContentTypes m route) (ApiErr m route)
-         , Encodings (ContentTypes m route) (ApiOut m route)
-         , ToHeader (HeaderOut m route)
-         , ToParam 'Cookie (CookieOut m route)
          , DecodeParam lpiece
-         , ParamErrToApiErr (ApiErr m route)
          , FromWaiRequestCtx m route
          , Typeable m
          , Typeable route
@@ -263,12 +249,7 @@ instance ( KnownSymbol rpiece
 instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
          , ApiHandler s m route
          , PathParam m route ~ HListToTuple (FilterDynP (pp :++ '[DynamicPiece t]))
-         , Encodings (ContentTypes m route) (ApiErr m route)
-         , Encodings (ContentTypes m route) (ApiOut m route)
-         , ToHeader (HeaderOut m route)
-         , ToParam 'Cookie (CookieOut m route)
          , DecodeParam t
-         , ParamErrToApiErr (ApiErr m route)
          , FromWaiRequestCtx m route
          , Typeable m
          , Typeable route
@@ -291,7 +272,6 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
             return $ toWaiResponse request response
 
 instance ( PathParam m (ns :// piece) ~ ()
-         , ParamErrToApiErr (ApiErr m (ns :// piece))
          , KnownSymbol piece 
          , SingMethod m
          , WebApiServer s
@@ -300,11 +280,7 @@ instance ( PathParam m (ns :// piece) ~ ()
          , Typeable piece
          , ApiHandler s m (ns :// piece)
          , ApiContract (ApiInterface s) m (ns :// piece)
-         , ToHeader (HeaderOut m (ns :// piece))
-         , ToParam 'Cookie (CookieOut m (ns :// piece))
          , FromWaiRequestCtx m (ns :// piece)
-         , Encodings (ContentTypes m (ns :// piece)) (ApiErr m (ns :// piece))
-         , Encodings (ContentTypes m (ns :// piece)) (ApiOut m (ns :// piece))
          ) => Router s ((ns :: *) :// (piece :: Symbol)) '(m, pp) where
   route _ serv _ request respond =
     case pathInfo request of
@@ -363,6 +339,8 @@ apiHandler :: forall query p m r.
              , Typeable r) => Tagged query p -> Request m r -> HandlerM p (Query (Response m r) query)
 apiHandler serv req =  (handler serv req) `catches` excepHandlers
   where excepHandlers :: [Handler (HandlerM p) (Query (Response m r) query)]
-        excepHandlers = [ Handler (\ (ex :: ApiException m r) -> handleApiException (unTagged serv) ex)
+        excepHandlers = undefined
+                        {-Handler (\ (ex :: ApiException m r) -> handleApiException (unTagged serv) ex)
                         , Handler (\ (ex :: SomeException) -> handleSomeException (unTagged serv) ex) ]
+                        -}
 
