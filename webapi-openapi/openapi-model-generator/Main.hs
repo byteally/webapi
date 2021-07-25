@@ -13,7 +13,8 @@ import Options.Applicative
       execParser,
       helper,
       Parser )
-import WebApi.OpenAPI (generateModels)
+-- import WebApi.OpenAPI (generateModels)
+import WebApi.OpenAPI.Core
 
 data CliArgs
   = CliArgs
@@ -31,6 +32,8 @@ cliParser =
 
 main :: IO ()
 main = do
+  processOpenAPI "/home/sreenidhi/NSOA3.json"
+  {-
   CliArgs {..} <- execParser opts
   generateModels inputJsonFP outDirBaseFp reqFilePathPrefix
   where opts =
@@ -40,5 +43,5 @@ main = do
                  <> progDesc "Print a greeting for TARGET"
                  <> header "hello - a test for optparse-applicative"
             )
-
+  -}
   

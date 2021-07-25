@@ -5,7 +5,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RecordWildCards #-}
 
-{-# OPTIONS_GHC -Wno-type-defaults #-}
+{-# OPTIONS_GHC -Wno-type-defaults -Wwarn #-}
 {-# LANGUAGE BangPatterns #-}
 module WebApi.OpenAPI where
 
@@ -34,15 +34,12 @@ import Data.OpenApi
 import GHC.SourceGen
     ( data',
       field,
-      newtype',
       prefixCon,
       recordCon,
       exposing,
       import',
       module',
       occNameToStr,
-      tuple,
-      kindedVar,
       stringTy,
       OccNameStr,
       RdrNameStr,
@@ -66,7 +63,9 @@ import GHC.SourceGen
       match,
       list,
       funBinds,
-      as')
+      as',
+      tuplePromotedTy
+    )
 import GHC.Paths (libdir)
 import GHC ( runGhc )
 import Data.HashMap.Strict.InsOrd as HMO (toList,lookup, empty, fromList, delete)
@@ -134,7 +133,7 @@ generateModels fp destFp reqPrefix = do
         modelList = evalState
                         (mapM (\(x,y) -> createModelData (_schemaType y) compSchemas (x,y)) (HMO.toList compSchemas))
                         (ModelGenState S.empty S.empty (S.fromList keywords) HM.empty (S.fromList seenVariables))
-        hsModuleModel = module' (Just modName) Nothing impsModel (namedTy:rmChildTypeLayer (Prelude.concat modelList))
+        hsModuleModel = module' (Just modName) Nothing impsModel (rmChildTypeLayer (Prelude.concat modelList))
         (routeInfo,typeSynList,instances) = (\(a,b,c) -> (Prelude.concat a,Prelude.concat b,Prelude.concat c))
                                    (unzip3 $
                                        evalState
@@ -151,6 +150,7 @@ generateModels fp destFp reqPrefix = do
     where impsModel =
                  [ import' "Data.Int"
                  , import' "Data.Vector"
+                 , import' "Record"
                  , exposing (import' "GHC.Types") [var "Symbol"]
                  , exposing (import' "Data.Text") [var "Text"]
                  ]
@@ -164,8 +164,7 @@ generateModels fp destFp reqPrefix = do
                  , import' "Data.Aeson"
                  , import' "Control.Applicative"
                  ]
-          namedTy = newtype' ":::" [kindedVar "fld" (var "Symbol") , bvar "a"]
-                        (prefixCon "Field" [field $ var "a"]) []
+
           es = [TypeOperators,KindSignatures,DataKinds,DuplicateRecordFields]
           es2 = [DataKinds,TypeOperators,TypeSynonymInstances,FlexibleInstances,MultiParamTypeClasses,TypeFamilies, OverloadedStrings]
           keywords = ["type","class"]
@@ -295,7 +294,8 @@ createApiContractInsData compSchemas compsParam compsReqBodies compResponses com
           mkTypeTuple schemas = do
               dataTypeInfoList <- mapM (\x -> mayBeSchemaToHsType x False Nothing compSchemas) schemas
               let (schemaList,childTypes) = unzip $ (\(DataTypeInfo a b c _) -> ((a,b),c) ) <$> dataTypeInfoList
-              let typeTuple =  tuple $ (\(x,y)-> op (stringTy $ T.unpack x) ":::" y) <$> schemaList
+              let typeTuple = var "Rec" @@ (listPromotedTy $ (\(x,y)-> tuplePromotedTy [stringTy (T.unpack x), y]) <$> schemaList)
+                  -- tuple $ (\(x,y)-> op (stringTy $ T.unpack x) ":::" y) <$> schemaList                                 
               return (Just typeTuple,Prelude.concat childTypes)
           responseToHeader (_,res) = fmap (_headerSchema . refValToVal compHeaders) <$> (HMO.toList . _responseHeaders $ res)
           findResponseApiOut hMap = case catMaybes [HMO.lookup x hMap | x <- [200..299]] of
@@ -747,7 +747,7 @@ parseInlineFields (Just OpenApiNull ) _dName _dSchema _isReq _ _ _=
 parseInlineFields (Just OpenApiObject ) dName dSchema isReq generateInstance instanceType compSchemas = do
     dataTypeInfoList <- mapM (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams) generateInstance instanceType compSchemas) (HMO.toList . _schemaProperties $ dSchema)
     let (childInlines,childTypes,childInstances) = unzip3 $ (\(DataTypeInfo a b c d) -> ((a,b),c,d)) <$> dataTypeInfoList
-    let typeTuple =  tuple $ (\(x,y)-> op (stringTy $ T.unpack x) ":::" y) <$> childInlines
+    let typeTuple =var "Rec" @@ (listPromotedTy $ (\(x,y)-> tuplePromotedTy [stringTy (T.unpack x), y]) <$> childInlines)--  tuple $ (\(x,y)-> op (stringTy $ T.unpack x) ":::" y) <$> childInlines
     return $ DataTypeInfo dName
                           (if isReq then typeTuple else var "Maybe" @@ typeTuple)
                           (Prelude.concat childTypes)
@@ -905,5 +905,6 @@ retOApi Nothing = error "Can't decode OpenAPI spec file"
 
 readOpenAPI :: FilePath -> IO OpenApi
 readOpenAPI fp = do
-    fileContent <- B.readFile fp
-    return $ retOApi (decode fileContent :: Maybe OpenApi)
+  fileContent <- B.readFile fp
+  return $ retOApi (decode fileContent :: Maybe OpenApi)
+
