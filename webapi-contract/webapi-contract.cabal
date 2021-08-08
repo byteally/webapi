@@ -49,6 +49,7 @@ library
                      , WebApi.ContentTypes
                      , WebApi.Param
                      , WebApi.AnonClient
+                     , WebApi.Security
 
   hs-source-dirs:      src
 

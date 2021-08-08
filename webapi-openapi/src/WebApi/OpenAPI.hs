@@ -10,7 +10,7 @@
 module WebApi.OpenAPI where
 
 import Data.ByteString.Lazy as B (readFile)
-import Data.Aeson ( decode )
+import Data.Aeson (eitherDecode)
 import Data.OpenApi
     ( Components(_componentsSchemas, _componentsParameters, _componentsRequestBodies, _componentsResponses, _componentsHeaders),
       OpenApi(_openApiComponents, _openApiPaths, _openApiInfo),
@@ -314,11 +314,10 @@ createHeaderOut compSchemas x = do
 headersToSchema :: [(Text, Maybe (Referenced Schema))] -> Referenced Schema
 headersToSchema [] = error "Impossible state"
 headersToSchema hdrs =
-    Inline $ let Schema { .. } = mkEmptySchema
-             in mkEmptySchema { _schemaType = Just OpenApiObject
-                              , _schemaRequired = fst <$> hdrs
-                              , _schemaProperties = HMO.fromList $ fmap maySchemaToSchema <$> hdrs
-                              }
+    Inline $ mkEmptySchema { _schemaType = Just OpenApiObject
+                           , _schemaRequired = fst <$> hdrs
+                           , _schemaProperties = HMO.fromList $ fmap maySchemaToSchema <$> hdrs
+                           }
 
 createApiOut ::
     MonadState ModelGenState m =>
@@ -519,9 +518,7 @@ handleOverridenParams compsParam pathList x =
 
 refValToVal :: Definitions a -> Referenced a -> a
 refValToVal compVals (Ref (Reference a)) =
-        case HMO.lookup a compVals of
-                Nothing -> error "Reference Value Not Found"
-                Just x -> x
+        fromMaybe (error "Reference Value Not Found") (HMO.lookup a compVals)
 refValToVal _compVals (Inline x) = x
 
 refParamsToParams ::
@@ -591,7 +588,30 @@ createModelData Nothing compSchemas (dName,dSchema) =
         Just x -> do
             DataTypeInfo {child_types} <- mkSumType dName True x True False Nothing compSchemas
             return child_types
-createModelData _ _ _ = error "Unknown Top Level Schema"
+createModelData (Just OpenApiArray) compSchemas (dName,dSchema) =
+    case _schemaItems dSchema of
+        Nothing -> error "No _schemaItems value for Array"
+        Just (OpenApiItemsArray _) -> error "OpenApiItemsArray Array type"
+        Just (OpenApiItemsObject sch) -> do
+            unseenVar <- mkUnseenVar (upperFirstChar dName)
+            let occUnseenVar = textToOccNameStr unseenVar
+            DataTypeInfo {typ,child_types} <- parseRecordFields (dName,sch) True False Nothing compSchemas
+            let toptype = type' occUnseenVar [] (var "Vector" @@ typ)
+            return $ ChildType toptype:child_types
+
+createModelData (Just a) _ (dName,dSchema) = do
+    unseenVar <- mkUnseenVar (upperFirstChar dName)
+    let occUnseenVar = textToOccNameStr unseenVar
+    return $ mkTopLevelBaseType (findTopType a) occUnseenVar
+    where findTopType OpenApiString = "Text"
+          findTopType OpenApiNumber = "Double"
+          findTopType OpenApiInteger = parseIntegerFld (_schemaFormat dSchema)
+          findTopType OpenApiBoolean = "Bool"
+          findTopType OpenApiNull = error "Top Level Schema Type: Null"
+          findTopType _ = error "Top Level Schema : Invalid State"
+
+mkTopLevelBaseType :: Text -> OccNameStr -> [ChildType]
+mkTopLevelBaseType x occ = [ChildType $ type' occ []  (var $ textToRdrNameStr x)]
 
 avoidKeywords :: Text -> Set Text -> Text
 avoidKeywords x keywordsToAvoid = if member x keywordsToAvoid
@@ -626,7 +646,6 @@ createInstanceData ::
     m [Instance]
 createInstanceData (Just JSON) schemaName schemaVal compSchemas = do
     ModelGenState {jsonInstances} <- get
-    --traceM $ show (schemaName,member schemaName jsonInstances)
     if member schemaName jsonInstances
     then return []
     else do
@@ -648,7 +667,7 @@ createJsonInstances (Just OpenApiObject) schemaName schemaVal compSchemas = do
     fromJsonInstance <- createFromJsonInstancesRecord schemaName schemaVal compSchemas
     toJsonInstance <- createToJsonInstancesRecord schemaName schemaVal
     return $ Prelude.concat childInstances ++ [fromJsonInstance, toJsonInstance]
-createJsonInstances _ _ _ _ = error "Unhandled Top Level Referenced Schema Type"
+createJsonInstances _ _ _ _ = return []
 
 createFromJsonInstancesRecord ::
     MonadState ModelGenState m =>
@@ -805,7 +824,6 @@ createInstancesSumType ::
     m [Instance]
 createInstancesSumType (Just JSON) tName consList = do
     ModelGenState {jsonInstances} <- get
-    --traceM $ show (tName,member tName jsonInstances)
     if member tName jsonInstances
     then return []
     else do
@@ -845,7 +863,7 @@ registerSumType tName schemaList hm =
             unseenVar <- mkUnseenVar tName
             modify (updateSumTypes (unseenVar,schemaList))
             return (False,unseenVar)
-        Just x -> do
+        Just x ->
             if areSchemasSame x schemaList
              then return (True,tName)
              else do
@@ -898,11 +916,11 @@ removeSymbol c x = T.concat $
     in fir : (upperFirstChar <$> tail selems)
 
 
-retOApi :: Maybe p -> p
-retOApi (Just x) = x
-retOApi Nothing = error "Can't decode OpenAPI spec file"
+retOApi :: Either String p -> p
+retOApi (Right x) = x
+retOApi (Left x) = error $ "Can't decode OpenAPI spec file : " ++ show x
 
 readOpenAPI :: FilePath -> IO OpenApi
 readOpenAPI fp = do
     fileContent <- B.readFile fp
-    return $ retOApi (decode fileContent :: Maybe OpenApi)
+    return $ retOApi (eitherDecode fileContent :: Either String OpenApi)

@@ -89,6 +89,7 @@ import           GHC.Exts
 -- | Datatype representing the settings related to client.
 data ClientSettings = ClientSettings { baseUrl           :: String     -- ^ base url of the API being called.
                                      , connectionManager :: HC.Manager -- ^ connection manager for the connection.
+                                     , requestHook       :: HC.Request -> IO HC.Request -- ^ http request hook
                                      }
 
 data Route' m r = Route'
@@ -226,7 +227,7 @@ client :: forall m r .
           ) => ClientSettings -> Request m r -> IO (Response m r)
 client sett req = do
   cReqInit <- HC.parseRequest (baseUrl sett)
-  cReq <- toClientRequest cReqInit req
+  cReq <- toClientRequest cReqInit req >>= requestHook sett
   catches (HC.withResponse cReq (connectionManager sett) fromClientResponse)
     [ Handler (\(ex :: HC.HttpException) -> do
                 case ex of
@@ -372,11 +373,13 @@ mkClientSettings acls = do
       mgr <- HC.newManager HC.defaultManagerSettings
       pure (ClientSettings { baseUrl           = bUrl
                            , connectionManager = mgr
+                           , requestHook       = pure
                            }
            )
     Just mgr -> do
       pure (ClientSettings { baseUrl           = bUrl
                            , connectionManager = mgr
+                           , requestHook       = pure
                            }
            )
 
