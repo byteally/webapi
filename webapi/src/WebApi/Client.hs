@@ -59,30 +59,31 @@ module WebApi.Client
        ) where
 
 import           Control.Exception
-import           Data.ByteString.Lazy                  (ByteString, fromStrict)
-import qualified Data.ByteString                       as B
-import           Data.ByteString.Builder               (toLazyByteString)
-import           Data.Either                           (isRight)
-import           Data.List                             (find)
+import qualified Data.ByteString as B
+import           Data.ByteString.Builder (toLazyByteString)
+import           Data.ByteString.Lazy (ByteString, fromStrict)
+import           Data.Either (isRight)
+import           Data.List (find)
+import           Data.Maybe (fromJust)
 import           Data.Proxy
-import           Data.Text.Encoding                    (decodeUtf8)
-import           Data.Typeable                         (Typeable)
-import qualified Network.HTTP.Client                   as HC
+import           Data.Text (Text)
+import qualified Data.Text as T
+import           Data.Text.Encoding (decodeUtf8)
+import           Data.Time.Clock (getCurrentTime)
+import           Data.Typeable (Typeable)
+import           Data.Word
+import qualified Network.HTTP.Client as HC
 import qualified Network.HTTP.Client.MultipartFormData as HC
-import qualified Network.HTTP.Client.TLS               as HC (tlsManagerSettings)
+import qualified Network.HTTP.Client.TLS as HC (tlsManagerSettings)
 import           Network.HTTP.Media                    (RenderHeader (..),
                                                         mapContentMedia)
-import           Network.HTTP.Types                    hiding (Query)
+import           Network.HTTP.Types hiding (Query)
+import qualified WebApi.AnonClient as Anon
 import           WebApi.ContentTypes
-import           WebApi.Contract                       
+import           WebApi.Contract
 import           WebApi.Internal
 import           WebApi.Param
 import           WebApi.Util
-import           Data.Maybe                            (fromJust)
-import           Data.Text                             (Text)
-import qualified Data.Text                             as T
-import           Data.Time.Clock                       (getCurrentTime)
-import qualified WebApi.AnonClient                     as Anon
 --import           Data.String                           (IsString (..))
 import           GHC.Exts
 
@@ -90,6 +91,7 @@ import           GHC.Exts
 data ClientSettings = ClientSettings { baseUrl           :: String     -- ^ base url of the API being called.
                                      , connectionManager :: HC.Manager -- ^ connection manager for the connection.
                                      , requestHook       :: HC.Request -> IO HC.Request -- ^ http request hook
+                                     , extraUnreserved    :: [Word8] -- ^ Reserved characters to be considered as unreserved.
                                      }
 
 data Route' m r = Route'
@@ -156,8 +158,8 @@ toClientRequest :: forall m r.( ToParam 'PathParam (PathParam m r)
                           , MkPathFormatString r
                           , PartEncodings (RequestBody m r)
                           , ToHListRecTuple (StripContents (RequestBody m r))
-                          ) => HC.Request -> Request m r -> IO HC.Request
-toClientRequest clientReq req = do
+                          ) => [Word8] -> HC.Request -> Request m r -> IO HC.Request
+toClientRequest extraUnres clientReq req = do
   now <- getCurrentTime
   let cReq' = clientReq
               { HC.method = singMethod (Proxy :: Proxy m)
@@ -188,7 +190,7 @@ toClientRequest clientReq req = do
   where queryPar = toQueryParam $ queryParam req
         formPar = toFormParam $ formParam req
         filePar = toFileParam $ fileParam req
-        uriPath = renderUriPath (HC.path clientReq) (pathParam req) req
+        uriPath = renderUriPath (HC.path clientReq) extraUnres (pathParam req) req
         firstPart = head . head $ partEncs
         partEncs = partEncodings cts (toRecTuple cts' (requestBody req))
         cts     = Proxy :: Proxy (RequestBody m r)
@@ -227,7 +229,7 @@ client :: forall m r .
           ) => ClientSettings -> Request m r -> IO (Response m r)
 client sett req = do
   cReqInit <- HC.parseRequest (baseUrl sett)
-  cReq <- toClientRequest cReqInit req >>= requestHook sett
+  cReq <- toClientRequest (extraUnreserved sett) cReqInit req >>= requestHook sett
   catches (HC.withResponse cReq (connectionManager sett) fromClientResponse)
     [ Handler (\(ex :: HC.HttpException) -> do
                 case ex of
@@ -374,12 +376,14 @@ mkClientSettings acls = do
       pure (ClientSettings { baseUrl           = bUrl
                            , connectionManager = mgr
                            , requestHook       = pure
+                           , extraUnreserved   = []
                            }
            )
     Just mgr -> do
       pure (ClientSettings { baseUrl           = bUrl
                            , connectionManager = mgr
                            , requestHook       = pure
+                           , extraUnreserved   = []
                            }
            )
 

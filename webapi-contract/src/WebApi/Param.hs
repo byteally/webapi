@@ -98,52 +98,55 @@ module WebApi.Param
        ) where
 
 
+import           Control.Applicative
 import           Data.Aeson                         (FromJSON (..), ToJSON (..), (.:))
 import qualified Data.Aeson                         as A
 import           Data.ByteString                    (ByteString)
 import qualified Data.ByteString                    as SB
+import qualified Data.ByteString.Internal           as SB
 import           Data.ByteString.Builder            (byteString, char7,
                                                      toLazyByteString)
+import qualified Data.ByteString.Builder            as B
 import           Data.ByteString.Char8              as ASCII (pack, readInteger,
                                                               split, unpack,
                                                               singleton)
 import           Data.ByteString.Lazy               (toStrict)
 import qualified Data.ByteString.Lex.Fractional     as LexF
 import           Data.ByteString.Lex.Integral
-import           Data.CaseInsensitive               as CI
+import           Data.CaseInsensitive               as CI (CI, FoldCase (..), original, mk, foldedCase)
 import           Data.Choice
 import           Data.Foldable                      as Fold (foldl')
 import           Data.Int
 import qualified Data.List                          as L (find)
 import           Data.Maybe                         (catMaybes)
 import           Data.Monoid                        ((<>))
+import qualified Data.MultiSet                      as MultiSet
 import           Data.Proxy
+import           Data.Set                           (Set)
+import qualified Data.Set                           as Set
 import           Data.Text                          (Text)
 import qualified Data.Text                          as T (Text, pack, uncons)
-import qualified Data.Text.Lazy                     as LT
 import           Data.Text.Encoding                 (decodeUtf8, decodeUtf8', encodeUtf8)
+import qualified Data.Text.Lazy                     as LT
 import           Data.Time.Calendar                 (Day)
 import           Data.Time.Clock                    (UTCTime, DiffTime)
-import           Data.Time.LocalTime                (LocalTime, TimeOfDay)
 import           Data.Time.Format                   (FormatTime,
                                                      defaultTimeLocale,
                                                      formatTime, parseTimeM)
-import           Data.Trie                          as Trie
+import           Data.Time.LocalTime                (LocalTime, TimeOfDay)
+import           Data.Trie                          ( Trie, submap )
+import qualified Data.Trie                          as Trie
 import           Data.Typeable
 import           Data.Vector                        (Vector)
 import qualified Data.Vector                        as V
 import           Data.Word
+import qualified GHC.Exts as GHC
 import           GHC.Generics
 import           GHC.TypeLits
-import qualified GHC.Exts as GHC
 import           Network.HTTP.Types
 import           Network.HTTP.Types                 as Http (Header, QueryItem)
-import           Control.Applicative
-import           WebApi.Util
 import           WebApi.Contract
-import           Data.Set                           (Set)
-import qualified Data.Set                           as Set
-import qualified Data.MultiSet                      as MultiSet
+import           WebApi.Util
 #if MIN_VERSION_vector(0,12,0)
 import           Data.Semigroup                     (Semigroup)
 #endif
@@ -287,12 +290,19 @@ link r basePath paths query = toStrict $ toLazyByteString $ (byteString base) <>
 
 renderUriPath ::  ( ToParam 'PathParam path
                    , MkPathFormatString r
-                   ) => ByteString -> path -> route m r -> ByteString
-renderUriPath basePath p r = toStrict $ toLazyByteString $ (byteString base) <> (encodePathSegments $ routePaths p r)
+                   ) => ByteString -> [Word8] -> path -> route m r -> ByteString
+renderUriPath basePath extraUnreserved p r = toStrict $ toLazyByteString $ (byteString base) <> (encodePathSegments' extraUnreserved0 $ routePaths p r)
   where
     base    = case basePath of
       "/" -> ""
       _   -> basePath
+
+    extraUnreserved0 =
+      filter (`elem` reserved) extraUnreserved
+
+    reserved :: [ Word8 ]
+    reserved =
+      map SB.c2w ":/?#[]@!$&'()*+,;="
 
 routePaths :: ( ToParam 'PathParam path
                 , MkPathFormatString r
@@ -2046,3 +2056,31 @@ lookupH' f k = fmap snd . L.find ((f $ mk k) . fst)
 
 isPrefixOf :: CI ByteString -> CI ByteString -> Bool
 isPrefixOf n h = foldedCase n `SB.isPrefixOf` foldedCase h
+
+-- NOTE: duplicated from http-types Network.HTTP.Types.URI
+encodePathSegments' :: [Word8] -> [Text] -> B.Builder
+encodePathSegments' extraUnreserved vs
+  | null extraUnreserved = encodePathSegments vs
+  | otherwise = foldr (\x -> mappend (byteString "/" `mappend` encodePathSegment' extraUnreserved x)) mempty vs
+
+encodePathSegment' :: [Word8] -> Text -> B.Builder
+encodePathSegment' extraUnreserved = urlEncodeBuilder' extraUnreserved . encodeUtf8
+
+-- | Percent-encoding for URLs.
+urlEncodeBuilder' :: [Word8] -> SB.ByteString -> B.Builder
+urlEncodeBuilder' extraUnreserved = mconcat . map encodeChar . SB.unpack
+    where
+      encodeChar ch | unreserved ch = B.word8 ch
+                    | otherwise     = h2 ch
+
+      unreserved ch | ch >= 65 && ch <= 90  = True -- A-Z
+                    | ch >= 97 && ch <= 122 = True -- a-z
+                    | ch >= 48 && ch <= 57  = True -- 0-9
+      unreserved c = c `elem` extraUnreserved
+
+      -- must be upper-case
+      h2 v = B.word8 37 `mappend` B.word8 (h a) `mappend` B.word8 (h b) -- 37 = %
+          where (a, b) = v `divMod` 16
+      h i | i < 10    = 48 + i -- zero (0)
+          | otherwise = 65 + i - 10 -- 65: A
+
