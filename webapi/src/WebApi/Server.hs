@@ -43,6 +43,9 @@ module WebApi.Server
 
        -- * Routing
        , module WebApi.Router
+
+       -- * Compact Server
+       , module WebApi.ServerCompact
        ) where
 
 import           Control.Monad.Catch
@@ -54,6 +57,7 @@ import           WebApi.Contract
 import           WebApi.Internal
 import           WebApi.Router
 import           GHC.TypeLits
+import           WebApi.ServerCompact
 
 -- | Creates a successful response from its components. It is assumed that 'HeaderOut' and 'CookieOut' has default definitions.
 respond :: ( Monad handM

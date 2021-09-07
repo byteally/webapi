@@ -119,7 +119,9 @@ import           Data.Foldable                      as Fold (foldl')
 import           Data.Int
 import qualified Data.List                          as L (find)
 import           Data.Maybe                         (catMaybes)
+#if !(MIN_VERSION_base(4,8,0))
 import           Data.Monoid                        ((<>))
+#endif
 import qualified Data.MultiSet                      as MultiSet
 import           Data.Proxy
 import           Data.Set                           (Set)
@@ -147,7 +149,7 @@ import           Network.HTTP.Types
 import           Network.HTTP.Types                 as Http (Header, QueryItem)
 import           WebApi.Contract
 import           WebApi.Util
-#if MIN_VERSION_vector(0,12,0)
+#if !MIN_VERSION_base(4,9,0)
 import           Data.Semigroup                     (Semigroup)
 #endif
 
