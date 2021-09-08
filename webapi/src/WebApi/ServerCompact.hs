@@ -9,6 +9,7 @@
 {-# LANGUAGE TypeApplications          #-}
 {-# LANGUAGE TypeOperators             #-}
 {-# LANGUAGE AllowAmbiguousTypes       #-}
+{-# LANGUAGE RankNTypes                #-}
 module WebApi.ServerCompact
   ( CompactServer (..)
   ) where
@@ -18,21 +19,24 @@ import GHC.TypeLits
 import WebApi.Contract
 import WebApi.Internal
 import Data.Type.Equality
+import Control.Monad.Catch
+import Control.Monad.IO.Class
 
-data CompactServer (api :: *) server = CompactServer server
+data CompactServer (api :: *) (server :: (* -> *) -> *) (eff :: * -> *) = CompactServer (forall a.WebApiRequest -> eff a -> IO a) (server eff)
 
-instance WebApi api => WebApiServer (CompactServer api s) where
-  type HandlerM (CompactServer api s) = IO
-  type ApiInterface (CompactServer api s) = api
+instance (WebApi api, MonadCatch eff, MonadIO eff) => WebApiServer (CompactServer api s eff) where
+  type HandlerM (CompactServer api s eff) = eff
+  type ApiInterface (CompactServer api s eff) = api
+  toIO (CompactServer toIO' _) = toIO'
 
 instance ( ApiContract api m r
          , opname ~ GetOpIdName api (OperationId m r)
-         , HasField (GetOpIdName api (OperationId m r)) server handler
-         , UnifyHandler (handler == (Request m r -> IO (Response m r))) server opname handler (Request m r -> IO (Response m r))
-         ) => ApiHandler (CompactServer api server) m r where
-  handler (Tagged (CompactServer server)) = unifyHandler @((handler == (Request m r -> IO (Response m r)))) @server @opname $ getField @(GetOpIdName api (OperationId m r)) server
+         , HasField (GetOpIdName api (OperationId m r)) (server eff) handler
+         , UnifyHandler (handler == (Request m r -> eff (Response m r))) server opname handler (Request m r -> eff (Response m r))
+         ) => ApiHandler (CompactServer api server eff) m r where
+  handler (Tagged (CompactServer _ server)) = unifyHandler @((handler == (Request m r -> eff (Response m r)))) @server @opname $ getField @(GetOpIdName api (OperationId m r)) server
 
-class UnifyHandler (isEq :: Bool) server (fn :: Symbol) handlerAct handlerExp where
+class UnifyHandler (isEq :: Bool) (server :: (* -> *) -> *) (fn :: Symbol) handlerAct handlerExp where
   unifyHandler :: handlerAct -> handlerExp
 
 
