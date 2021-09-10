@@ -172,7 +172,7 @@ clientOrigin baseUrl reqEvt = do
              <*> (Just <$> respHdr)
              <*> (Just <$> (pure ())) of
           Validation (Right failure) -> (WebApi.Failure . Left) failure
-          Validation (Left _errs) -> WebApi.Failure $ Right (OtherError (toException ContentDecodeException))
+          Validation (Left errs) -> WebApi.Failure $ Right (OtherError (toException $ ApiErrParseFailException status $ T.intercalate "\n" $ fmap (T.pack . show) errs))
     
   pure $ ffor xhrRes $ \case
     Left e -> WebApi.Failure $ Right $ OtherError $ toException e
