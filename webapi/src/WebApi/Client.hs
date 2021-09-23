@@ -260,7 +260,7 @@ client sett req = do
                           -- TODO: Handle cookies
                           <*> pure Nothing of
                        Validation (Right failure) -> (Failure . Left) failure
-                       Validation (Left errs) -> Failure $ Right (OtherError (toException $ UnknownClientException $ T.intercalate "\n" $ fmap (T.pack . show) errs))
+                       Validation (Left errs) -> Failure $ Right (OtherError (toException $ ApiErrParseFailException status $ T.intercalate "\n" $ fmap (T.pack . show) errs))
                   _ -> return . Failure . Right . OtherError $ toException ex
                       )
     , Handler (\(ex :: IOException) -> return . Failure . Right . OtherError $ toException ex)

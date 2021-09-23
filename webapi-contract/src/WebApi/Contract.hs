@@ -22,6 +22,8 @@ Provides the contract for the web api. The contract consists of 'WebApi' and 'Ap
 {-# LANGUAGE MultiParamTypeClasses     #-}
 {-# LANGUAGE PolyKinds                 #-}
 {-# LANGUAGE TypeFamilies              #-}
+{-# LANGUAGE TypeFamilyDependencies    #-}
+{-# LANGUAGE FunctionalDependencies    #-}
 {-# LANGUAGE UndecidableInstances      #-}
 {-# LANGUAGE PatternSynonyms           #-}
 {-# LANGUAGE TypeOperators             #-}
@@ -61,6 +63,7 @@ module WebApi.Contract
        , pattern Req
        , Response (..)
        , ApiError (..)
+       , ApiErrParseFailException (..)
        , OtherError (..)
        , Resource (..)
        , ReqInvariant
@@ -76,15 +79,17 @@ module WebApi.Contract
        -- * Route
        , Route
        , (://), (:/), Static, Root
+
+       , OpId (..)
        ) where
 
-import           Control.Exception (SomeException)
+import           Control.Exception (SomeException, Exception)
 import           Data.Aeson        (Value)
 import           Data.Proxy
 import           Data.Text (Text)
 import qualified Data.Text.Lazy as LT
 import           Data.Text.Encoding
-import           GHC.Exts
+import           Data.Kind
 import           GHC.TypeLits
 import           Network.HTTP.Types
 import           WebApi.Util
@@ -174,6 +179,9 @@ class ( SingMethod m
   type OpSecurityRequirement m r :: [SecurityRequirement Symbol]
   type OpSecurityRequirement m r = '[]
 
+  type OperationId m r = (opid :: OpId) | opid -> m r
+  type OperationId m r = 'UndefinedOpId m r
+
   type PathParam m r    = PathParam' m r
   type QueryParam m r   = ()
   type FormParam m r    = ()
@@ -195,6 +203,10 @@ type instance PathParam' m (Static s) = ()
 type instance PathParam' m (p1 :/ p2) = HListToTuple (FilterDynP (ToPieces (p1 :/ p2)))
 type instance PathParam' m (p :// (ps :: *)) = HListToTuple (FilterDynP (ToPieces ps))
 type instance PathParam' m (p :// (ps :: Symbol)) = ()
+
+data OpId
+  = OpId Type Symbol
+  | UndefinedOpId Type Type
 
 type family DefaultApiErr (ctype :: [*]) :: * where
   DefaultApiErr '[JSON]      = Value
@@ -240,6 +252,13 @@ data ApiError m r = ApiError
   , headerOut :: Maybe (HeaderOut m r)
   , cookieOut :: Maybe (CookieOut m r)
   }
+
+data ApiErrParseFailException = ApiErrParseFailException 
+  { statusCode :: Status
+  , errorMessage :: Text
+  } deriving Show
+
+instance Exception ApiErrParseFailException
 
 -- | Datatype representing an unknown failure.
 data OtherError = OtherError { exception :: SomeException }
