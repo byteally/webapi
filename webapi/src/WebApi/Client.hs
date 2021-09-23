@@ -114,19 +114,27 @@ fromClientResponse hcResp = do
       -- respCk   = fromCookie
   respBodyBSS <- HC.brConsume respBody
   let respBodyBS = fromStrict $ B.concat respBodyBSS
-  return $ case Success <$> pure status
-               <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
-               <*> respHdr
-               <*> respCk of
-      Validation (Right success) -> success
-      Validation (Left errs) ->
-        case ApiError
+  case statusIsSuccessful status of
+    True ->
+      let res = Success
+            <$> pure status
+            <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
+            <*> respHdr
+            <*> respCk
+      in pure $ case res of
+           Validation (Right success) -> success
+           Validation (Left errs) -> Failure $ Right (OtherError (toException $ UnknownClientException $ T.intercalate "\n" $ fmap (T.pack . show) errs))
+
+    False ->
+      let res = ApiError
               <$> pure status
               <*> (Validation $ toParamErr $ decode' (Route' :: Route' m r) respBodyBS)
               <*> (Just <$> respHdr)
-              <*> (Just <$> respCk) of
-           Validation (Right failure) -> (Failure . Left) failure
-           Validation (Left _errs) -> Failure $ Right (OtherError (toException $ UnknownClientException $ T.intercalate "\n" $ fmap (T.pack . show) errs))
+              <*> (Just <$> respCk)
+      in pure $ case res of
+        Validation (Right failure) -> (Failure . Left) failure
+        Validation (Left errs) -> Failure $ Right (OtherError (toException $ UnknownClientException $ T.intercalate "\n" $ fmap (T.pack . show) errs))
+
     where toParamErr :: Either String a -> Either [ParamErr] a
           toParamErr (Left _str) = Left [ParseErr "" $ T.pack _str]
           toParamErr (Right r)   = Right r
