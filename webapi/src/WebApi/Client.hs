@@ -59,9 +59,10 @@ module WebApi.Client
        ) where
 
 import           Control.Exception
+import           Data.Bifunctor
 import qualified Data.ByteString as B
 import           Data.ByteString.Builder (toLazyByteString)
-import           Data.ByteString.Lazy (ByteString, fromStrict)
+import           Data.ByteString.Lazy (ByteString, fromStrict, toStrict)
 import           Data.Either (isRight)
 import           Data.List (find)
 import           Data.Maybe (fromJust)
@@ -69,9 +70,11 @@ import           Data.Proxy
 import           Data.Text (Text)
 import qualified Data.Text as T
 import           Data.Text.Encoding (decodeUtf8)
+import qualified Data.Text.Encoding as T
 import           Data.Time.Clock (getCurrentTime)
 import           Data.Typeable (Typeable)
 import           Data.Word
+import           GHC.Exts
 import qualified Network.HTTP.Client as HC
 import qualified Network.HTTP.Client.MultipartFormData as HC
 import qualified Network.HTTP.Client.TLS as HC (tlsManagerSettings)
@@ -84,15 +87,16 @@ import           WebApi.Contract
 import           WebApi.Internal
 import           WebApi.Param
 import           WebApi.Util
---import           Data.String                           (IsString (..))
-import           GHC.Exts
+import           Control.Monad ( (>=>) )
 
 -- | Datatype representing the settings related to client.
-data ClientSettings = ClientSettings { baseUrl           :: String     -- ^ base url of the API being called.
-                                     , connectionManager :: HC.Manager -- ^ connection manager for the connection.
-                                     , requestHook       :: HC.Request -> IO HC.Request -- ^ http request hook
-                                     , extraUnreserved    :: [Word8] -- ^ Reserved characters to be considered as unreserved.
-                                     }
+data ClientSettings =
+  ClientSettings { baseUrl           :: String     -- ^ base url of the API being called.
+                 , connectionManager :: HC.Manager -- ^ connection manager for the connection.
+                 , requestHook       :: HC.Request -> IO HC.Request -- ^ http request hook
+                 , responseHook      :: HC.Response ByteString -> IO (HC.Response ByteString) -- ^ http response hook
+                 , extraUnreserved   :: [Word8] -- ^ Reserved characters to be considered as unreserved.
+                 }
 
 data Route' m r = Route'
 
@@ -101,19 +105,15 @@ fromClientResponse :: forall m r.( FromHeader (HeaderOut m r)
                               , Decodings (ContentTypes m r) (ApiOut m r)
                               , Decodings (ContentTypes m r) (ApiErr m r)
                               , FromParam 'Cookie (CookieOut m r)
-
-                             ) => HC.Response HC.BodyReader -> IO (Response m r)
+                             ) => HC.Response ByteString -> IO (Response m r)
 fromClientResponse hcResp = do
   let status   = HC.responseStatus hcResp
       hdrsOut  = HC.responseHeaders hcResp
-      respBody = HC.responseBody hcResp
+      respBodyBS = HC.responseBody hcResp
       respHdr  = fromHeader hdrsOut :: Validation [ParamErr] (HeaderOut m r)
       respCj   = (HC.destroyCookieJar (HC.responseCookieJar hcResp))
       respCk   = fromCookie (cookieBS respCj)
-  -- NOTE: Consuming body strictly
       -- respCk   = fromCookie
-  respBodyBSS <- HC.brConsume respBody
-  let respBodyBS = fromStrict $ B.concat respBodyBSS
   case statusIsSuccessful status of
     True ->
       let res = Success
@@ -135,38 +135,40 @@ fromClientResponse hcResp = do
         Validation (Right failure) -> (Failure . Left) failure
         Validation (Left errs) -> Failure $ Right (OtherError (toException $ UnknownClientException $ T.intercalate "\n" $ fmap (T.pack . show) errs))
 
-    where toParamErr :: Either String a -> Either [ParamErr] a
-          toParamErr (Left _str) = Left [ParseErr "" $ T.pack _str]
+    where toParamErr :: Either Text a -> Either [ParamErr] a
+          toParamErr (Left _str) = Left [ParseErr "" _str]
           toParamErr (Right r)   = Right r
 
           decode' :: ( Decodings (ContentTypes m r) a
-                   ) => apiRes m r -> ByteString -> Either String a
+                   ) => apiRes m r -> ByteString -> Either Text a
           decode' r o = case getContentType (HC.responseHeaders hcResp) of
             Just ctype -> let decs = decodings (reproxy r) o
-                          in maybe (firstRight (map snd decs)) id (mapContentMedia decs ctype)
-            Nothing    -> firstRight (map snd (decodings (reproxy r) o))
+                          in maybe (firstRight o (map snd decs)) (first T.pack) (mapContentMedia decs ctype)
+            Nothing    -> firstRight o (map snd (decodings (reproxy r) o))
 
           reproxy :: apiRes m r -> Proxy (ContentTypes m r)
           reproxy = const Proxy
 
-          firstRight :: [Either String b] -> Either String b
-          firstRight = maybe (Left "Couldn't find matching Content-Type") id . find isRight
+          firstRight :: ByteString -> [Either String b] -> Either Text b
+          firstRight resp = maybe (Left (T.decodeUtf8 $ toStrict $ resp)) (first T.pack) . find isRight
 
           cookieBS :: [HC.Cookie] -> [(B.ByteString, B.ByteString)]
           cookieBS = map (\ck -> (HC.cookie_name ck, HC.cookie_value ck))
 
 -- | Creates a request from the 'Request' type.
-toClientRequest :: forall m r.( ToParam 'PathParam (PathParam m r)
-                          , ToParam 'QueryParam (QueryParam m r)
-                          , ToParam 'FormParam (FormParam m r)
-                          , ToHeader (HeaderIn m r)
-                          , ToParam 'FileParam (FileParam m r)
-                          , ToParam 'Cookie (CookieIn m r)
-                          , SingMethod m
-                          , MkPathFormatString r
-                          , PartEncodings (RequestBody m r)
-                          , ToHListRecTuple (StripContents (RequestBody m r))
-                          ) => [Word8] -> HC.Request -> Request m r -> IO HC.Request
+toClientRequest ::
+  forall m r.
+  ( ToParam 'PathParam (PathParam m r)
+  , ToParam 'QueryParam (QueryParam m r)
+  , ToParam 'FormParam (FormParam m r)
+  , ToHeader (HeaderIn m r)
+  , ToParam 'FileParam (FileParam m r)
+  , ToParam 'Cookie (CookieIn m r)
+  , SingMethod m
+  , MkPathFormatString r
+  , PartEncodings (RequestBody m r)
+  , ToHListRecTuple (StripContents (RequestBody m r))
+  ) => [Word8] -> HC.Request -> Request m r -> IO HC.Request
 toClientRequest extraUnres clientReq req = do
   now <- getCurrentTime
   let cReq' = clientReq
@@ -219,7 +221,7 @@ toClientRequest extraUnres clientReq req = do
                     }
 
 -- | Given a `Request` type, create the request and obtain a response. Gives back a 'Response'.
-client :: forall m r .
+client :: forall m r.
           ( ToParam 'PathParam (PathParam m r)
           , ToParam 'QueryParam (QueryParam m r)
           , ToParam 'FormParam (FormParam m r)
@@ -238,7 +240,8 @@ client :: forall m r .
 client sett req = do
   cReqInit <- HC.parseRequest (baseUrl sett)
   cReq <- toClientRequest (extraUnreserved sett) cReqInit req >>= requestHook sett
-  catches (HC.withResponse cReq (connectionManager sett) fromClientResponse)
+  catches (HC.withResponse cReq (connectionManager sett) (go >=> responseHook sett >=> fromClientResponse))
+
     [ Handler (\(ex :: HC.HttpException) -> do
                 case ex of
 #if MIN_VERSION_http_client(0,5,0)
@@ -281,6 +284,12 @@ client sett req = do
 
           firstRight :: [Either String b] -> Either String b
           firstRight = maybe (Left "Couldn't find matching Content-Type") id . find isRight
+
+          go resp = do
+            -- NOTE: Consuming body strictly
+            respBodyBSS <- HC.brConsume (HC.responseBody resp)
+            let respBodyBS = fromStrict $ B.concat respBodyBSS
+            pure (respBodyBS <$ resp)
 
 -- | This exception is used to signal an irrecoverable error while deserializing the response.
 data UnknownClientException = UnknownClientException Text
@@ -384,6 +393,7 @@ mkClientSettings acls = do
       pure (ClientSettings { baseUrl           = bUrl
                            , connectionManager = mgr
                            , requestHook       = pure
+                           , responseHook      = pure
                            , extraUnreserved   = []
                            }
            )
@@ -391,6 +401,7 @@ mkClientSettings acls = do
       pure (ClientSettings { baseUrl           = bUrl
                            , connectionManager = mgr
                            , requestHook       = pure
+                           , responseHook      = pure
                            , extraUnreserved   = []
                            }
            )
