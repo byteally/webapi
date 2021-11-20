@@ -63,6 +63,7 @@ module WebApi.Contract
        , pattern Req
        , Response (..)
        , ApiError (..)
+       , ApiErrParseFailException (..)
        , OtherError (..)
        , Resource (..)
        , ReqInvariant
@@ -82,7 +83,7 @@ module WebApi.Contract
        , OpId (..)
        ) where
 
-import           Control.Exception (SomeException)
+import           Control.Exception (SomeException, Exception)
 import           Data.Aeson        (Value)
 import           Data.Proxy
 import           Data.Text (Text)
@@ -251,6 +252,13 @@ data ApiError m r = ApiError
   , headerOut :: Maybe (HeaderOut m r)
   , cookieOut :: Maybe (CookieOut m r)
   }
+
+data ApiErrParseFailException = ApiErrParseFailException 
+  { statusCode :: Status
+  , errorMessage :: Text
+  } deriving Show
+
+instance Exception ApiErrParseFailException
 
 -- | Datatype representing an unknown failure.
 data OtherError = OtherError { exception :: SomeException }
