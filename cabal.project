@@ -7,3 +7,4 @@ packages:
   webapi-docs
   webapi-xml
   webapi-openapi
+  webapi-reflex-dom
