@@ -29,6 +29,9 @@ library
                       Reflex.Dom.Contrib.MonadRouted
                       Reflex.Dom.Contrib.Router
 
+  if !impl (ghcjs)
+    build-depends: jsaddle-warp
+    exposed-modules: Devel
     -- Modules included in this library but not exported.
     -- other-modules:
 

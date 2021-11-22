@@ -19,26 +19,30 @@
 {-# LANGUAGE AllowAmbiguousTypes       #-}
 module WebApi.Reflex.Dom.Router where
 
-import Data.Kind
-import Data.Proxy
-import GHC.TypeLits
-import WebApi.Contract
-import WebApi.Util
-import WebApi.Param
-import WebApi.ContentTypes
-import Data.Text (Text)
+import           Control.Monad.Fix
+import           Data.Functor
+import           Data.Kind
+import           Data.Proxy
+import           Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
-import Data.Typeable
-import Network.HTTP.Types.Status
-import Reflex hiding (Request, Response, HList(..))
-import Reflex.Dom.Contrib.MonadRouted
-import Control.Monad.Fix
+import           Data.Text.Encoding (encodeUtf8)
+import           Data.Typeable
+import qualified Debug.Trace as DT
+import           GHC.TypeLits
+import           Network.HTTP.Types.Status
+import           Reflex hiding (Request, Response, HList(..))
+import           Reflex.Dom.Contrib.MonadRouted
+import           Reflex.Dom.Core hiding ( Request, Response, Namespace, HList (..) )
+import           Reflex.Network ( networkView, networkHold )
+import           WebApi.ContentTypes
+import           WebApi.Contract
+import           WebApi.Param
+import           WebApi.Util
 
 -- Compact Start
-import GHC.Records
-import GHC.TypeLits
-import Data.Type.Equality
+import           GHC.Records
+import           GHC.TypeLits
+import           Data.Type.Equality
 -- Compact End
 
 data Dom m
@@ -49,48 +53,72 @@ instance SingMethod m => SingMethod (Dom m) where
 class WebUIServer (s :: *) where
   type UIInterface s :: *
   type UIInterface s = s
-  type HandlerM s :: * -> *
+  -- type HandlerM s :: * -> *
 
-class UIHandler w t s m r where
-  handler :: Proxy s -> Dynamic t (Request m r) -> Dynamic t (HandlerM s (Response m r))
+class UIHandler w (t :: *) s m r where
+  handler :: Proxy s -> Dynamic t (Request m r) -> Dynamic t (w (Response m r))
 
 data DomRequest = DomRequest {pathInfo :: [Text]}
-data DomResponse = DomResponse
+data DomResponse =
+  DomResponse
+  deriving (Show)
   
-type ReflexDomApplication m = DomRequest -> (RouteResult DomResponse -> m ()) -> m ()
+type ReflexDomApplication t m a = Dynamic t DomRequest -> (Dynamic t (m (RouteResult DomResponse)) -> m a) -> m a
 
-class Monad w => Router w (server :: *) (r :: k) (pr :: (*, [*])) where
-  route :: Proxy r -> server -> ParsedRoute pr -> ReflexDomApplication w
+class Monad w => Router (w :: * -> *) (t :: *) (server :: *) (r :: k) (pr :: (*, [*])) where
+  route :: Proxy '(r, t) -> server -> ParsedRoute pr -> ReflexDomApplication t w a
 
-instance (Router w s route pr, Router w s routes pr) => Router w s ((route :: *) ': routes) pr where
+
+{-
+-- Dynamic t DomRequest -> m () -- (Dynamic t (RouteResult DomResponse))
+
+dynRes <- route ...
+dynRes2 <- route ...
+
+
+-}
+
+instance
+  ( Router w t s route pr
+  , Router w t s routes pr
+  , Reflex t
+  ) => Router w t s ((route :: *) ': routes) pr where
   route _ _s parsedRoute request respond =
-    route (Proxy :: Proxy route) _s parsedRoute request $ \case
-      Matched a -> respond $ Matched a
-      NotMatched -> route (Proxy :: Proxy routes) _s parsedRoute request respond
+    route (Proxy :: Proxy '(route, t)) _s parsedRoute request (fmap go)
 
-instance Monad w => Router w s '[] pr where
-  route _ _s _ _ respond = respond NotMatched
-  
-instance (Monad w, Router w s rest '(m, pp :++ '[Namespace ns])) => Router w s ((ns :: *) :// (rest :: *)) '(m, pp) where
-  route _ _s parsedRoute request respond = route (Proxy :: Proxy rest) _s (snocParsedRoute parsedRoute $ NSPiece (Proxy :: Proxy ns)) request respond
+    where
+      go ma = do
+        domRes <- ma
+        case domRes of
+          Matched a -> respond $ Matched a
+          NotMatched -> route (Proxy :: Proxy '(routes, t)) _s parsedRoute request respond
 
-instance (Monad w, Router w s (MarkDyn rest) '(m, (pp :++ '[DynamicPiece piece])), DecodeParam piece)
-                      => Router w s ((piece :: *) :/ (rest :: *)) '(m, pp) where
-  route _ _s parsedRoute request respond =
+instance (Monad w, Reflex t) => Router w t s '[] pr where
+  route _ _s _ _ respond = respond never
+
+instance (Monad w, Router w t s rest '(m, pp :++ '[Namespace ns])) => Router w t s ((ns :: *) :// (rest :: *)) '(m, pp) where
+  route _ _s parsedRoute request respond = route (Proxy :: Proxy '(rest, t)) _s (snocParsedRoute parsedRoute $ NSPiece (Proxy :: Proxy ns)) request respond
+
+instance (Monad w, Router w t s (MarkDyn rest) '(m, (pp :++ '[DynamicPiece piece])), DecodeParam piece)
+                      => Router w t s ((piece :: *) :/ (rest :: *)) '(m, pp) where
+  route _ _s parsedRoute request respond = undefined
+{-    
     case pathInfo request of
       (lpth : rpths)  -> case (decodeParam (encodeUtf8 lpth) :: Maybe piece) of
-        Just dynPiece -> route (Proxy :: Proxy (MarkDyn rest)) _s (snocParsedRoute parsedRoute $ DPiece dynPiece) request {pathInfo = rpths} respond
+        Just dynPiece -> route (Proxy :: Proxy '((MarkDyn rest), t)) _s (snocParsedRoute parsedRoute $ DPiece dynPiece) request {pathInfo = rpths} respond
         Nothing -> respond NotMatched
       _ -> respond $ NotMatched  
-
-instance (Monad w, Router w s (MarkDyn rest) '(m, (pp :++ '[StaticPiece piece])), KnownSymbol piece)
-  => Router w s ((piece :: Symbol) :/ (rest :: *)) '(m, pp) where
-  route _ _s parsedRoute request respond =
+-}
+    
+instance (Monad w, Router w t s (MarkDyn rest) '(m, (pp :++ '[StaticPiece piece])), KnownSymbol piece)
+  => Router w t s ((piece :: Symbol) :/ (rest :: *)) '(m, pp) where
+  route _ _s parsedRoute request respond = undefined
+{-  
     case pathInfo request of
-      (lpth : rpths) | lpieceTxt == lpth -> route (Proxy :: Proxy (MarkDyn rest)) _s (snocParsedRoute parsedRoute $ SPiece (Proxy :: Proxy piece)) request {pathInfo = rpths} respond
+      (lpth : rpths) | lpieceTxt == lpth -> route (Proxy :: Proxy '((MarkDyn rest), t)) _s (snocParsedRoute parsedRoute $ SPiece (Proxy :: Proxy piece)) request {pathInfo = rpths} respond
       _ -> respond $ NotMatched
     where lpieceTxt = symTxt (Proxy :: Proxy piece)
-
+-}
 -- Base Cases
 
 instance ( KnownSymbol lpiece
@@ -110,8 +138,10 @@ instance ( KnownSymbol lpiece
          , Typeable route
          , WebUIServer s
          , Monad w
-         ) => Router w s ((lpiece :: Symbol) :/ (rpiece :: Symbol)) '(m, pp) where
-  route _ serv parsedRoute request respond =
+         , SingMethod m
+         ) => Router w t s ((lpiece :: Symbol) :/ (rpiece :: Symbol)) '(m, pp) where
+  route _ serv parsedRoute request respond = undefined
+{-  
     case pathInfo request of
       (lpth : rpth : []) | lpieceTxt == lpth && rpieceTxt == rpth -> respond . Matched =<< getResponse
       _ -> respond NotMatched
@@ -122,11 +152,8 @@ instance ( KnownSymbol lpiece
           pathPar = fromParsedRoute pRoute
           wbReq = DomRequest undefined
           getResponse = do
-            apiResp' <- fromDomRequest request pathPar (\(req :: Request m route) -> toIO serv wbReq $ apiHandler req)
-            response <- case apiResp' of
-              Validation (Right apiResp) -> return apiResp
-              Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
-            return $ toDomResponse request response
+            toDomResponse request <$> fromDomRequest request pathPar (\(req :: Request m route) -> toIO serv wbReq $ apiHandler (Proxy :: Proxy s) (pure req))
+-}
 
 instance ( KnownSymbol rpiece
          , paths ~ (pp :++ '[DynamicPiece lpiece, StaticPiece rpiece])
@@ -145,8 +172,10 @@ instance ( KnownSymbol rpiece
          , Typeable route
          , WebUIServer s
          , Monad w
-         ) => Router w s ((lpiece :: *) :/ (rpiece :: Symbol)) '(m, pp) where
-  route _ serv parsedRoute request respond =
+         , SingMethod m
+         ) => Router w t s ((lpiece :: *) :/ (rpiece :: Symbol)) '(m, pp) where
+  route _ serv parsedRoute request respond = undefined
+{-  
     case pathInfo request of
       (lpth : rpth : []) | rpieceTxt == rpth -> case (decodeParam (encodeUtf8 lpth) :: Maybe lpiece) of
         Just dynVal -> respond . Matched =<< getResponse dynVal
@@ -162,6 +191,7 @@ instance ( KnownSymbol rpiece
               Validation (Right apiResp) -> return apiResp
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toDomResponse request response
+-}
 
 instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
          , UIHandler w t s m route
@@ -177,8 +207,9 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
          , Typeable route
          , WebUIServer s
          , Monad w
-         ) => Router w s (DynamicPiece t) '(m, pp) where
-  route _ serv parsedRoute request respond =
+         , SingMethod m
+         ) => Router w t s (DynamicPiece t) '(m, pp) where
+  route _ serv parsedRoute request respond = undefined {-
     case pathInfo request of
       (lpth : []) -> case (decodeParam (encodeUtf8 lpth) :: Maybe t) of
         Just dynVal -> respond . Matched =<< getResponse dynVal
@@ -193,6 +224,7 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t]))
               Validation (Right apiResp) -> return apiResp
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toDomResponse request response
+-}
 
 instance ( PathParam m (ns :// piece) ~ ()
          , ParamErrToApiErr (ApiErr m (ns :// piece))
@@ -210,8 +242,9 @@ instance ( PathParam m (ns :// piece) ~ ()
          , Encodings (ContentTypes m (ns :// piece)) (ApiErr m (ns :// piece))
          , Encodings (ContentTypes m (ns :// piece)) (ApiOut m (ns :// piece))
          , Monad w
-         ) => Router w s ((ns :: *) :// (piece :: Symbol)) '(m, pp) where
-  route _ serv _ request respond =
+         ) => Router w t s ((ns :: *) :// (piece :: Symbol)) '(m, pp) where
+  route _ serv _ request respond = undefined
+{-  
     case pathInfo request of
       (pth : []) | symTxt (Proxy :: Proxy piece) == pth -> respond . Matched =<< getResponse
       [] | T.null $ symTxt (Proxy :: Proxy piece) -> respond . Matched =<< getResponse
@@ -223,42 +256,81 @@ instance ( PathParam m (ns :// piece) ~ ()
               Validation (Right apiResp) -> return apiResp 
               Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
             return $ toDomResponse request response
+-}
 
+router ::
+  forall apis server m t a.
+  ( Router m t server apis '(CUSTOM "", '[])
+  , MonadWidget t m
+  ) => Proxy apis -> server -> ReflexDomApplication t m a
+router _ s = route (Proxy :: Proxy '(apis, t)) s emptyParsedRoutes
 
-router :: ( Router m server apis '(CUSTOM "", '[])
-          ) => Proxy apis -> server -> ReflexDomApplication m
-router apis s = route apis s emptyParsedRoutes
+fromDomRequest :: forall w t m r.
+  ( Functor w
+  , SingMethod m
+  , MonadWidget t w
+  ) =>
+  Dynamic t DomRequest ->
+  (Dynamic t (Request m r) -> Dynamic t (w (Response m r))) ->
+  Dynamic t (w (Validation [ParamErr] (Response m r)))
+  -- w (Event t (Validation [ParamErr] (Response m r)))
+fromDomRequest domReq handlerFn =
+  handlerFn (go <$> domReq)
 
-fromDomRequest :: forall m r w.
-                   DomRequest
-                 -> PathParam m r
-                 -> (Request m r -> w (Response m r))
-                 -> w (Validation [ParamErr] (Response m r))
-fromDomRequest waiReq pathPar handlerFn = undefined
+  where
+    go = undefined
+{-
+            apiResp' <- fromDomRequest request pathPar (\(req :: Request m route) -> toIO serv wbReq $ apiHandler (Proxy :: Proxy s) (pure req))
+            response <- case apiResp' of
+              Validation (Right apiResp) -> return apiResp
+              Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs)
+-}
 
 toIO :: s -> DomRequest -> eff (Response m r) -> eff (Response m r)
-toIO = undefined
+toIO _ _ = id
 
 -- apiHandler :: Proxy s -> Dynamic t (Request m route) -> Dynamic t (HandlerM s (Response m r))
-apiHandler = undefined
+apiHandler ::
+  ( UIHandler w t s m r
+  ) => Proxy s -> Dynamic t (Request m r) -> Dynamic t (w (Response m r))
+apiHandler = handler
 
-toDomResponse :: ( ToHeader (HeaderOut m r)
-                  , ToParam 'Cookie (CookieOut m r)
-                  , Encodings (ContentTypes m r) (ApiOut m r)
-                  , Encodings (ContentTypes m r) (ApiErr m r)
-                  ) => DomRequest -> Response m r -> DomResponse
-toDomResponse wreq resp = DomResponse {}
+toDomResponse ::
+  ( ToHeader (HeaderOut m r)
+  , ToParam 'Cookie (CookieOut m r)
+  , Encodings (ContentTypes m r) (ApiOut m r)
+  , Encodings (ContentTypes m r) (ApiErr m r)
+  , Reflex t
+  ) => Dynamic t DomRequest -> Event t (Validation [ParamErr] (Response m r)) -> Event t DomResponse
+toDomResponse _domReq res =
+  fmap go res
 
-toUIApplication :: (Monad m, Reflex t, MonadRouted t m, MonadFix m, MonadHold t m) => ReflexDomApplication m -> m ()
+  where
+    go = undefined
+
+toUIApplication ::
+  ( DomBuilder t m
+  , Monad m
+  , Reflex t
+  , MonadRouted t m
+  , MonadFix m
+  , MonadHold t m
+  -- , EventWriter t (RouteResult DomResponse) m
+  ) => ReflexDomApplication t m (Event t (RouteResult DomResponse)) -> m (Event t (RouteResult DomResponse))
 toUIApplication app = withPathSegment $ \dPathInfo -> do
-  app (DomRequest undefined) $ \routeResult -> case routeResult of
-    Matched result -> pure ()
-    NotMatched -> pure ()
+  app (go <$> dPathInfo) pure
 
-uiApp :: forall server m t.
-  ( Monad m, Reflex t, MonadRouted t m, MonadFix m
-  , MonadHold t m, Router m server (Apis (UIInterface server)) '(CUSTOM "", '[])) => server -> m ()
-uiApp server = toUIApplication $ router (Proxy :: Proxy (Apis (UIInterface server))) server
+  where
+    go (pSegMay, qps) =
+      DT.trace ("pSegMay: " <> show pSegMay) (DomRequest [])
+
+uiApp :: forall (t :: *) server m.
+  ( Router (RouteT t m) t server (Apis (UIInterface server)) '(CUSTOM "", '[])
+  , MonadWidget t m
+  -- , EventWriter t (RouteResult DomResponse) m
+  ) => server -> m (Event t (RouteResult DomResponse))
+uiApp server =
+  routeApp "" $ toUIApplication $ router (Proxy :: Proxy (Apis (UIInterface server))) server
 
 
 -- Shared: Server Router
@@ -281,7 +353,9 @@ data ParsedRoute :: (*, [*]) -> * where
   ConsNSPiece      :: Proxy (ns :: *) -> ParsedRoute '(method, ps) -> ParsedRoute '(method, ((Namespace ns) ': ps))
   ConsDynamicPiece :: !t -> ParsedRoute '(method, ps) -> ParsedRoute '(method, ((DynamicPiece t) ': ps))
 
-data RouteResult a = NotMatched | Matched a
+data RouteResult a =
+  NotMatched | Matched a
+  deriving (Show, Eq)
 
 type family MarkDyn (pp :: *) :: * where
   MarkDyn (p1 :/ t)  = (p1 :/ t)
@@ -363,7 +437,6 @@ type family GetOpIdName api (opId :: OpId) :: Symbol where
                                                )
 
 -}
-
 -- Request Builder  
 {-
 data RequestP pp qp fp hd fu bd = RequestP
