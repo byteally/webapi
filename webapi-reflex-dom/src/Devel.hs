@@ -27,7 +27,7 @@ import Reflex.Dom.Contrib.MonadRouted
 main :: IO ()
 main = do
   run 3001 $ mainWidget $ do
-    ev <- uiApp (mkRoute @(Dom GET) @HomeR () ()) SampleApp -- add default route
+    ev <- uiApp (defUiRequest @(Dom GET) @HomeR () ()) SampleApp -- add default route
     d <- holdDyn "" (T.pack . show <$> ev)
     dynText d
     pure ()
@@ -78,13 +78,13 @@ instance
     el "div" $ text "Hello HomeR ............"
     el "div" $ do
       ev1 <- link "page1"
-      navigate (mkRoute @(Dom GET) @Page1R () () <$ _link_clicked ev1)
+      navigate (defUiRequest @(Dom GET) @Page1R () () <$ _link_clicked ev1)
     el "div" $ do
       ev2 <- link "page2"
-      navigate (mkRoute @(Dom GET) @Page2R 10 () <$ _link_clicked ev2)
+      navigate (defUiRequest @(Dom GET) @Page2R 10 () <$ _link_clicked ev2)
     el "div" $ do
       ev3 <- link "page3"
-      navigate (mkRoute @(Dom GET) @Page3R 15 (QP { f1 =10, f2= 15.5 }) <$ _link_clicked ev3)
+      navigate (defUiRequest @(Dom GET) @Page3R 15 (QP { f1 =10, f2= 15.5 }) <$ _link_clicked ev3)
     el "div" $ do
       ev4 <- link "404"
       redirectInternal ("/page4/zo" <$ _link_clicked ev4)
@@ -103,7 +103,7 @@ instance
   handler _ _  = pure $ do
     text "Hello Page1"
     ev1 <- link "home"
-    navigate (mkRoute @(Dom GET) @HomeR () () <$ _link_clicked ev1)
+    navigate (defUiRequest @(Dom GET) @HomeR () () <$ _link_clicked ev1)
     respond ()
 
 instance
@@ -117,7 +117,7 @@ instance
     text "Hello Page2"
     dynText (T.pack . show . pathParam <$> req)
     ev1 <- link "home"
-    navigate (mkRoute @(Dom GET) @HomeR () () <$ _link_clicked ev1)
+    navigate (defUiRequest @(Dom GET) @HomeR () () <$ _link_clicked ev1)
     respond ()
 
 instance
@@ -129,5 +129,5 @@ instance
   handler _ _  = pure $ do
     text "Hello Page3"
     ev1 <- link "home"
-    navigate (mkRoute @(Dom GET) @HomeR () () <$ _link_clicked ev1)
+    navigate (defUiRequest @(Dom GET) @HomeR () () <$ _link_clicked ev1)
     respond ()

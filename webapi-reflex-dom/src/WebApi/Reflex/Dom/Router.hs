@@ -19,7 +19,16 @@
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE TypeApplications      #-}
 
-module WebApi.Reflex.Dom.Router where
+module WebApi.Reflex.Dom.Router
+  ( respond
+  , raise
+  , navigate
+  , defUiRequest
+  , uiApp
+  , WebUIServer (..)
+  , UIHandler (..)
+  , Dom
+  ) where
 
 import           Control.Monad.Fix
 import           Data.Functor
@@ -29,7 +38,6 @@ import           Data.Text (Text)
 import qualified Data.Text as T
 import           Data.Text.Encoding (encodeUtf8)
 import           Data.Typeable
-import qualified Debug.Trace as DT
 import           GHC.TypeLits
 import           Network.HTTP.Types.Status
 import           Reflex hiding (Request, Response, HList(..))
@@ -46,6 +54,7 @@ import qualified WebApi.Param as W
 import qualified Data.Text.Encoding as T
 import Network.HTTP.Types.URI
 import qualified Data.ByteString as BS
+import Data.Typeable
 
 -- Compact Start
 import           GHC.Records
@@ -61,14 +70,24 @@ instance SingMethod m => SingMethod (Dom m) where
 class WebUIServer (s :: *) where
   type UIInterface s :: *
   type UIInterface s = s
-  -- type HandlerM s :: * -> *
 
 class UIHandler w (t :: *) s m r where
   handler :: Proxy s -> Dynamic t (Request m r) -> Dynamic t (w (Response m r))
 
+newtype UIRequestRep =
+  UIRequestRep { getUIRequestRep :: TypeRep
+               } deriving (Show, Eq)
+
+mkUIRequestRep ::
+  forall route (m :: *) (r :: *).
+  ( Typeable m
+  , Typeable r
+  ) => route m r -> UIRequestRep
+mkUIRequestRep _ = UIRequestRep { getUIRequestRep = typeOf (undefined :: UIRequest m r) }
+
 data DomRequest = DomRequest {pathInfo :: [Text], queryPathInfo :: [ (BS.ByteString, Maybe BS.ByteString) ] }
 data DomResponse =
-    DomSuccess BS.ByteString
+    DomSuccess UIRequestRep
   | DomFailure (Either [ParamErr] BS.ByteString)
   deriving (Show)
 
@@ -76,9 +95,6 @@ type ReflexDomApplication t m = Dynamic t DomRequest -> Dynamic t (RouteResult (
 
 class Monad w => Router (w :: * -> *) (t :: *) (server :: *) (r :: k) (pr :: (*, [*])) where
   route :: Proxy '(r, t) -> server -> ParsedRoute pr -> ReflexDomApplication t w
-
-notMatched :: RouteResult a
-notMatched = NotMatched
 
 instance ( SingMethod (m :: *)
          , Router w t s r '(Dom m, '[])
@@ -88,7 +104,7 @@ instance ( SingMethod (m :: *)
     route (Proxy :: Proxy '(r, t)) _s (Nil (Proxy :: Proxy (Dom m))) reqDyn
 
 instance ( MonadWidget t w ) => Router w t s (W.Route '[] r) pr where
-  route _ _s _ _ = pure notMatched
+  route _ _s _ _ = pure NotMatched
 
 instance
   ( Router w t s route pr
@@ -101,7 +117,7 @@ instance
                (route (Proxy :: Proxy '(routes, t)) _s parsedRoute request)
 
 instance (Monad w, Reflex t) => Router w t s '[] pr where
-  route _ _s _ _ = pure notMatched
+  route _ _s _ _ = pure NotMatched
 
 instance (Monad w, Router w t s rest '(m, pp :++ '[Namespace ns])) => Router w t s ((ns :: *) :// (rest :: *)) '(m, pp) where
   route _ _s parsedRoute request =
@@ -116,8 +132,8 @@ instance (Monad w, Router w t s (MarkDyn rest) '(m, (pp :++ '[DynamicPiece piece
             case pathInfo req of
               (lpth : rpths)  -> case (decodeParam (encodeUtf8 lpth) :: Maybe piece) of
                 Just dynPiece -> route (Proxy :: Proxy '((MarkDyn rest), t)) _s (snocParsedRoute parsedRoute $ DPiece dynPiece) (fmap (\r -> r {pathInfo = rpths}) reqDyn)
-                Nothing -> pure notMatched
-              _ -> pure notMatched
+                Nothing -> pure NotMatched
+              _ -> pure NotMatched
 
 instance (Reflex t, Monad w, Router w t s (MarkDyn rest) '(m, (pp :++ '[StaticPiece piece])), KnownSymbol piece)
   => Router w t s ((piece :: Symbol) :/ (rest :: *)) '(m, pp) where
@@ -128,7 +144,7 @@ instance (Reflex t, Monad w, Router w t s (MarkDyn rest) '(m, (pp :++ '[StaticPi
       go req = do
         case pathInfo req of
           (lpth : rpths) | lpieceTxt == lpth -> route (Proxy :: Proxy '((MarkDyn rest), t)) _s (snocParsedRoute parsedRoute $ SPiece (Proxy :: Proxy piece)) (fmap (\r -> r {pathInfo = rpths}) reqDyn)
-          _ -> pure notMatched
+          _ -> pure NotMatched
 
         where lpieceTxt = symTxt (Proxy :: Proxy piece)
 
@@ -168,8 +184,8 @@ instance ( KnownSymbol lpiece
                 (lpth : rpth : [])
                   | lpieceTxt == lpth && rpieceTxt == rpth ->
                       fmap Matched getResponse
-                  | otherwise -> pure notMatched
-                _ -> pure notMatched
+                  | otherwise -> pure NotMatched
+                _ -> pure NotMatched
 
                 where
                     lpieceTxt = symTxt (Proxy :: Proxy lpiece)
@@ -212,8 +228,8 @@ instance ( KnownSymbol rpiece
             case pathInfo req of
               (lpth : rpth : []) | rpieceTxt == rpth -> case (decodeParam (encodeUtf8 lpth) :: Maybe lpiece) of
                  Just dynVal -> fmap Matched (getResponse dynVal)
-                 Nothing     -> pure notMatched
-              _ -> pure notMatched
+                 Nothing     -> pure NotMatched
+              _ -> pure NotMatched
               where
                 rpieceTxt = symTxt (Proxy :: Proxy rpiece)
                 getResponse dynVal = do
@@ -250,8 +266,8 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t0]))
             case pathInfo req of
               (lpth : []) -> case (decodeParam (encodeUtf8 lpth) :: Maybe t0) of
                 Just dynVal -> fmap Matched (getResponse dynVal)
-                Nothing     -> pure notMatched
-              _           -> pure notMatched
+                Nothing     -> pure NotMatched
+              _           -> pure NotMatched
 
               where getResponse dynVal = do
                       let pRoute :: ParsedRoute '(m, (pp :++ '[DynamicPiece t0]))
@@ -288,8 +304,8 @@ instance ( PathParam m (ns :// piece) ~ ()
     where go req = do
             case pathInfo req of
               (pth : []) | symTxt (Proxy :: Proxy piece) == pth -> fmap Matched getResponse
-              [] | T.null $ symTxt (Proxy :: Proxy piece) -> pure notMatched
-              _ ->  pure notMatched
+              [] | T.null $ symTxt (Proxy :: Proxy piece) -> pure NotMatched
+              _ ->  pure NotMatched
 
               where getResponse = do
                       toDomResponse reqDyn $ fromDomRequest req () (\(reqDyn0 :: Dynamic t (Request m route)) -> apiHandler (Proxy :: Proxy s) reqDyn0 :: Dynamic t (w (Response m route)))
@@ -347,12 +363,15 @@ apiHandler ::
 apiHandler = handler
 
 toDomResponse ::
+  forall w t m r.
   ( ToHeader (HeaderOut m r)
   , ToParam 'Cookie (CookieOut m r)
   , Encodings (ContentTypes m r) (ApiOut m r)
   , Encodings (ContentTypes m r) (ApiErr m r)
   , Reflex t
   , Applicative w
+  , Typeable m
+  , Typeable r
   ) => Dynamic t DomRequest -> Dynamic t (Validation [ParamErr] (w (Response m r))) -> Dynamic t (w DomResponse)
 toDomResponse _domReq res =
   fmap go res
@@ -363,7 +382,7 @@ toDomResponse _domReq res =
         Validation (Right resp) -> go0 <$> resp
         Validation (Left errs) -> pure (DomFailure (Left errs))
 
-    go0 (Success _ ao _ _) = DomSuccess ""
+    go0 (Success _ ao _ _) = DomSuccess (mkUIRequestRep (undefined :: UIRequest m r))
     go0 (Failure (Left (ApiError { err }))) = DomFailure (Right "")
     go0 (Failure _) = DomFailure (Right "")
 
@@ -379,8 +398,8 @@ toUIApplication ::
   , MkPathFormatString r
   , ToParam 'PathParam (PathParam meth r)
   , ToParam 'QueryParam (QueryParam meth r)
-  ) => Route' meth r -> ReflexDomApplication t m -> m (Event t (RouteResult DomResponse))
-toUIApplication r@Route' { pathParam', queryParam' } app = withPathSegment $ \dPathInfo -> networkView $ do
+  ) => UIRequest meth r -> ReflexDomApplication t m -> m (Event t (RouteResult DomResponse))
+toUIApplication r@UIRequest { uiPathParam, uiQueryParam } app = withPathSegment $ \dPathInfo -> networkView $ do
   routeResult <- app (go <$> dPathInfo)
   case routeResult of
     NotMatched -> pure (pure NotMatched)
@@ -389,9 +408,9 @@ toUIApplication r@Route' { pathParam', queryParam' } app = withPathSegment $ \dP
   where
     go (pSegs, qps) =
       let (segs, qps0) = case filter (not . T.null) pSegs of
-            [] -> (routePaths r pathParam', toQueryParam queryParam')
+            [] -> (routePaths r uiPathParam, toQueryParam uiQueryParam)
             xs -> (xs, go0 qps)
-      in DT.trace ("pSegMay: " <> show segs <> " , " <> show qps0) (DomRequest segs qps0)
+      in DomRequest segs qps0
 
     go0 =
         map (\(k, v) -> (T.encodeUtf8 k, pure $ T.encodeUtf8 v))
@@ -404,7 +423,7 @@ uiApp :: forall (t :: *) server m r meth.
   , MkPathFormatString r
   , ToParam 'PathParam (PathParam meth r)
   , ToParam 'QueryParam (QueryParam meth r)
-  ) => Route' meth r -> server -> m (Event t (RouteResult DomResponse))
+  ) => UIRequest meth r -> server -> m (Event t (RouteResult DomResponse))
 uiApp def server =
   routeApp "" $ toUIApplication def $ router (Proxy :: Proxy (Apis (UIInterface server))) server
 
@@ -558,14 +577,14 @@ instance {-# OVERLAPPING #-} (m ~ m1, r ~ r1) => MkReq (Request m1 r1) m r where
 
 -}
 
-data Route' m r =
-  Route' { pathParam' :: PathParam m r
-         , queryParam' :: QueryParam m r
-         }
+data UIRequest m r =
+  UIRequest { uiPathParam :: PathParam m r
+            , uiQueryParam :: QueryParam m r
+            }
 
-mkRoute :: forall m r. PathParam m r -> QueryParam m r -> Route' m r
-mkRoute pathParam' queryParam' =
-  Route' { pathParam' , queryParam' }
+defUiRequest :: forall m r. PathParam m r -> QueryParam m r -> UIRequest m r
+defUiRequest uiPathParam uiQueryParam =
+  UIRequest { uiPathParam, uiQueryParam }
 
 -- | Navigate to the specified route
 navigate ::
@@ -575,20 +594,21 @@ navigate ::
   , MkPathFormatString r
   , ToParam 'QueryParam (QueryParam meth r)
   , ToParam 'PathParam (PathParam meth r)
-  ) => Event t (Route' meth r) -> m ()
+  ) => Event t (UIRequest meth r) -> m ()
 navigate = redirectInternal . fmap linkText
 
 linkText ::
   ( MkPathFormatString r
   , ToParam 'QueryParam (QueryParam meth r)
   , ToParam 'PathParam (PathParam meth r)
-  ) => Route' meth r -> Text
-linkText r@Route' { pathParam', queryParam' } =
-  T.decodeUtf8 $ W.link r Nothing pathParam' (Just queryParam')
+  ) => UIRequest meth r -> Text
+linkText r@UIRequest { uiPathParam, uiQueryParam } =
+  T.decodeUtf8 $ W.link r Nothing uiPathParam (Just uiQueryParam)
 
 respond ::
   ( HeaderOut meth r ~ ()
   , CookieOut meth r ~ ()
+  , ApiOut meth r ~ ()
   , Applicative m
   ) => ApiOut meth r -> m (Response meth r)
 respond out =
@@ -598,6 +618,7 @@ raise ::
   ( HeaderOut meth r ~ ()
   , CookieOut meth r ~ ()
   , Applicative m
+  , ApiErr meth r ~ ()
   ) => Status -> ApiErr meth r -> m (Response meth r)
 raise status err =
   pure (Failure (Left (ApiError { code = status, err = err, headerOut = Nothing, cookieOut = Nothing })))
