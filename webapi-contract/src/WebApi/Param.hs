@@ -83,6 +83,7 @@ module WebApi.Param
        , defaultParamSettings
        , link
        , renderUriPath
+       , routePaths
 
        -- * Generic (De)Serialization fn
        , genericToQueryParam
@@ -279,21 +280,24 @@ link :: ( ToParam 'QueryParam (QueryParam m r)
         , ToParam 'PathParam (PathParam m r)
         ) =>
           route (m :: *) (r :: *)
-        -> ByteString
+        -> Maybe ByteString
         -> PathParam m r
         -> Maybe (QueryParam m r)
         -> ByteString
-link r basePath paths query = toStrict $ toLazyByteString $ (byteString base) <> uriPath
+link r basePath paths query =
+  toStrict $ toLazyByteString $ (byteString base) <> uriPath
+
   where
-    uriPath = encodePath (routePaths paths r) (toQueryParam query)
+    uriPath = encodePath (routePaths r paths) (toQueryParam query)
     base    = case basePath of
-      "/" -> ""
-      _   -> basePath
+      Nothing  -> ""
+      Just "/" -> ""
+      Just bp  -> bp
 
 renderUriPath ::  ( ToParam 'PathParam path
                    , MkPathFormatString r
                    ) => ByteString -> [Word8] -> path -> route m r -> ByteString
-renderUriPath basePath extraUnreserved p r = toStrict $ toLazyByteString $ (byteString base) <> (encodePathSegments' extraUnreserved0 $ routePaths p r)
+renderUriPath basePath extraUnreserved p r = toStrict $ toLazyByteString $ (byteString base) <> (encodePathSegments' extraUnreserved0 $ routePaths r p)
   where
     base    = case basePath of
       "/" -> ""
@@ -308,8 +312,8 @@ renderUriPath basePath extraUnreserved p r = toStrict $ toLazyByteString $ (byte
 
 routePaths :: ( ToParam 'PathParam path
                 , MkPathFormatString r
-                ) => path -> route m r -> [Text]
-routePaths p r = uriPathPieces (toPathParam p)
+                ) => route m r -> path -> [Text]
+routePaths r = uriPathPieces . toPathParam
 
   where uriPathPieces :: [ByteString] -> [Text]
         uriPathPieces dynVs = reverse $ fst $ foldl' (flip fillHoles) ([], dynVs) (mkPathFormatString (toRoute r))
