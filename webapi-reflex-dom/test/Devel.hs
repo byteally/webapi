@@ -7,10 +7,10 @@
 {-# LANGUAGE TypeOperators              #-}
 {-# LANGUAGE DerivingStrategies         #-}
 {-# LANGUAGE TypeApplications           #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE FlexibleContexts           #-}
+{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE RankNTypes                 #-}
+{-# LANGUAGE TypeFamilies               #-}
 
 module Devel where
 
