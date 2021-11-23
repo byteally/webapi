@@ -27,7 +27,7 @@ import Reflex.Dom.Contrib.MonadRouted
 main :: IO ()
 main = do
   run 3001 $ mainWidget $ do
-    ev <- uiApp (defaultRoute @GET @HomeR () ()) SampleApp -- add default route
+    ev <- uiApp (mkRoute @(Dom GET) @HomeR () ()) SampleApp -- add default route
     d <- holdDyn "" (T.pack . show <$> ev)
     dynText d
     pure ()
@@ -47,24 +47,24 @@ type Page3R = SampleApp :// "page3" :/ Int
 
 instance WebApi SampleApp where
   type Apis SampleApp =
-    '[ Route '[GET] HomeR
-     , Route '[GET] Page1R
-     , Route '[GET] Page2R
-     , Route '[GET] Page3R
+    '[ Route '[Dom GET] HomeR 
+     , Route '[Dom GET] Page1R
+     , Route '[Dom GET] Page2R
+     , Route '[Dom GET] Page3R
      ]
 
-instance ApiContract SampleApp GET HomeR where
-  type ApiOut GET HomeR = ()
+instance ApiContract SampleApp (Dom GET) HomeR where
+  type ApiOut (Dom GET) HomeR = ()
 
-instance ApiContract SampleApp GET Page1R where
-  type ApiOut GET Page1R = ()
+instance ApiContract SampleApp (Dom GET) Page1R where
+  type ApiOut (Dom GET) Page1R = ()
 
-instance ApiContract SampleApp GET Page2R where
-  type ApiOut GET Page2R = ()
+instance ApiContract SampleApp (Dom GET) Page2R where
+  type ApiOut (Dom GET) Page2R = ()
 
-instance ApiContract SampleApp GET Page3R where
-  type ApiOut GET Page3R = ()
-  type QueryParam GET Page3R = QP
+instance ApiContract SampleApp (Dom GET) Page3R where
+  type ApiOut (Dom GET) Page3R = ()
+  type QueryParam (Dom GET) Page3R = QP
 
 instance WebUIServer SampleApp
 
@@ -73,18 +73,18 @@ instance
   , Reflex t
   , DomBuilder t w
   , MonadRouted t w
-  ) => UIHandler w t SampleApp GET HomeR where
+  ) => UIHandler w t SampleApp (Dom GET) HomeR where
   handler _ _  = pure $ do
     el "div" $ text "Hello HomeR ............"
     el "div" $ do
       ev1 <- link "page1"
-      redirectInternal ("/page1" <$ _link_clicked ev1)
+      navigate (mkRoute @(Dom GET) @Page1R () () <$ _link_clicked ev1)
     el "div" $ do
       ev2 <- link "page2"
-      redirectInternal ("/page2/10" <$ _link_clicked ev2)
+      navigate (mkRoute @(Dom GET) @Page2R 10 () <$ _link_clicked ev2)
     el "div" $ do
       ev3 <- link "page3"
-      redirectInternal ("/page3/15?f1=10&f2=10.9" <$ _link_clicked ev3)
+      navigate (mkRoute @(Dom GET) @Page3R 15 (QP { f1 =10, f2= 15.5 }) <$ _link_clicked ev3)
     el "div" $ do
       ev4 <- link "404"
       redirectInternal ("/page4/zo" <$ _link_clicked ev4)
@@ -92,21 +92,19 @@ instance
       ev5 <- link "query-param-fail"
       redirectInternal ("/page3/15?f1=10" <$ _link_clicked ev5)
 
-    pure undefined
-
+    respond ()
 
 instance
   ( Applicative w
   , Reflex t
   , DomBuilder t w
   , MonadRouted t w
-  ) => UIHandler w t SampleApp GET Page1R where
+  ) => UIHandler w t SampleApp (Dom GET) Page1R where
   handler _ _  = pure $ do
     text "Hello Page1"
     ev1 <- link "home"
-    redirectInternal ("/home" <$ _link_clicked ev1)
-    pure undefined
-
+    navigate (mkRoute @(Dom GET) @HomeR () () <$ _link_clicked ev1)
+    respond ()
 
 instance
   ( Applicative w
@@ -114,22 +112,22 @@ instance
   , DomBuilder t w
   , MonadRouted t w
   , PostBuild t w
-  ) => UIHandler w t SampleApp GET Page2R where
+  ) => UIHandler w t SampleApp (Dom GET) Page2R where
   handler _ req = pure $ do
     text "Hello Page2"
     dynText (T.pack . show . pathParam <$> req)
     ev1 <- link "home"
-    redirectInternal ("/home" <$ _link_clicked ev1)
-    pure undefined
+    navigate (mkRoute @(Dom GET) @HomeR () () <$ _link_clicked ev1)
+    respond ()
 
 instance
   ( Applicative w
   , Reflex t
   , DomBuilder t w
   , MonadRouted t w
-  ) => UIHandler w t SampleApp GET Page3R where
+  ) => UIHandler w t SampleApp (Dom GET) Page3R where
   handler _ _  = pure $ do
     text "Hello Page3"
     ev1 <- link "home"
-    redirectInternal ("/home" <$ _link_clicked ev1)
-    pure undefined
+    navigate (mkRoute @(Dom GET) @HomeR () () <$ _link_clicked ev1)
+    respond ()

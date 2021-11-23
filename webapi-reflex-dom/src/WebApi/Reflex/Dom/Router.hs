@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields      #-}
 {-# LANGUAGE NamedFieldPuns             #-}
 {-# LANGUAGE ConstraintKinds       #-}
 {-# LANGUAGE DataKinds             #-}
@@ -17,7 +18,7 @@
 {-# LANGUAGE UndecidableInstances  #-}
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE TypeApplications      #-}
-{-# LANGUAGE AllowAmbiguousTypes       #-}
+
 module WebApi.Reflex.Dom.Router where
 
 import           Control.Monad.Fix
@@ -33,12 +34,15 @@ import           GHC.TypeLits
 import           Network.HTTP.Types.Status
 import           Reflex hiding (Request, Response, HList(..))
 import           Reflex.Dom.Contrib.MonadRouted
-import           Reflex.Dom.Core hiding ( Request, Response, Namespace, HList (..) )
+import           Reflex.Dom.Core hiding ( Request, Response, Namespace, HList (..), link )
+import qualified Reflex.Dom.Core as Dom
 import           Reflex.Network ( networkView, networkHold )
 import           WebApi.ContentTypes
-import           WebApi.Contract
-import           WebApi.Param
-import           WebApi.Util
+import           WebApi.Contract hiding ( Route )
+import           WebApi.Param hiding ( link )
+import           WebApi.Util hiding ( Route )
+import qualified WebApi.Util as W
+import qualified WebApi.Param as W
 import qualified Data.Text.Encoding as T
 import Network.HTTP.Types.URI
 import qualified Data.ByteString as BS
@@ -64,8 +68,8 @@ class UIHandler w (t :: *) s m r where
 
 data DomRequest = DomRequest {pathInfo :: [Text], queryPathInfo :: [ (BS.ByteString, Maybe BS.ByteString) ] }
 data DomResponse =
-    DomSuccess
-  | DomFailure
+    DomSuccess BS.ByteString
+  | DomFailure (Either [ParamErr] BS.ByteString)
   deriving (Show)
 
 type ReflexDomApplication t m = Dynamic t DomRequest -> Dynamic t (RouteResult (m DomResponse))
@@ -77,13 +81,13 @@ notMatched :: RouteResult a
 notMatched = NotMatched
 
 instance ( SingMethod (m :: *)
-         , Router w t s r '(m, '[])
+         , Router w t s r '(Dom m, '[])
          , MonadWidget t w
-         ) => Router w t s (Route '[m] r) pr where
+         ) => Router w t s (W.Route '[Dom m] r) pr where
   route _ _s parsedRoute reqDyn =
-    route (Proxy :: Proxy '(r, t)) _s (Nil (Proxy :: Proxy m)) reqDyn
+    route (Proxy :: Proxy '(r, t)) _s (Nil (Proxy :: Proxy (Dom m))) reqDyn
 
-instance ( MonadWidget t w ) => Router w t s (Route '[] r) pr where
+instance ( MonadWidget t w ) => Router w t s (W.Route '[] r) pr where
   route _ _s _ _ = pure notMatched
 
 instance
@@ -150,6 +154,11 @@ instance ( KnownSymbol lpiece
          , Reflex t
          , MonadWidget t w
          , FromParam 'QueryParam (QueryParam m route)
+         , FormParam m route ~ ()
+         , FileParam m route ~ ()
+         , CookieIn m route ~ ()
+         , HeaderIn m route ~ ()
+         , RequestBody m route ~ '[]
          ) => Router w t s ((lpiece :: Symbol) :/ (rpiece :: Symbol)) '(m, pp) where
   route _ serv parsedRoute reqDyn =
     reqDyn >>= go
@@ -191,6 +200,11 @@ instance ( KnownSymbol rpiece
          , Reflex t
          , MonadWidget t w
          , FromParam 'QueryParam (QueryParam m route)
+         , FormParam m route ~ ()
+         , FileParam m route ~ ()
+         , CookieIn m route ~ ()
+         , HeaderIn m route ~ ()
+         , RequestBody m route ~ '[]
          ) => Router w t s ((lpiece :: *) :/ (rpiece :: Symbol)) '(m, pp) where
   route _ serv parsedRoute reqDyn = reqDyn >>= go
 
@@ -224,6 +238,11 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t0]))
          , Reflex t
          , MonadWidget t w
          , FromParam 'QueryParam (QueryParam m route)
+         , FormParam m route ~ ()
+         , FileParam m route ~ ()
+         , CookieIn m route ~ ()
+         , HeaderIn m route ~ ()
+         , RequestBody m route ~ '[]
          ) => Router w t s (DynamicPiece t0) '(m, pp) where
   route _ serv parsedRoute reqDyn = reqDyn >>= go
 
@@ -258,6 +277,11 @@ instance ( PathParam m (ns :// piece) ~ ()
          , MonadWidget t w
          , route ~ (ns :// piece)
          , FromParam 'QueryParam (QueryParam m route)
+         , FormParam m route ~ ()
+         , FileParam m route ~ ()
+         , CookieIn m route ~ ()
+         , HeaderIn m route ~ ()
+         , RequestBody m route ~ '[]
          ) => Router w t s ((ns :: *) :// (piece :: Symbol)) '(m, pp) where
   route _ serv _ reqDyn = reqDyn >>= go
 
@@ -282,6 +306,11 @@ fromDomRequest :: forall w t m r.
   , SingMethod m
   , MonadWidget t w
   , FromParam 'QueryParam (QueryParam m r)
+  , FormParam m r ~ ()
+  , FileParam m r ~ ()
+  , CookieIn m r ~ ()
+  , HeaderIn m r ~ ()
+  , RequestBody m r ~ '[]
   ) =>
   DomRequest ->
   PathParam m r ->
@@ -294,7 +323,15 @@ fromDomRequest DomRequest { queryPathInfo } pp handlerFn = do
 
   where
       resp =
-        (\qp -> Request { pathParam = pp, queryParam = qp }) <$> fromQueryParam queryPathInfo
+        (\qp ->
+           Request { pathParam = pp
+                   , queryParam = qp
+                   , formParam = ()
+                   , fileParam = ()
+                   , cookieIn = ()
+                   , headerIn = ()
+                   , requestBody = ()
+                   }) <$> fromQueryParam queryPathInfo
 
 {-
             apiResp' <- fromDomRequest request pathPar (\(req :: Request m route) -> toIO serv wbReq $ apiHandler (Proxy :: Proxy s) (pure req))
@@ -323,14 +360,12 @@ toDomResponse _domReq res =
   where
     go resp =
       case resp of
-        Validation (Right resp) -> DomSuccess <$ resp
-        Validation (Left errs) -> pure DomFailure
-{-
-                  response <- case apiResp' of
-                    Validation (Right apiResp) -> return apiResp
-                    Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs) Nothing Nothing
-                  return $ toDomResponse reqDyn response
--}
+        Validation (Right resp) -> go0 <$> resp
+        Validation (Left errs) -> pure (DomFailure (Left errs))
+
+    go0 (Success _ ao _ _) = DomSuccess ""
+    go0 (Failure (Left (ApiError { err }))) = DomFailure (Right "")
+    go0 (Failure _) = DomFailure (Right "")
 
 toUIApplication ::
   forall t m r meth.
@@ -344,8 +379,8 @@ toUIApplication ::
   , MkPathFormatString r
   , ToParam 'PathParam (PathParam meth r)
   , ToParam 'QueryParam (QueryParam meth r)
-  ) => DefaultRoute meth r -> ReflexDomApplication t m -> m (Event t (RouteResult DomResponse))
-toUIApplication DefaultRoute { defaultPathParam, defaultQueryParam } app = withPathSegment $ \dPathInfo -> networkView $ do
+  ) => Route' meth r -> ReflexDomApplication t m -> m (Event t (RouteResult DomResponse))
+toUIApplication r@Route' { pathParam', queryParam' } app = withPathSegment $ \dPathInfo -> networkView $ do
   routeResult <- app (go <$> dPathInfo)
   case routeResult of
     NotMatched -> pure (pure NotMatched)
@@ -354,27 +389,13 @@ toUIApplication DefaultRoute { defaultPathParam, defaultQueryParam } app = withP
   where
     go (pSegs, qps) =
       let (segs, qps0) = case filter (not . T.null) pSegs of
-            [] -> (T.split (== '/') defUri, toQueryParam defaultQueryParam)
+            [] -> (routePaths r pathParam', toQueryParam queryParam')
             xs -> (xs, go0 qps)
       in DT.trace ("pSegMay: " <> show segs <> " , " <> show qps0) (DomRequest segs qps0)
-
-    defUri =
-      T.decodeUtf8 $
-      BS.tail $
-      renderUriPath "" [] defaultPathParam (undefined :: Request meth r)
 
     go0 =
         map (\(k, v) -> (T.encodeUtf8 k, pure $ T.encodeUtf8 v))
 
-
-data DefaultRoute m r =
-  DefaultRoute { defaultPathParam :: PathParam m r
-               , defaultQueryParam :: QueryParam m r
-               }
-
-defaultRoute :: forall m r. PathParam m r -> QueryParam m r -> DefaultRoute m r
-defaultRoute defaultPathParam defaultQueryParam =
-  DefaultRoute { defaultPathParam, defaultQueryParam }
 
 uiApp :: forall (t :: *) server m r meth.
   ( Router (RouteT t m) t server (Apis (UIInterface server)) '(CUSTOM "", '[])
@@ -383,7 +404,7 @@ uiApp :: forall (t :: *) server m r meth.
   , MkPathFormatString r
   , ToParam 'PathParam (PathParam meth r)
   , ToParam 'QueryParam (QueryParam meth r)
-  ) => DefaultRoute meth r -> server -> m (Event t (RouteResult DomResponse))
+  ) => Route' meth r -> server -> m (Event t (RouteResult DomResponse))
 uiApp def server =
   routeApp "" $ toUIApplication def $ router (Proxy :: Proxy (Apis (UIInterface server))) server
 
@@ -535,5 +556,48 @@ instance {-# OVERLAPPING #-} (m ~ m1, r ~ r1) => MkReq (Request m1 r1) m r where
   mkReq = id
   {-# INLINE mkReq #-}
 
--}  
+-}
 
+data Route' m r =
+  Route' { pathParam' :: PathParam m r
+         , queryParam' :: QueryParam m r
+         }
+
+mkRoute :: forall m r. PathParam m r -> QueryParam m r -> Route' m r
+mkRoute pathParam' queryParam' =
+  Route' { pathParam' , queryParam' }
+
+-- | Navigate to the specified route
+navigate ::
+  ( Monad m
+  , Reflex t
+  , MonadRouted t m
+  , MkPathFormatString r
+  , ToParam 'QueryParam (QueryParam meth r)
+  , ToParam 'PathParam (PathParam meth r)
+  ) => Event t (Route' meth r) -> m ()
+navigate = redirectInternal . fmap linkText
+
+linkText ::
+  ( MkPathFormatString r
+  , ToParam 'QueryParam (QueryParam meth r)
+  , ToParam 'PathParam (PathParam meth r)
+  ) => Route' meth r -> Text
+linkText r@Route' { pathParam', queryParam' } =
+  T.decodeUtf8 $ W.link r Nothing pathParam' (Just queryParam')
+
+respond ::
+  ( HeaderOut meth r ~ ()
+  , CookieOut meth r ~ ()
+  , Applicative m
+  ) => ApiOut meth r -> m (Response meth r)
+respond out =
+  pure (Success status200 out () ())
+
+raise ::
+  ( HeaderOut meth r ~ ()
+  , CookieOut meth r ~ ()
+  , Applicative m
+  ) => Status -> ApiErr meth r -> m (Response meth r)
+raise status err =
+  pure (Failure (Left (ApiError { code = status, err = err, headerOut = Nothing, cookieOut = Nothing })))
