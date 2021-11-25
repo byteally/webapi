@@ -44,6 +44,8 @@ library
                     , mtl
                     , ref-tf
                     , exception-transformers
+  if impl(ghcjs)
+    build-depends: ghcjs-base
 
     hs-source-dirs:   src
     default-language: Haskell2010
@@ -52,7 +54,7 @@ test-suite webapi-reflex-dom-test
     default-language: Haskell2010
     type:             exitcode-stdio-1.0
     hs-source-dirs:   test
-    main-is:          Main.hs
+    main-is:          Devel.hs
     build-depends:    base >=4.12.0.0
                     , webapi-contract
                     , jsaddle
@@ -62,7 +64,6 @@ test-suite webapi-reflex-dom-test
                     , text
     if !impl (ghcjs)
       build-depends: jsaddle-warp
-      other-modules: Devel
     -- Modules included in this library but not exported.
     -- other-modules:
 

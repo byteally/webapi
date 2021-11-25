@@ -18,16 +18,19 @@
 {-# LANGUAGE UndecidableInstances  #-}
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE TypeApplications      #-}
+{-# LANGUAGE AllowAmbiguousTypes   #-}
 
 module WebApi.Reflex.Dom.Router
   ( respond
   , raise
   , navigate
-  , defUiRequest
+  , defUIRequest
   , uiApp
   , WebUIServer (..)
   , UIHandler (..)
   , Dom
+
+  , compactUIServer
   ) where
 
 import           Control.Monad.Fix
@@ -72,11 +75,14 @@ class WebUIServer (s :: *) where
   type UIInterface s = s
 
 class UIHandler w (t :: *) s m r where
-  handler :: Proxy s -> Dynamic t (Request m r) -> Dynamic t (w (Response m r))
+  handler :: s -> Dynamic t (Request m r) -> Dynamic t (w (Response m r))
 
 newtype UIRequestRep =
   UIRequestRep { getUIRequestRep :: TypeRep
                } deriving (Show, Eq)
+
+compactUIServer :: forall api m server t. server t (RouteT t m) -> CompactUIServer api (server t (RouteT t m))
+compactUIServer = CompactUIServer
 
 mkUIRequestRep ::
   forall route (m :: *) (r :: *).
@@ -194,7 +200,7 @@ instance ( KnownSymbol lpiece
                     pRoute = snocParsedRoute (snocParsedRoute parsedRoute $ SPiece (Proxy :: Proxy lpiece)) $ SPiece (Proxy :: Proxy rpiece)
                     pathPar = fromParsedRoute pRoute
                     getResponse =
-                      toDomResponse reqDyn (fromDomRequest req (fromParsedRoute pRoute) (\(reqDyn0 :: Dynamic t (Request m route)) -> apiHandler (Proxy :: Proxy s) reqDyn0 :: Dynamic t (w (Response m route)))) :: Dynamic t (w DomResponse)
+                      toDomResponse reqDyn (fromDomRequest req (fromParsedRoute pRoute) (\(reqDyn0 :: Dynamic t (Request m route)) -> apiHandler serv reqDyn0 :: Dynamic t (w (Response m route)))) :: Dynamic t (w DomResponse)
 
 instance ( KnownSymbol rpiece
          , paths ~ (pp :++ '[DynamicPiece lpiece, StaticPiece rpiece])
@@ -235,7 +241,7 @@ instance ( KnownSymbol rpiece
                 getResponse dynVal = do
                   let pRoute :: ParsedRoute '(m, paths)
                       pRoute = snocParsedRoute (snocParsedRoute parsedRoute $ DPiece dynVal) $ SPiece (Proxy :: Proxy rpiece)
-                  toDomResponse reqDyn $ fromDomRequest req (fromParsedRoute pRoute) (\(reqDyn0 :: Dynamic t (Request m route)) -> apiHandler (Proxy :: Proxy s) reqDyn0 :: Dynamic t (w (Response m route)))
+                  toDomResponse reqDyn $ fromDomRequest req (fromParsedRoute pRoute) (\(reqDyn0 :: Dynamic t (Request m route)) -> apiHandler serv reqDyn0 :: Dynamic t (w (Response m route)))
 
 instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t0]))
          , UIHandler w t s m route
@@ -272,7 +278,7 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t0]))
               where getResponse dynVal = do
                       let pRoute :: ParsedRoute '(m, (pp :++ '[DynamicPiece t0]))
                           pRoute = snocParsedRoute parsedRoute $ DPiece dynVal
-                      toDomResponse reqDyn $ fromDomRequest req (fromParsedRoute pRoute) (\(reqDyn0 :: Dynamic t (Request m route)) -> apiHandler (Proxy :: Proxy s) reqDyn0 :: Dynamic t (w (Response m route)))
+                      toDomResponse reqDyn $ fromDomRequest req (fromParsedRoute pRoute) (\(reqDyn0 :: Dynamic t (Request m route)) -> apiHandler serv reqDyn0 :: Dynamic t (w (Response m route)))
 
 instance ( PathParam m (ns :// piece) ~ ()
          , ParamErrToApiErr (ApiErr m (ns :// piece))
@@ -308,7 +314,7 @@ instance ( PathParam m (ns :// piece) ~ ()
               _ ->  pure NotMatched
 
               where getResponse = do
-                      toDomResponse reqDyn $ fromDomRequest req () (\(reqDyn0 :: Dynamic t (Request m route)) -> apiHandler (Proxy :: Proxy s) reqDyn0 :: Dynamic t (w (Response m route)))
+                      toDomResponse reqDyn $ fromDomRequest req () (\(reqDyn0 :: Dynamic t (Request m route)) -> apiHandler serv reqDyn0 :: Dynamic t (w (Response m route)))
 
 router ::
   forall apis server m t.
@@ -359,7 +365,7 @@ fromDomRequest DomRequest { queryPathInfo } pp handlerFn = do
 -- apiHandler :: Proxy s -> Dynamic t (Request m route) -> Dynamic t (HandlerM s (Response m r))
 apiHandler ::
   ( UIHandler w t s m r
-  ) => Proxy s -> Dynamic t (Request m r) -> Dynamic t (w (Response m r))
+  ) => s -> Dynamic t (Request m r) -> Dynamic t (w (Response m r))
 apiHandler = handler
 
 toDomResponse ::
@@ -417,12 +423,12 @@ toUIApplication r@UIRequest { uiPathParam, uiQueryParam } app = withPathSegment 
 
 
 uiApp :: forall (t :: *) server m r meth.
-  ( Router (RouteT t m) t server (Apis (UIInterface server)) '(CUSTOM "", '[])
-  , MonadWidget t m
-  , ApiContract server meth r
+  ( -- Router (RouteT t m) t server (Apis (UIInterface server)) '(CUSTOM "", '[])
+    MonadWidget t m
   , MkPathFormatString r
   , ToParam 'PathParam (PathParam meth r)
   , ToParam 'QueryParam (QueryParam meth r)
+  , Router (RouteT t m) t server (Apis (UIInterface server)) '(CUSTOM "", '[])
   ) => UIRequest meth r -> server -> m (Event t (RouteResult DomResponse))
 uiApp def server =
   routeApp "" $ toUIApplication def $ router (Proxy :: Proxy (Apis (UIInterface server))) server
@@ -496,26 +502,27 @@ data HList :: [*] -> * where
   (:*) :: !a -> HList as -> HList (a ': as)
 infixr 5 :*
 
-
 -- Compact server
-{-
-data CompactUIServer t (api :: *) (server :: (* -> *) -> *) (eff :: * -> *) = CompactUIServer (forall a.() -> eff a -> IO a) (server eff)
+data CompactUIServer (api :: *) (server :: *) = CompactUIServer server
 
-instance (WebApi api{-, MonadCatch eff, MonadIO eff-}) => WebUIServer (CompactUIServer t api s eff) where
-  type HandlerM (CompactUIServer t api s eff) = eff
-  -- type ApiInterface (CompactUIServer t api s eff) = api
-  -- toIO (CompactUIServer toIO' _) = toIO'
+instance (WebApi api) => WebUIServer (CompactUIServer api s) where
+  type UIInterface (CompactUIServer api s) = api
 
 instance ( ApiContract api m r
          , opname ~ GetOpIdName api (OperationId m r)
-         , HasField (GetOpIdName api (OperationId m r)) (server eff) handler
-         , UnifyHandler (handler == (Request m r -> eff (Response m r))) server opname handler (Dynamic t (Request m r) -> Dynamic t (eff (Response m r)))
-         ) => UIHandler (CompactUIServer t api server eff) m r where
-  handler _ = unifyHandler @((handler == (Request m r -> eff (Response m r)))) @server @opname $ getField @(GetOpIdName api (OperationId m r)) (undefined :: server eff)
+         , HasField (GetOpIdName api (OperationId m r)) server handler
+         , handler ~ (Dynamic t (Request m r) -> Dynamic t (w (Response m r)))
+         -- , UnifyHandler (handler == (Dynamic t (Request m r) -> (Dynamic t (w (Response m r))))) server opname handler (Dynamic t (Request m r) -> Dynamic t (w (Response m r)))
+         ) => UIHandler w t (CompactUIServer api server) m r where
+  handler (CompactUIServer server) req = hdl req
+    -- (unifyHandler @((handler == (Dynamic t (Request m r) -> Dynamic t (w (Response m r))))) @server @opname $ hdl) req
 
-class UnifyHandler (isEq :: Bool) (server :: (* -> *) -> *) (fn :: Symbol) handlerAct handlerExp where
+    where
+      hdl :: handler
+      hdl = getField @(GetOpIdName api (OperationId m r)) server
+
+class UnifyHandler (isEq :: Bool) (server :: *) (fn :: Symbol) handlerAct handlerExp where
   unifyHandler :: handlerAct -> handlerExp
-
 
 instance (handlerAct ~ handlerExp) => UnifyHandler 'True s fn handlerAct handlerExp where
   unifyHandler = id
@@ -536,7 +543,7 @@ type family GetOpIdName api (opId :: OpId) :: Symbol where
                                                      'Text "Example: type OperationId " ':<>: 'ShowType m ':<>: 'Text " (" ':<>: 'ShowType r ':<>: 'Text ") = 'OpId " ':<>: 'ShowType api ':<>: 'Text " <operation-name>"
                                                )
 
--}
+
 -- Request Builder  
 {-
 data RequestP pp qp fp hd fu bd = RequestP
@@ -582,8 +589,8 @@ data UIRequest m r =
             , uiQueryParam :: QueryParam m r
             }
 
-defUiRequest :: forall m r. PathParam m r -> QueryParam m r -> UIRequest m r
-defUiRequest uiPathParam uiQueryParam =
+defUIRequest :: forall m r. PathParam m r -> QueryParam m r -> UIRequest m r
+defUIRequest uiPathParam uiQueryParam =
   UIRequest { uiPathParam, uiQueryParam }
 
 -- | Navigate to the specified route
