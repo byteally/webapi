@@ -44,11 +44,12 @@ library
                     , mtl
                     , ref-tf
                     , exception-transformers
+    hs-source-dirs:   src
+    default-language: Haskell2010
+
   if impl(ghcjs)
     build-depends: ghcjs-base
 
-    hs-source-dirs:   src
-    default-language: Haskell2010
 
 test-suite webapi-reflex-dom-test
     default-language: Haskell2010

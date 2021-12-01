@@ -101,7 +101,7 @@ clientOrigin baseUrl reqEvt = do
                                                     , T.decodeUtf8 v)) reqHeaders'
         formPar = T.decodeUtf8 $ renderSimpleQuery False $ toFormParam $ formParam req
                 -- TODO: Should qpar be Maybe
-        reqUrl = WebApi.link (Res :: Resource meth r) (T.encodeUtf8 baseUrl) (pathParam req) (Just $ queryParam req)
+        reqUrl = WebApi.link (Res :: Resource meth r) (Just (T.encodeUtf8 baseUrl)) (pathParam req) (Just $ queryParam req)
 
       -- TODO: Handle Files
       forM_ (toFileParam $ fileParam req) $ \(fname, _finfo) -> do
