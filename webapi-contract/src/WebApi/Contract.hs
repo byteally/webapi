@@ -279,6 +279,7 @@ pattern Request :: () => (SingMethod m)
                 -> HListToTuple (StripContents (RequestBody m r))
                 -> Request m r
 #if __GLASGOW_HASKELL__ >= 800
+{-# COMPLETE Request #-}
 pattern Request { pathParam
                  , queryParam
                  , formParam
