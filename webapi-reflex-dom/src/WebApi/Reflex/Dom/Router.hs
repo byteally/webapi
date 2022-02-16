@@ -19,6 +19,7 @@
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE TypeApplications      #-}
 {-# LANGUAGE AllowAmbiguousTypes   #-}
+{-# LANGUAGE TypeFamilyDependencies #-}
 
 module WebApi.Reflex.Dom.Router
   ( respond
@@ -30,7 +31,13 @@ module WebApi.Reflex.Dom.Router
   , UIHandler (..)
   , Dom
 
+  , UIRequest
   , compactUIServer
+  , navigateToAppLink
+  , appLink
+  , AppLink
+  , MountPoint
+  , ApiMount (..)
   ) where
 
 import           Control.Monad.Fix
@@ -57,6 +64,7 @@ import qualified WebApi.Param as W
 import qualified Data.Text.Encoding as T
 import Network.HTTP.Types.URI
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as Char8
 import Data.Typeable
 
 -- Compact Start
@@ -393,7 +401,7 @@ toDomResponse _domReq res =
     go0 (Failure _) = DomFailure (Right "")
 
 toUIApplication ::
-  forall t m r meth.
+  forall t app m r meth ac mp.
   ( DomBuilder t m
   , Monad m
   , Reflex t
@@ -401,37 +409,65 @@ toUIApplication ::
   , MonadFix m
   , MonadHold t m
   , PostBuild t m
-  , MkPathFormatString r
-  , ToParam 'PathParam (PathParam meth r)
-  , ToParam 'QueryParam (QueryParam meth r)
-  ) => UIRequest meth r -> ReflexDomApplication t m -> m (Event t (RouteResult DomResponse))
-toUIApplication r@UIRequest { uiPathParam, uiQueryParam } app = withPathSegment $ \dPathInfo -> networkView $ do
-  routeResult <- app (go <$> dPathInfo)
-  case routeResult of
-    NotMatched -> pure (pure NotMatched)
-    Matched dom  -> pure (Matched <$> dom)
-
+  , MkPathFormatString (app :// r)
+  , ToParam 'PathParam (PathParam meth (app :// r))
+  , ToParam 'QueryParam (QueryParam meth (app :// r))
+  , ('ApiMount ac mp) ~ MountPoint app
+  , KnownSymbol mp
+  ) => UIRequest meth (app:// r) -> m () -> ReflexDomApplication t m -> m (Event t DomResponse)
+toUIApplication r@UIRequest { uiPathParam, uiQueryParam } page404 app = withPathSegment $ \dPathInfo -> do
+  (initSegs, _) <- sample $ current dPathInfo
+  pb <- getPostBuild
+  if isRoot initSegs && (not $ T.null mountPath)
+    then redirectInternal (mountPath <$ pb)
+    else pure ()
+  res <- networkView $ do
+    domReqMay <- go <$> dPathInfo
+    case domReqMay of
+      Nothing -> pure (Nothing <$ page404)
+      Just domReq -> do
+        routeResult <- app (pure domReq)
+        case routeResult of
+          NotMatched -> pure (Nothing <$ page404)
+          Matched dom  -> pure (Just <$> dom)
+  pure $ fmapMaybe id res
   where
+    isRoot [] = True
+    isRoot [""] = True
+    isRoot _ = False
+    mountPath = T.pack $ symbolVal (Proxy :: Proxy mp)
     go (pSegs, qps) =
-      let (segs, qps0) = case filter (not . T.null) pSegs of
-            [] -> (routePaths r uiPathParam, toQueryParam uiQueryParam)
-            xs -> (xs, go0 qps)
-      in DomRequest segs qps0
+      let reqParMay = case (filter (not . T.null) pSegs, T.null mountPath)  of
+            ([], True) -> Just (routePaths r uiPathParam, toQueryParam uiQueryParam)
+            (xs, True) -> Just (xs, go0 qps)
+            ([], False) -> Nothing
+            ([mp], False) | mp == mountPath -> Just (routePaths r uiPathParam, toQueryParam uiQueryParam)
+            (mp:xs, False) | mp == mountPath -> Just (xs, go0 qps)
+                           | otherwise -> Nothing
+      in fmap (\(segs, qps0) -> DomRequest segs qps0) reqParMay
 
     go0 =
         map (\(k, v) -> (T.encodeUtf8 k, pure $ T.encodeUtf8 v))
 
 
-uiApp :: forall (t :: *) server m r meth.
-  ( -- Router (RouteT t m) t server (Apis (UIInterface server)) '(CUSTOM "", '[])
-    MonadWidget t m
-  , MkPathFormatString r
-  , ToParam 'PathParam (PathParam meth r)
-  , ToParam 'QueryParam (QueryParam meth r)
+uiApp :: forall (t :: *) server m app r meth ac mp.
+  ( MonadWidget t m
+  , MkPathFormatString (app :// r)
+  , ToParam 'PathParam (PathParam meth (app :// r))
+  , ToParam 'QueryParam (QueryParam meth (app :// r))
   , Router (RouteT t m) t server (Apis (UIInterface server)) '(CUSTOM "", '[])
-  ) => UIRequest meth r -> server -> m (Event t (RouteResult DomResponse))
-uiApp def server =
-  routeApp "" $ toUIApplication def $ router (Proxy :: Proxy (Apis (UIInterface server))) server
+  , app ~ (UIInterface server)
+  , ('ApiMount ac mp) ~ MountPoint app
+  , KnownSymbol mp
+  ) => UIRequest meth (app :// r)
+    -> Maybe (Event t (AppLink (UIInterface server)))
+    -> RouteT t m ()
+    -> server
+    -> m (Event t DomResponse)
+uiApp def globalNavMay page404 server =
+  routeApp "" $ do
+  maybe (pure ()) navigateToAppLink globalNavMay
+  toUIApplication def page404 $ router (Proxy :: Proxy (Apis (UIInterface server))) server
 
 
 -- Shared: Server Router
@@ -467,7 +503,7 @@ type family MarkDyn (pp :: *) :: * where
   MarkDyn (p1 :/ t)  = (p1 :/ t)
   MarkDyn (p :// t)  = (p :// t)
   MarkDyn (t :: *)   = DynamicPiece t
-  
+
 snocParsedRoute :: ParsedRoute '(method, ps) -> PieceType pt -> ParsedRoute '(method, ps :++ '[pt])
 snocParsedRoute nil@Nil{} (SPiece sym)   = sym `ConsStaticPiece` nil
 snocParsedRoute nil@Nil{} (NSPiece prov) = prov `ConsNSPiece` nil
@@ -544,7 +580,7 @@ type family GetOpIdName api (opId :: OpId) :: Symbol where
                                                )
 
 
--- Request Builder  
+-- Request Builder
 {-
 data RequestP pp qp fp hd fu bd = RequestP
   { pathParam   :: pp
@@ -598,19 +634,26 @@ navigate ::
   ( Monad m
   , Reflex t
   , MonadRouted t m
-  , MkPathFormatString r
-  , ToParam 'QueryParam (QueryParam meth r)
-  , ToParam 'PathParam (PathParam meth r)
-  ) => Event t (UIRequest meth r) -> m ()
+  , MkPathFormatString (app://r)
+  , ToParam 'QueryParam (QueryParam meth (app://r))
+  , ToParam 'PathParam (PathParam meth (app://r))
+  , ('ApiMount ac mp) ~ MountPoint app
+  , KnownSymbol mp
+  ) => Event t (UIRequest meth (app://r)) -> m ()
 navigate = redirectInternal . fmap linkText
 
-linkText ::
-  ( MkPathFormatString r
-  , ToParam 'QueryParam (QueryParam meth r)
-  , ToParam 'PathParam (PathParam meth r)
-  ) => UIRequest meth r -> Text
+linkText :: forall app meth r ac mp.
+  ( MkPathFormatString (app://r)
+  , ToParam 'QueryParam (QueryParam meth (app://r))
+  , ToParam 'PathParam (PathParam meth (app://r))
+  , ('ApiMount ac mp) ~ MountPoint app
+  , KnownSymbol mp
+  ) => UIRequest meth (app://r) -> Text
 linkText r@UIRequest { uiPathParam, uiQueryParam } =
-  T.decodeUtf8 $ W.link r Nothing uiPathParam (Just uiQueryParam)
+  T.decodeUtf8 $ W.link r startupURI uiPathParam (Just uiQueryParam)
+  where startupURI = case symbolVal (Proxy :: Proxy mp) of
+          "" -> Nothing
+          uri -> Just $ Char8.pack uri
 
 respond ::
   ( HeaderOut meth r ~ ()
@@ -629,3 +672,22 @@ raise ::
   ) => Status -> ApiErr meth r -> m (Response meth r)
 raise status err =
   pure (Failure (Left (ApiError { code = status, err = err, headerOut = Nothing, cookieOut = Nothing })))
+
+
+newtype AppLink app = AppLink {getAppLink :: Text}
+
+appLink ::
+  ( MkPathFormatString (app://r)
+  , ToParam 'QueryParam (QueryParam meth (app://r))
+  , ToParam 'PathParam (PathParam meth (app://r))
+  , ('ApiMount ac mp) ~ MountPoint app
+  , KnownSymbol mp
+  ) => UIRequest meth (app://r)
+  -> AppLink app
+appLink uireq = (AppLink . linkText) uireq
+
+navigateToAppLink :: (Reflex t, MonadRouted t m, Monad m) => Event t (AppLink app) -> m ()
+navigateToAppLink = redirectInternal . fmap getAppLink
+
+data ApiMount = ApiMount Type Symbol
+type family MountPoint (app :: Type) = (r :: ApiMount) | r -> app
