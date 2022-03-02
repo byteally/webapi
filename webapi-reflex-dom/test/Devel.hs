@@ -32,7 +32,7 @@ main = do
 
 page :: forall t m1 m. (Reflex t, MonadWidget t m) => m ()
 page = do
-  ev <- uiApp (defUIRequest @(Dom GET) @HomeR () ()) (compactUIServer @SampleApp @m sampleAppApi)
+  ev <- uiApp (defUIRequest @(Dom GET) @HomeR () ()) Nothing (text "404") (compactUIServer @SampleApp @m sampleAppApi)
   d <- holdDyn "" (T.pack . show <$> ev)
   dynText d
   pure ()
@@ -44,6 +44,8 @@ data QP =
        deriving anyclass (FromParam 'QueryParam, ToParam 'QueryParam)
 
 data SampleApp = SampleApp
+
+type instance MountPoint SampleApp = 'ApiMount SampleApp ""
 
 type HomeR = SampleApp :// "home" :/ "check" :/ "check"
 type Page1R = SampleApp :// "page1"
