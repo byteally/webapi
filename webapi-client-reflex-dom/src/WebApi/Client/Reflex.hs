@@ -16,14 +16,15 @@ import WebApi.Param as WebApi
 import WebApi.ContentTypes
 import Data.Text (Text)
 import Data.ByteString (ByteString)
-import qualified Data.ByteString.Lazy as LBS (ByteString, fromStrict)
+import Data.ByteString.Builder (toLazyByteString)
+import qualified Data.ByteString.Lazy as LBS (ByteString, fromStrict, toStrict)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import Data.Proxy
 import qualified Data.Map as Map
 import qualified Data.CaseInsensitive as CI
 import Network.HTTP.Types
-import           Network.HTTP.Media                    (mapContentMedia)
+import           Network.HTTP.Media                    (mapContentMedia, renderHeader)
 import Language.Javascript.JSaddle
 import Control.Exception
 import Data.Bifunctor
@@ -56,7 +57,7 @@ client :: forall meth r t m.
   , ToParam 'Cookie (CookieIn meth r)
   , FromHeader (HeaderOut meth r)
   , CookieOut meth r ~ () -- TODO: Http-Only cookie cannot be read from JS
---  , PartEncodings (RequestBody meth r)
+  , PartEncodings (RequestBody meth r)
   , Decodings (ContentTypes meth r) (ApiOut meth r)
   , Decodings (ContentTypes meth r) (ApiErr meth r)
   , ToHListRecTuple (StripContents (RequestBody meth r))
@@ -83,7 +84,7 @@ clientOrigin :: forall meth r t m.
   , ToParam 'Cookie (CookieIn meth r)
   , FromHeader (HeaderOut meth r)
   , CookieOut meth r ~ () -- TODO: Http-Only cookie cannot be read from JS
---  , PartEncodings (RequestBody meth r)
+  , PartEncodings (RequestBody meth r)
   , Decodings (ContentTypes meth r) (ApiOut meth r)
   , Decodings (ContentTypes meth r) (ApiErr meth r)
   , ToHListRecTuple (StripContents (RequestBody meth r))
@@ -95,39 +96,50 @@ clientOrigin baseUrl reqEvt = do
       let
         meth = singMethod (Proxy :: Proxy meth)
         reqHeaders' = if T.null formPar
-                      then toHeader $ headerIn req
+                      then case partEncMay of
+                           Just (mt, _) -> (hContentType, renderHeader mt) : (toHeader $ headerIn req)
+                           Nothing -> toHeader $ headerIn req
                       else (hContentType, "application/x-www-form-urlencoded") : (toHeader $ headerIn req)
         reqHeaders = Map.fromList $ fmap (\(k,v) -> ( T.decodeUtf8 $ CI.original k
                                                     , T.decodeUtf8 v)) reqHeaders'
         formPar = T.decodeUtf8 $ renderSimpleQuery False $ toFormParam $ formParam req
                 -- TODO: Should qpar be Maybe
         reqUrl = WebApi.link (Res :: Resource meth r) (Just (T.encodeUtf8 baseUrl)) (pathParam req) (Just $ queryParam req)
+        cts     = Proxy :: Proxy (RequestBody meth r)
+        cts'    = Proxy :: Proxy (StripContents (RequestBody meth r))
+        -- NOTE: Handles only single request body
+        partEncMay = case partEncodings cts (toRecTuple cts' (requestBody req)) of
+          [[partEnc']] -> Just partEnc'
+          _ -> Nothing
+        sendData = case partEncMay of
+                     Just (_, b) -> T.decodeUtf8 $ LBS.toStrict $ toLazyByteString b
+                     _ -> formPar
 
       -- TODO: Handle Files
       forM_ (toFileParam $ fileParam req) $ \(fname, _finfo) -> do
         formData <- newFormData Nothing
         appendBlob formData (T.decodeUtf8 fname) (undefined :: File) (Nothing :: Maybe Text)
         pure ()
-        
+
       pure XhrRequest
          { _xhrRequest_method = T.decodeUtf8 meth
          , _xhrRequest_url = T.decodeUtf8 reqUrl
          , _xhrRequest_config = XhrRequestConfig
            { _xhrRequestConfig_headers = reqHeaders
            , _xhrRequestConfig_responseHeaders = AllHeaders -- Parses all headers, can be more refined OnlyHeaders
-           , _xhrRequestConfig_sendData = formPar
+           , _xhrRequestConfig_sendData = sendData
            , _xhrRequestConfig_responseType = Nothing
            , _xhrRequestConfig_user = Nothing
            , _xhrRequestConfig_password = Nothing
            , _xhrRequestConfig_withCredentials = False
            }
          }
-  xhrReq <- performEvent $ mkXhrReq <$> reqEvt 
+  xhrReq <- performEvent $ mkXhrReq <$> reqEvt
   xhrRes <- performRequestAsyncWithError xhrReq
   let
     getContentType :: ResponseHeaders -> Maybe ByteString
     getContentType = fmap snd . find ((== hContentType) . fst)
-    
+
     fromClientResponse :: ( FromHeader (HeaderOut meth r)
                           , Decodings (ContentTypes meth r) (ApiOut meth r)
                           ) => XhrResponse -> Response meth r
@@ -173,7 +185,7 @@ clientOrigin baseUrl reqEvt = do
              <*> (Just <$> (pure ())) of
           Validation (Right failure) -> (WebApi.Failure . Left) failure
           Validation (Left errs) -> WebApi.Failure $ Right (OtherError (toException $ ApiErrParseFailException status $ T.intercalate "\n" $ fmap (T.pack . show) errs))
-    
+
   pure $ ffor xhrRes $ \case
     Left e -> WebApi.Failure $ Right $ OtherError $ toException e
     Right r -> fromClientResponse r
@@ -183,5 +195,3 @@ data ContentDecodeException
   deriving (Show, Eq)
 
 instance Exception ContentDecodeException
-  
-
