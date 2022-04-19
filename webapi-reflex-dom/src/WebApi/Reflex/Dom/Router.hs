@@ -20,6 +20,7 @@
 {-# LANGUAGE TypeApplications      #-}
 {-# LANGUAGE AllowAmbiguousTypes   #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
+{-# LANGUAGE TupleSections          #-}
 
 module WebApi.Reflex.Dom.Router
   ( respond
@@ -41,6 +42,7 @@ module WebApi.Reflex.Dom.Router
   ) where
 
 import           Control.Monad.Fix
+import           Control.Monad.IO.Class
 import           Data.Functor
 import           Data.Kind
 import           Data.Proxy
@@ -66,6 +68,7 @@ import Network.HTTP.Types.URI
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as Char8
 import Data.Typeable
+import Data.Maybe
 
 -- Compact Start
 import           GHC.Records
@@ -83,7 +86,7 @@ class WebUIServer (s :: *) where
   type UIInterface s = s
 
 class UIHandler w (t :: *) s m r where
-  handler :: s -> Dynamic t (Request m r) -> Dynamic t (w (Response m r))
+  handler :: s -> Dynamic t (Request m r) -> w (Response m r)
 
 newtype UIRequestRep =
   UIRequestRep { getUIRequestRep :: TypeRep
@@ -105,7 +108,7 @@ data DomResponse =
   | DomFailure (Either [ParamErr] BS.ByteString)
   deriving (Show)
 
-type ReflexDomApplication t m = Dynamic t DomRequest -> Dynamic t (RouteResult (m DomResponse))
+type ReflexDomApplication t m = Dynamic t DomRequest -> Dynamic t (RouteResult (UIRequestRep, m (Event t DomResponse)))
 
 class Monad w => Router (w :: * -> *) (t :: *) (server :: *) (r :: k) (pr :: (*, [*])) where
   route :: Proxy '(r, t) -> server -> ParsedRoute pr -> ReflexDomApplication t w
@@ -190,16 +193,15 @@ instance ( KnownSymbol lpiece
          , HeaderIn m route ~ ()
          , RequestBody m route ~ '[]
          ) => Router w t s ((lpiece :: Symbol) :/ (rpiece :: Symbol)) '(m, pp) where
-  route _ serv parsedRoute reqDyn =
-    reqDyn >>= go
+  route _ serv parsedRoute reqDyn = fmap go reqDyn
 
       where go req = do
               case pathInfo req of
                 (lpth : rpth : [])
                   | lpieceTxt == lpth && rpieceTxt == rpth ->
-                      fmap Matched getResponse
-                  | otherwise -> pure NotMatched
-                _ -> pure NotMatched
+                      Matched (mkUIRequestRep (undefined :: UIRequest m route), getResponse)
+                  | otherwise -> NotMatched
+                _ -> NotMatched
 
                 where
                     lpieceTxt = symTxt (Proxy :: Proxy lpiece)
@@ -208,7 +210,7 @@ instance ( KnownSymbol lpiece
                     pRoute = snocParsedRoute (snocParsedRoute parsedRoute $ SPiece (Proxy :: Proxy lpiece)) $ SPiece (Proxy :: Proxy rpiece)
                     pathPar = fromParsedRoute pRoute
                     getResponse =
-                      toDomResponse reqDyn (fromDomRequest req (fromParsedRoute pRoute) (\(reqDyn0 :: Dynamic t (Request m route)) -> apiHandler serv reqDyn0 :: Dynamic t (w (Response m route)))) :: Dynamic t (w DomResponse)
+                      toDomResponse reqDyn (fromDomRequest @m @route reqDyn (fromParsedRoute pRoute) (apiHandler serv))
 
 instance ( KnownSymbol rpiece
          , paths ~ (pp :++ '[DynamicPiece lpiece, StaticPiece rpiece])
@@ -236,20 +238,20 @@ instance ( KnownSymbol rpiece
          , HeaderIn m route ~ ()
          , RequestBody m route ~ '[]
          ) => Router w t s ((lpiece :: *) :/ (rpiece :: Symbol)) '(m, pp) where
-  route _ serv parsedRoute reqDyn = reqDyn >>= go
+  route _ serv parsedRoute reqDyn = fmap go reqDyn
 
     where go req = do
             case pathInfo req of
               (lpth : rpth : []) | rpieceTxt == rpth -> case (decodeParam (encodeUtf8 lpth) :: Maybe lpiece) of
-                 Just dynVal -> fmap Matched (getResponse dynVal)
-                 Nothing     -> pure NotMatched
-              _ -> pure NotMatched
+                 Just dynVal -> Matched (mkUIRequestRep (undefined :: UIRequest m route), getResponse dynVal)
+                 Nothing     -> NotMatched
+              _ -> NotMatched
               where
                 rpieceTxt = symTxt (Proxy :: Proxy rpiece)
-                getResponse dynVal = do
+                getResponse dynVal =
                   let pRoute :: ParsedRoute '(m, paths)
                       pRoute = snocParsedRoute (snocParsedRoute parsedRoute $ DPiece dynVal) $ SPiece (Proxy :: Proxy rpiece)
-                  toDomResponse reqDyn $ fromDomRequest req (fromParsedRoute pRoute) (\(reqDyn0 :: Dynamic t (Request m route)) -> apiHandler serv reqDyn0 :: Dynamic t (w (Response m route)))
+                  in toDomResponse reqDyn $ fromDomRequest @m @route reqDyn (fromParsedRoute pRoute) (apiHandler serv)
 
 instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t0]))
          , UIHandler w t s m route
@@ -274,19 +276,21 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t0]))
          , HeaderIn m route ~ ()
          , RequestBody m route ~ '[]
          ) => Router w t s (DynamicPiece t0) '(m, pp) where
-  route _ serv parsedRoute reqDyn = reqDyn >>= go
+  route _ serv parsedRoute reqDyn = fmap go reqDyn
 
     where go req = do
             case pathInfo req of
               (lpth : []) -> case (decodeParam (encodeUtf8 lpth) :: Maybe t0) of
-                Just dynVal -> fmap Matched (getResponse dynVal)
-                Nothing     -> pure NotMatched
-              _           -> pure NotMatched
-
-              where getResponse dynVal = do
-                      let pRoute :: ParsedRoute '(m, (pp :++ '[DynamicPiece t0]))
-                          pRoute = snocParsedRoute parsedRoute $ DPiece dynVal
-                      toDomResponse reqDyn $ fromDomRequest req (fromParsedRoute pRoute) (\(reqDyn0 :: Dynamic t (Request m route)) -> apiHandler serv reqDyn0 :: Dynamic t (w (Response m route)))
+                Just dynVal -> Matched (mkUIRequestRep (undefined :: UIRequest m route), getResponse dynVal)
+                Nothing     -> NotMatched
+              _           -> NotMatched
+              where
+                getResponse dynVal =
+                  let
+                    pRoute :: ParsedRoute '(m, (pp :++ '[DynamicPiece t0]))
+                    pRoute = snocParsedRoute parsedRoute $ DPiece dynVal
+                  in toDomResponse reqDyn
+                     $ fromDomRequest @m @route reqDyn (fromParsedRoute pRoute) (apiHandler serv)
 
 instance ( PathParam m (ns :// piece) ~ ()
          , ParamErrToApiErr (ApiErr m (ns :// piece))
@@ -313,16 +317,17 @@ instance ( PathParam m (ns :// piece) ~ ()
          , HeaderIn m route ~ ()
          , RequestBody m route ~ '[]
          ) => Router w t s ((ns :: *) :// (piece :: Symbol)) '(m, pp) where
-  route _ serv _ reqDyn = reqDyn >>= go
+  route _ serv _ reqDyn = fmap go reqDyn
 
     where go req = do
             case pathInfo req of
-              (pth : []) | symTxt (Proxy :: Proxy piece) == pth -> fmap Matched getResponse
-              [] | T.null $ symTxt (Proxy :: Proxy piece) -> pure NotMatched
-              _ ->  pure NotMatched
+              (pth : []) | symTxt (Proxy :: Proxy piece) == pth -> Matched (mkUIRequestRep (undefined :: UIRequest m route), getResponse)
+              [] | T.null $ symTxt (Proxy :: Proxy piece) -> NotMatched
+              _ ->  NotMatched
 
-              where getResponse = do
-                      toDomResponse reqDyn $ fromDomRequest req () (\(reqDyn0 :: Dynamic t (Request m route)) -> apiHandler serv reqDyn0 :: Dynamic t (w (Response m route)))
+              where
+                getResponse = toDomResponse reqDyn
+                  $ fromDomRequest @m @route reqDyn () (apiHandler serv)
 
 router ::
   forall apis server m t.
@@ -331,7 +336,7 @@ router ::
   ) => Proxy apis -> server -> ReflexDomApplication t m
 router _ s = route (Proxy :: Proxy '(apis, t)) s emptyParsedRoutes
 
-fromDomRequest :: forall w t m r.
+fromDomRequest :: forall m r w t.
   ( Functor w
   , SingMethod m
   , MonadWidget t w
@@ -342,39 +347,34 @@ fromDomRequest :: forall w t m r.
   , HeaderIn m r ~ ()
   , RequestBody m r ~ '[]
   ) =>
-  DomRequest ->
+  Dynamic t DomRequest ->
   PathParam m r ->
-  (Dynamic t (Request m r) -> Dynamic t (w (Response m r))) ->
-  Dynamic t (Validation [ParamErr] (w (Response m r)))
-fromDomRequest DomRequest { queryPathInfo } pp handlerFn = do
-  case resp of
-    Validation (Right apiResp) -> fmap pure $ handlerFn (pure apiResp)
-    Validation (Left errs) -> pure (Validation (Left errs))
-
+  (Dynamic t (Request m r) -> w (Response m r)) ->
+  w (Event t (Response m r))
+fromDomRequest domReqDyn pp handlerFn = do
+  let
+    reqValDyn = fmap toWebApiReqVal domReqDyn
+  factoredErrSuccDyn <- eitherDyn reqValDyn
+  -- Handles toggling of params decoding status between success & failure within same route.
+  networkView $ ffor factoredErrSuccDyn $ \case
+    Left errs -> do
+      display errs 
+      pure (undefined :: Response m r)
+    Right waReqDyn -> handlerFn waReqDyn
   where
-      resp =
-        (\qp ->
-           Request { pathParam = pp
-                   , queryParam = qp
-                   , formParam = ()
-                   , fileParam = ()
-                   , cookieIn = ()
-                   , headerIn = ()
-                   , requestBody = ()
-                   }) <$> fromQueryParam queryPathInfo
-
-{-
-            apiResp' <- fromDomRequest request pathPar (\(req :: Request m route) -> toIO serv wbReq $ apiHandler (Proxy :: Proxy s) (pure req))
-            response <- case apiResp' of
-              Validation (Right apiResp) -> return apiResp
-              Validation (Left errs) -> return $ Failure $ Left $ ApiError badRequest400 (toApiErr errs)
--}
-
--- apiHandler :: Proxy s -> Dynamic t (Request m route) -> Dynamic t (HandlerM s (Response m r))
-apiHandler ::
-  ( UIHandler w t s m r
-  ) => s -> Dynamic t (Request m r) -> Dynamic t (w (Response m r))
-apiHandler = handler
+    toWebApiReqVal :: DomRequest -> Either [ParamErr] (Request m r)
+    toWebApiReqVal domReq =
+      case (\qp ->
+              Request { pathParam = pp
+                      , queryParam = qp
+                      , formParam = ()
+                      , fileParam = ()
+                      , cookieIn = ()
+                      , headerIn = ()
+                      , requestBody = ()
+                      }
+           ) <$> (fromQueryParam $ queryPathInfo domReq) of
+        Validation valE -> valE
 
 toDomResponse ::
   forall w t m r.
@@ -386,19 +386,21 @@ toDomResponse ::
   , Applicative w
   , Typeable m
   , Typeable r
-  ) => Dynamic t DomRequest -> Dynamic t (Validation [ParamErr] (w (Response m r))) -> Dynamic t (w DomResponse)
+  ) => Dynamic t DomRequest
+  -> w (Event t (Response m r))
+  -> w (Event t (DomResponse))
 toDomResponse _domReq res =
-  fmap go res
+  fmap (fmap go) res
 
   where
-    go resp =
-      case resp of
-        Validation (Right resp) -> go0 <$> resp
-        Validation (Left errs) -> pure (DomFailure (Left errs))
+    go (Success _ ao _ _) = DomSuccess (mkUIRequestRep (undefined :: UIRequest m r))
+    go (Failure (Left (ApiError { err }))) = DomFailure (Right "")
+    go (Failure _) = DomFailure (Right "")
 
-    go0 (Success _ ao _ _) = DomSuccess (mkUIRequestRep (undefined :: UIRequest m r))
-    go0 (Failure (Left (ApiError { err }))) = DomFailure (Right "")
-    go0 (Failure _) = DomFailure (Right "")
+apiHandler ::
+  ( UIHandler w t s m r
+  ) => s -> Dynamic t (Request m r) -> w (Response m r)
+apiHandler = handler
 
 toUIApplication ::
   forall t app m r meth ac mp.
@@ -421,16 +423,17 @@ toUIApplication r@UIRequest { uiPathParam, uiQueryParam } page404 app = withPath
   if isRoot initSegs && (not $ T.null mountPath)
     then redirectInternal (mountPath <$ pb)
     else pure ()
-  res <- networkView $ do
-    domReqMay <- go <$> dPathInfo
-    case domReqMay of
-      Nothing -> pure (Nothing <$ page404)
-      Just domReq -> do
-        routeResult <- app (pure domReq)
-        case routeResult of
-          NotMatched -> pure (Nothing <$ page404)
-          Matched dom  -> pure (Just <$> dom)
-  pure $ fmapMaybe id res
+  res <- networkView . (fmap snd) =<<
+    (do
+        domReqMayDyn <- maybeDyn (go <$> dPathInfo)
+        holdUniqDynBy (\old new -> fst old == fst new) $ do
+          domReqMayDyn >>= \case
+            Nothing -> pure (Nothing, Nothing <$ page404)
+            Just domReqDyn -> app domReqDyn >>= \case
+              NotMatched -> pure (Nothing, Nothing <$ page404)
+              Matched (reqRep, dom) -> pure (Just reqRep, Just <$> dom)
+    )
+  pure $ coincidence $ fmapMaybe id res
   where
     isRoot [] = True
     isRoot [""] = True
@@ -547,7 +550,7 @@ instance (WebApi api) => WebUIServer (CompactUIServer api s) where
 instance ( ApiContract api m r
          , opname ~ GetOpIdName api (OperationId m r)
          , HasField (GetOpIdName api (OperationId m r)) server handler
-         , handler ~ (Dynamic t (Request m r) -> Dynamic t (w (Response m r)))
+         , handler ~ (Dynamic t (Request m r) -> w (Response m r))
          -- , UnifyHandler (handler == (Dynamic t (Request m r) -> (Dynamic t (w (Response m r))))) server opname handler (Dynamic t (Request m r) -> Dynamic t (w (Response m r)))
          ) => UIHandler w t (CompactUIServer api server) m r where
   handler (CompactUIServer server) req = hdl req
