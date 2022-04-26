@@ -28,6 +28,7 @@ module WebApi.Reflex.Dom.Router
   , raise
   , navigate
   , defUIRequest
+  , modifyUIRequest
   , uiApp
   , WebUIServer (..)
   , UIHandler (..)
@@ -641,6 +642,14 @@ data UIRequest m r =
 defUIRequest :: forall m r. PathParam m r -> QueryParam m r -> UIRequest m r
 defUIRequest uiPathParam uiQueryParam =
   UIRequest { uiPathParam, uiQueryParam }
+
+modifyUIRequest :: (Reflex t, SingMethod meth) => Dynamic t (Request meth r) -> Event t a -> (a -> Request meth r -> Request meth r) -> Event t (UIRequest meth r)
+modifyUIRequest reqDyn e setter =
+  (\Request {pathParam, queryParam}
+    -> UIRequest { uiPathParam = pathParam
+                 , uiQueryParam = queryParam}
+  ) <$> attachPromptlyDynWith (flip setter) reqDyn e
+
 
 -- | Navigate to the specified route
 navigate ::
