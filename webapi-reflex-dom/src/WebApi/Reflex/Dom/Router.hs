@@ -71,6 +71,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as Char8
 import Data.Typeable
 import Data.Maybe
+import GHC.Stack
 import Control.Exception (SomeException (..), Exception(..))
 
 -- Compact Start
@@ -114,7 +115,7 @@ data DomResponse =
 type ReflexDomApplication t m = Dynamic t DomRequest -> Dynamic t (RouteResult (UIRequestRep, m (Event t DomResponse)))
 
 class Monad w => Router (w :: * -> *) (t :: *) (server :: *) (r :: k) (pr :: (*, [*])) where
-  route :: Proxy '(r, t) -> server -> ParsedRoute pr -> (Dynamic t [ParamErr] -> w ()) -> ReflexDomApplication t w
+  route :: Proxy '(r, t) -> server -> ParsedRoute t pr -> (Dynamic t [ParamErr] -> w ()) -> ReflexDomApplication t w
 
 instance ( SingMethod (m :: *)
          , Router w t s r '(Dom m, '[])
@@ -151,7 +152,7 @@ instance (Monad w, Router w t s (MarkDyn rest) '(m, (pp :++ '[DynamicPiece piece
     where go req = do
             case pathInfo req of
               (lpth : rpths)  -> case (decodeParam (encodeUtf8 lpth) :: Maybe piece) of
-                Just dynPiece -> route (Proxy :: Proxy '((MarkDyn rest), t)) _s (snocParsedRoute parsedRoute $ DPiece dynPiece) page400 (fmap (\r -> r {pathInfo = rpths}) reqDyn)
+                Just dynPiece -> route (Proxy :: Proxy '((MarkDyn rest), t)) _s (snocParsedRoute parsedRoute $ DPiece $ unsafeDecodeParam @piece reqDyn) page400 (fmap (\r -> r {pathInfo = tail $ pathInfo r}) reqDyn)
                 Nothing -> pure NotMatched
               _ -> pure NotMatched
 
@@ -163,7 +164,7 @@ instance (Reflex t, Monad w, Router w t s (MarkDyn rest) '(m, (pp :++ '[StaticPi
     where
       go req = do
         case pathInfo req of
-          (lpth : rpths) | lpieceTxt == lpth -> route (Proxy :: Proxy '((MarkDyn rest), t)) _s (snocParsedRoute parsedRoute $ SPiece (Proxy :: Proxy piece)) page400 (fmap (\r -> r {pathInfo = rpths}) reqDyn)
+          (lpth : rpths) | lpieceTxt == lpth -> route (Proxy :: Proxy '((MarkDyn rest), t)) _s (snocParsedRoute parsedRoute $ SPiece (Proxy :: Proxy piece)) page400 (fmap (\r -> r {pathInfo = tail $ pathInfo r}) reqDyn)
           _ -> pure NotMatched
 
         where lpieceTxt = symTxt (Proxy :: Proxy piece)
@@ -209,7 +210,7 @@ instance ( KnownSymbol lpiece
                 where
                     lpieceTxt = symTxt (Proxy :: Proxy lpiece)
                     rpieceTxt = symTxt (Proxy :: Proxy rpiece)
-                    pRoute :: ParsedRoute '(m, paths)
+                    pRoute :: ParsedRoute t '(m, paths)
                     pRoute = snocParsedRoute (snocParsedRoute parsedRoute $ SPiece (Proxy :: Proxy lpiece)) $ SPiece (Proxy :: Proxy rpiece)
                     pathPar = fromParsedRoute pRoute
                     getResponse =
@@ -246,14 +247,14 @@ instance ( KnownSymbol rpiece
     where go req = do
             case pathInfo req of
               (lpth : rpth : []) | rpieceTxt == rpth -> case (decodeParam (encodeUtf8 lpth) :: Maybe lpiece) of
-                 Just dynVal -> Matched (mkUIRequestRep (undefined :: UIRequest m route), getResponse dynVal)
+                 Just dynVal -> Matched (mkUIRequestRep (undefined :: UIRequest m route), getResponse)
                  Nothing     -> NotMatched
               _ -> NotMatched
               where
                 rpieceTxt = symTxt (Proxy :: Proxy rpiece)
-                getResponse dynVal =
-                  let pRoute :: ParsedRoute '(m, paths)
-                      pRoute = snocParsedRoute (snocParsedRoute parsedRoute $ DPiece dynVal) $ SPiece (Proxy :: Proxy rpiece)
+                getResponse =
+                  let pRoute :: ParsedRoute t '(m, paths)
+                      pRoute = snocParsedRoute (snocParsedRoute parsedRoute $ DPiece $ unsafeDecodeParam @lpiece reqDyn) $ SPiece (Proxy :: Proxy rpiece)
                   in toDomResponse reqDyn $ fromDomRequest @m @route reqDyn (fromParsedRoute pRoute) (apiHandler serv) page400
 
 instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t0]))
@@ -290,8 +291,8 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t0]))
               where
                 getResponse dynVal =
                   let
-                    pRoute :: ParsedRoute '(m, (pp :++ '[DynamicPiece t0]))
-                    pRoute = snocParsedRoute parsedRoute $ DPiece dynVal
+                    pRoute :: ParsedRoute t '(m, (pp :++ '[DynamicPiece t0]))
+                    pRoute = snocParsedRoute parsedRoute $ DPiece $ unsafeDecodeParam @t0 reqDyn
                   in toDomResponse reqDyn
                      $ fromDomRequest @m @route reqDyn (fromParsedRoute pRoute) (apiHandler serv) page400
 
@@ -330,7 +331,7 @@ instance ( PathParam m (ns :// piece) ~ ()
 
               where
                 getResponse = toDomResponse reqDyn
-                  $ fromDomRequest @m @route reqDyn () (apiHandler serv) page400
+                  $ fromDomRequest @m @route reqDyn (constDyn ()) (apiHandler serv) page400
 
 router ::
   forall apis server m t.
@@ -351,13 +352,13 @@ fromDomRequest :: forall m r w t.
   , RequestBody m r ~ '[]
   ) =>
   Dynamic t DomRequest ->
-  PathParam m r ->
+  Dynamic t (PathParam m r) ->
   (Dynamic t (Request m r) -> w (Response m r)) ->
   (Dynamic t [ParamErr] ->  w ()) ->
   w (Event t (Response m r))
-fromDomRequest domReqDyn pp handlerFn page400 = do
+fromDomRequest domReqDyn ppDyn handlerFn page400 = do
   let
-    reqValDyn = fmap toWebApiReqVal domReqDyn
+    reqValDyn = zipDynWith toWebApiReqVal ppDyn domReqDyn
   factoredErrSuccDyn <- eitherDyn reqValDyn
   -- Handles toggling of params decoding status between success & failure within same route.
   networkView $ ffor factoredErrSuccDyn $ \case
@@ -366,8 +367,8 @@ fromDomRequest domReqDyn pp handlerFn page400 = do
       pure (Failure $ Right $ OtherError $ toException $ BadRequestError)
     Right waReqDyn -> handlerFn waReqDyn
   where
-    toWebApiReqVal :: DomRequest -> Either [ParamErr] (Request m r)
-    toWebApiReqVal domReq =
+    toWebApiReqVal :: PathParam m r -> DomRequest -> Either [ParamErr] (Request m r)
+    toWebApiReqVal pp domReq =
       case (\qp ->
               Request { pathParam = pp
                       , queryParam = qp
@@ -484,25 +485,31 @@ uiApp def globalNavMay page404 page400 server =
   toUIApplication def page404 $ router (Proxy :: Proxy (Apis (UIInterface server))) server page400
 
 
+-- ^ Use only after checking `decodeParam` succeed and always assume first piece is used
+unsafeDecodeParam :: forall piece t.(DecodeParam piece, Functor (Dynamic t), HasCallStack) => Dynamic t DomRequest -> Dynamic t piece
+unsafeDecodeParam dReq = ffor dReq $ \req ->  case pathInfo req of
+  (lpth : _)  -> fromMaybe (error "unsafeDecodeParam") (decodeParam @piece (encodeUtf8 lpth))
+  _ -> error "unsafeDecodeParam"
+
 -- Shared: Server Router
 
 symTxt :: KnownSymbol sym => proxy sym -> Text
 symTxt sym = T.pack (symbolVal sym)
 
-emptyParsedRoutes :: ParsedRoute '(CUSTOM "", '[])
+emptyParsedRoutes :: ParsedRoute t '(CUSTOM "", '[])
 emptyParsedRoutes = Nil Proxy
 
 
-data PieceType :: * -> * where
-  SPiece  :: Proxy (p :: Symbol) -> PieceType (StaticPiece p)
-  NSPiece :: Proxy (ns :: *) -> PieceType (Namespace ns)
-  DPiece  :: !val -> PieceType (DynamicPiece val)
+data PieceType :: * -> * -> * where
+  SPiece  :: Proxy (p :: Symbol) -> PieceType t (StaticPiece p)
+  NSPiece :: Proxy (ns :: *) -> PieceType t (Namespace ns)
+  DPiece  :: !(Dynamic t val) -> PieceType t (DynamicPiece val)
 
-data ParsedRoute :: (*, [*]) -> * where
-  Nil              :: Proxy method -> ParsedRoute '(method, '[])
-  ConsStaticPiece  :: Proxy (p :: Symbol) -> ParsedRoute '(method, ps) -> ParsedRoute '(method, ((StaticPiece p) ': ps))
-  ConsNSPiece      :: Proxy (ns :: *) -> ParsedRoute '(method, ps) -> ParsedRoute '(method, ((Namespace ns) ': ps))
-  ConsDynamicPiece :: !t -> ParsedRoute '(method, ps) -> ParsedRoute '(method, ((DynamicPiece t) ': ps))
+data ParsedRoute :: * -> (*, [*]) -> * where
+  Nil              :: Proxy method -> ParsedRoute t '(method, '[])
+  ConsStaticPiece  :: Proxy (p :: Symbol) -> ParsedRoute t '(method, ps) -> ParsedRoute t '(method, ((StaticPiece p) ': ps))
+  ConsNSPiece      :: Proxy (ns :: *) -> ParsedRoute t '(method, ps) -> ParsedRoute t '(method, ((Namespace ns) ': ps))
+  ConsDynamicPiece :: !(Dynamic t v) -> ParsedRoute t '(method, ps) -> ParsedRoute t '(method, ((DynamicPiece v) ': ps))
 
 data RouteResult a =
   NotMatched | Matched a
@@ -518,7 +525,7 @@ type family MarkDyn (pp :: *) :: * where
   MarkDyn (p :// t)  = (p :// t)
   MarkDyn (t :: *)   = DynamicPiece t
 
-snocParsedRoute :: ParsedRoute '(method, ps) -> PieceType pt -> ParsedRoute '(method, ps :++ '[pt])
+snocParsedRoute :: ParsedRoute t '(method, ps) -> PieceType t pt -> ParsedRoute t '(method, ps :++ '[pt])
 snocParsedRoute nil@Nil{} (SPiece sym)   = sym `ConsStaticPiece` nil
 snocParsedRoute nil@Nil{} (NSPiece prov) = prov `ConsNSPiece` nil
 snocParsedRoute nil@Nil{} (DPiece val)   = val `ConsDynamicPiece` nil
@@ -526,30 +533,30 @@ snocParsedRoute (ConsStaticPiece sym routes) pt  = (ConsStaticPiece sym $ snocPa
 snocParsedRoute (ConsNSPiece prov routes) pt     = (ConsNSPiece prov $ snocParsedRoute routes pt)
 snocParsedRoute (ConsDynamicPiece sym routes) pt = (ConsDynamicPiece sym $ snocParsedRoute routes pt)
 
-fromParsedRoute :: (PathParam m (FromPieces pths) ~ HListToTuple (FilterDynP pths))
-                  => ParsedRoute '(m, pths) -> PathParam m (FromPieces pths)
+fromParsedRoute :: (Reflex t, (PathParam m (FromPieces pths) ~ HListToTuple (FilterDynP pths)))
+                  => ParsedRoute t '(m, pths) -> Dynamic t (PathParam m (FromPieces pths))
 fromParsedRoute proutes = case dropStaticPiece proutes of
-  HNil -> ()
+  HNil -> pure ()
   p1 :* HNil -> p1
-  p1 :* p2 :* HNil -> (p1, p2)
-  p1 :* p2 :* p3 :* HNil -> (p1, p2, p3)
-  p1 :* p2 :* p3 :* p4 :* HNil -> (p1, p2, p3, p4)
-  p1 :* p2 :* p3 :* p4 :* p5 :* HNil -> (p1, p2, p3, p4, p5)
-  p1 :* p2 :* p3 :* p4 :* p5 :* p6 :* HNil -> (p1, p2, p3, p4, p5, p6)
-  p1 :* p2 :* p3 :* p4 :* p5 :* p6 :* p7 :* HNil -> (p1, p2, p3, p4, p5, p6, p7)
-  p1 :* p2 :* p3 :* p4 :* p5 :* p6 :* p7 :* p8 :* HNil -> (p1, p2, p3, p4, p5, p6, p7, p8)
-  p1 :* p2 :* p3 :* p4 :* p5 :* p6 :* p7 :* p8 :* p9 :* HNil -> (p1, p2, p3, p4, p5, p6, p7, p8, p9)
+  p1 :* p2 :* HNil -> zipDyn p1 p2
+  p1 :* p2 :* p3 :* HNil -> zipDynWith (\fn p3' -> fn p3') (zipDynWith (\p1' p2' p3' -> (p1', p2', p3')) p1 p2) p3
+  p1 :* p2 :* p3 :* p4 :* HNil -> (,,,) <$> p1 <*> p2 <*> p3 <*> p4
+  p1 :* p2 :* p3 :* p4 :* p5 :* HNil -> (,,,,) <$> p1 <*> p2 <*> p3 <*> p4 <*> p5
+  p1 :* p2 :* p3 :* p4 :* p5 :* p6 :* HNil -> (,,,,,) <$> p1 <*> p2 <*> p3 <*> p4 <*> p5 <*> p6
+  p1 :* p2 :* p3 :* p4 :* p5 :* p6 :* p7 :* HNil -> (,,,,,,) <$> p1 <*> p2 <*> p3 <*> p4 <*> p5 <*> p6 <*> p7
+  p1 :* p2 :* p3 :* p4 :* p5 :* p6 :* p7 :* p8 :* HNil -> (,,,,,,,) <$> p1 <*> p2 <*> p3 <*> p4 <*> p5 <*> p6 <*> p7 <*> p8
+  p1 :* p2 :* p3 :* p4 :* p5 :* p6 :* p7 :* p8 :* p9 :* HNil -> (,,,,,,,,) <$> p1 <*> p2 <*> p3 <*> p4 <*> p5 <*> p6 <*> p7 <*> p8 <*> p9
   _ -> error "Panic: Unable to parse routes. Only 25 path parameter are supported"
 
-dropStaticPiece :: ParsedRoute '(m, pths) -> HList (FilterDynP pths)
+dropStaticPiece :: ParsedRoute t '(m, pths) -> HList t (FilterDynP pths)
 dropStaticPiece (Nil _)                 = HNil
 dropStaticPiece (ConsStaticPiece _ ps)  = dropStaticPiece ps
 dropStaticPiece (ConsNSPiece _ ps)      = dropStaticPiece ps
 dropStaticPiece (ConsDynamicPiece p ps) = p :* dropStaticPiece ps
 
-data HList :: [*] -> * where
-  HNil :: HList '[]
-  (:*) :: !a -> HList as -> HList (a ': as)
+data HList :: * -> [*] -> * where
+  HNil :: HList t '[]
+  (:*) :: !(Dynamic t a) -> HList t as -> HList t (a ': as)
 infixr 5 :*
 
 -- Compact server
