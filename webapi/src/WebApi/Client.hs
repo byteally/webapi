@@ -60,19 +60,20 @@ module WebApi.Client
 
 import           Control.Exception
 import           Control.Monad ( (>=>) )
+import qualified Control.Monad.Catch as C
 import           Data.Bifunctor
 import qualified Data.ByteString as B
 import           Data.ByteString.Builder (toLazyByteString)
 import           Data.ByteString.Lazy (ByteString, fromStrict, toStrict)
 import           Data.Either (isRight)
 import           Data.List (find)
-import           Data.Maybe (fromJust)
+import           Data.Maybe ( fromMaybe )
 import           Data.Proxy
 import           Data.Text (Text)
 import qualified Data.Text as T
 import           Data.Text.Encoding (decodeUtf8)
 import qualified Data.Text.Encoding as T
-import           Data.Time.Clock (getCurrentTime)
+import           Data.Time.Clock ( getCurrentTime, addUTCTime, nominalDay )
 import           Data.Typeable (Typeable)
 import           Data.Word
 import           GHC.Exts
@@ -90,7 +91,6 @@ import           WebApi.Contract
 import           WebApi.Internal
 import           WebApi.Param
 import           WebApi.Util
-import qualified Control.Monad.Catch as C
 
 -- | Datatype representing the settings related to client.
 data ClientSettings io =
@@ -216,15 +216,15 @@ toClientRequest extraUnres clientReq req = do
         mkCookieVal now k ci =
           HC.Cookie { HC.cookie_name = k
                     , HC.cookie_value = cookieValue ci
-                    , HC.cookie_expiry_time = fromJust (cookieExpires ci)
-                    , HC.cookie_domain = fromJust (cookieDomain ci)
-                    , HC.cookie_path = fromJust (cookiePath ci)
+                    , HC.cookie_expiry_time = fromMaybe (addUTCTime nominalDay now) (cookieExpires ci)
+                    , HC.cookie_domain = fromMaybe "" (cookieDomain ci)
+                    , HC.cookie_path = fromMaybe "/" (cookiePath ci)
                     , HC.cookie_creation_time = now
                     , HC.cookie_last_access_time = now
                     , HC.cookie_persistent = False
                     , HC.cookie_host_only = False
-                    , HC.cookie_secure_only = fromJust (cookieSecure ci)
-                    , HC.cookie_http_only = fromJust (cookieHttpOnly ci)
+                    , HC.cookie_secure_only = fromMaybe False (cookieSecure ci)
+                    , HC.cookie_http_only = fromMaybe False (cookieHttpOnly ci)
                     }
 
 -- | Given a `Request` type, create the request and obtain a response. Gives back a 'Response'.
