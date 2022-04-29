@@ -77,6 +77,7 @@ module WebApi.Param
 
        -- * Helpers
        , ParamK (..)
+       , SameSite (..)
        , ParamSettings, fieldModifier
        , filePath
        , nest
@@ -84,6 +85,7 @@ module WebApi.Param
        , link
        , renderUriPath
        , routePaths
+       , defCookieInfo
 
        -- * Generic (De)Serialization fn
        , genericToQueryParam

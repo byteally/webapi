@@ -32,7 +32,7 @@ main = do
 
 page :: forall t m1 m. (Reflex t, MonadWidget t m) => m ()
 page = do
-  ev <- uiApp (defUIRequest @(Dom GET) @HomeR () ()) (compactUIServer @SampleApp @m sampleAppApi)
+  ev <- uiApp (defUIRequest @(Dom GET) @HomeR () ()) Nothing (text "404") (const $ text "400") (compactUIServer @SampleApp @m sampleAppApi)
   d <- holdDyn "" (T.pack . show <$> ev)
   dynText d
   pure ()
@@ -44,6 +44,8 @@ data QP =
        deriving anyclass (FromParam 'QueryParam, ToParam 'QueryParam)
 
 data SampleApp = SampleApp
+
+type instance MountPoint SampleApp = 'ApiMount SampleApp ""
 
 type HomeR = SampleApp :// "home" :/ "check" :/ "check"
 type Page1R = SampleApp :// "page1"
@@ -80,8 +82,8 @@ getHome' ::
   , Reflex t
   , DomBuilder t w
   , MonadRouted t w
-  ) => Dynamic t (Request (Dom GET) HomeR) -> Dynamic t (w (Response (Dom GET) HomeR))
-getHome' _ = pure $ do
+  ) => Dynamic t (Request (Dom GET) HomeR) -> (w (Response (Dom GET) HomeR))
+getHome' _ = do
     el "div" $ text "Hello HomeR ............"
     el "div" $ do
       ev1 <- link "page1"
@@ -105,8 +107,8 @@ getPage1' ::
   , Reflex t
   , DomBuilder t w
   , MonadRouted t w
-  ) => Dynamic t (Request (Dom GET) Page1R) -> Dynamic t (w (Response (Dom GET) Page1R))
-getPage1' _ = pure $ do
+  ) => Dynamic t (Request (Dom GET) Page1R) -> (w (Response (Dom GET) Page1R))
+getPage1' _ = do
   text "Hello Page1"
   ev1 <- link "home"
   navigate (defUIRequest @(Dom GET) @HomeR () () <$ _link_clicked ev1)
@@ -118,8 +120,8 @@ getPage2' ::
   , DomBuilder t w
   , MonadRouted t w
   , PostBuild t w
-  ) => Dynamic t (Request (Dom GET) Page2R) -> Dynamic t (w (Response (Dom GET) Page2R))
-getPage2' req = pure $ do
+  ) => Dynamic t (Request (Dom GET) Page2R) -> (w (Response (Dom GET) Page2R))
+getPage2' req = do
     text "Hello Page2"
     dynText (T.pack . show . pathParam <$> req)
     ev1 <- link "home"
@@ -131,8 +133,8 @@ getPage3' ::
   , Reflex t
   , DomBuilder t w
   , MonadRouted t w
-  ) => Dynamic t (Request (Dom GET) Page3R) -> Dynamic t (w (Response (Dom GET) Page3R))
-getPage3' _ = pure $ do
+  ) => Dynamic t (Request (Dom GET) Page3R) -> (w (Response (Dom GET) Page3R))
+getPage3' _ = do
     text "Hello Page3"
     ev1 <- link "home"
     navigate (defUIRequest @(Dom GET) @HomeR () () <$ _link_clicked ev1)
@@ -173,10 +175,10 @@ instance
   handler _ = getPage3'
 
 data SampleAppApi t m =
-  SampleAppApi { getHome :: Dynamic t (Request (Dom GET) HomeR) -> Dynamic t (m (Response (Dom GET) HomeR))
-               , getPage1 :: Dynamic t (Request (Dom GET) Page1R) -> Dynamic t (m (Response (Dom GET) Page1R))
-               , getPage2 :: Dynamic t (Request (Dom GET) Page2R) -> Dynamic t (m (Response (Dom GET) Page2R))
-               , getPage3 :: Dynamic t (Request (Dom GET) Page3R) -> Dynamic t (m (Response (Dom GET) Page3R))
+  SampleAppApi { getHome :: Dynamic t (Request (Dom GET) HomeR) -> (m (Response (Dom GET) HomeR))
+               , getPage1 :: Dynamic t (Request (Dom GET) Page1R) -> (m (Response (Dom GET) Page1R))
+               , getPage2 :: Dynamic t (Request (Dom GET) Page2R) -> (m (Response (Dom GET) Page2R))
+               , getPage3 :: Dynamic t (Request (Dom GET) Page3R) -> (m (Response (Dom GET) Page3R))
                }
 
 sampleAppApi ::
