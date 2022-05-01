@@ -117,7 +117,7 @@ data DomResponse =
   | DomFailure (Either [ParamErr] BS.ByteString)
   deriving (Show)
 
-type ReflexDomApplication t m = Event t UIRequestRep -> Dynamic t DomRequest -> DomRequest -> RouteResult (UIRequestRep, m (Event t DomResponse))
+type ReflexDomApplication t m = (UIRequestRep -> Event t DomRequest) -> Dynamic t DomRequest -> DomRequest -> RouteResult (UIRequestRep, m (Event t DomResponse))
 
 class Monad w => Router (w :: * -> *) (t :: *) (server :: *) (r :: k) (pr :: (*, [*])) where
   route :: Proxy '(r, t) -> server -> ParsedRoute t pr -> (Dynamic t [ParamErr] -> w ()) -> ReflexDomApplication t w
@@ -126,8 +126,8 @@ instance ( SingMethod (m :: *)
          , Router w t s r '(Dom m, '[])
          , MonadWidget t w
          ) => Router w t s (W.Route '[Dom m] r) pr where
-  route _ _s parsedRoute page400 eMatch reqDyn req =
-    route (Proxy :: Proxy '(r, t)) _s (Nil (Proxy :: Proxy (Dom m))) page400 eMatch reqDyn req
+  route _ _s parsedRoute page400 getDomReqUpdEv reqDyn req =
+    route (Proxy :: Proxy '(r, t)) _s (Nil (Proxy :: Proxy (Dom m))) page400 getDomReqUpdEv reqDyn req
 
 instance ( MonadWidget t w ) => Router w t s (W.Route '[] r) pr where
   route _ _ _ _ _ _ _ = NotMatched
@@ -137,30 +137,30 @@ instance
   , Router w t s routes pr
   , Reflex t
   ) => Router w t s ((route :: *) ': routes) pr where
-  route _ _s parsedRoute page400 eMatch request req =
+  route _ _s parsedRoute page400 getDomReqUpdEv request req =
      (<>)
-     (route (Proxy :: Proxy '(route, t)) _s parsedRoute page400 eMatch request req)
-     (route (Proxy :: Proxy '(routes, t)) _s parsedRoute page400 eMatch request req)
+     (route (Proxy :: Proxy '(route, t)) _s parsedRoute page400 getDomReqUpdEv request req)
+     (route (Proxy :: Proxy '(routes, t)) _s parsedRoute page400 getDomReqUpdEv request req)
 
 instance (Monad w, Reflex t) => Router w t s '[] pr where
   route _ _ _ _ _ _ _ = NotMatched
 
 instance (Monad w, Router w t s rest '(m, pp :++ '[Namespace ns])) => Router w t s ((ns :: *) :// (rest :: *)) '(m, pp) where
-  route _ _s parsedRoute page400 eMatch request req =
-    route (Proxy :: Proxy '(rest, t)) _s (snocParsedRoute parsedRoute $ NSPiece (Proxy :: Proxy ns)) page400 eMatch request req
+  route _ _s parsedRoute page400 getDomReqUpdEv request req =
+    route (Proxy :: Proxy '(rest, t)) _s (snocParsedRoute parsedRoute $ NSPiece (Proxy :: Proxy ns)) page400 getDomReqUpdEv request req
 
 instance (Monad w, Router w t s (MarkDyn rest) '(m, (pp :++ '[DynamicPiece piece])), DecodeParam piece, Reflex t)
                       => Router w t s ((piece :: *) :/ (rest :: *)) '(m, pp) where
-  route _ _s parsedRoute page400 eMatch reqDyn req = case pathInfo req of
+  route _ _s parsedRoute page400 getDomReqUpdEv reqDyn req = case pathInfo req of
     (lpth : rpths)  -> case (decodeParam (encodeUtf8 lpth) :: Maybe piece) of
-      Just dynPiece -> route (Proxy :: Proxy '((MarkDyn rest), t)) _s (snocParsedRoute parsedRoute $ DPiece dynPiece) page400 eMatch reqDyn (req {pathInfo = rpths})
+      Just dynPiece -> route (Proxy :: Proxy '((MarkDyn rest), t)) _s (snocParsedRoute parsedRoute $ DPiece dynPiece) page400 getDomReqUpdEv reqDyn (req {pathInfo = rpths})
       Nothing -> NotMatched
     _ -> NotMatched
 
 instance (Reflex t, Monad w, Router w t s (MarkDyn rest) '(m, (pp :++ '[StaticPiece piece])), KnownSymbol piece)
   => Router w t s ((piece :: Symbol) :/ (rest :: *)) '(m, pp) where
-  route _ _s parsedRoute page400 eMatch reqDyn req = case pathInfo req of
-    (lpth : rpths) | lpieceTxt == lpth -> route (Proxy :: Proxy '((MarkDyn rest), t)) _s (snocParsedRoute parsedRoute $ SPiece (Proxy :: Proxy piece)) page400 eMatch reqDyn (req {pathInfo = rpths})
+  route _ _s parsedRoute page400 getDomReqUpdEv reqDyn req = case pathInfo req of
+    (lpth : rpths) | lpieceTxt == lpth -> route (Proxy :: Proxy '((MarkDyn rest), t)) _s (snocParsedRoute parsedRoute $ SPiece (Proxy :: Proxy piece)) page400 getDomReqUpdEv reqDyn (req {pathInfo = rpths})
     _ -> NotMatched
 
     where lpieceTxt = symTxt (Proxy :: Proxy piece)
@@ -174,6 +174,7 @@ instance ( KnownSymbol lpiece
          , route ~ (FromPieces paths)
          , UIHandler w t s m route
          , PathParam m route ~ HListToTuple (FilterDynP paths)
+         , AllDecodeParam (FilterDynP paths)
          , Encodings (ContentTypes m route) (ApiErr m route)
          , Encodings (ContentTypes m route) (ApiOut m route)
          , ToHeader (HeaderOut m route)
@@ -193,7 +194,7 @@ instance ( KnownSymbol lpiece
          , HeaderIn m route ~ ()
          , RequestBody m route ~ '[]
          ) => Router w t s ((lpiece :: Symbol) :/ (rpiece :: Symbol)) '(m, pp) where
-  route _ serv parsedRoute page400 eMatch reqDyn req = case pathInfo req of
+  route _ serv parsedRoute page400 getDomReqUpdEv reqDyn req = case pathInfo req of
     (lpth : rpth : [])
       | lpieceTxt == lpth && rpieceTxt == rpth ->
           Matched (mkUIRequestRep (undefined :: UIRequest m route), getResponse)
@@ -207,7 +208,7 @@ instance ( KnownSymbol lpiece
       pRoute = snocParsedRoute (snocParsedRoute parsedRoute $ SPiece (Proxy :: Proxy lpiece)) $ SPiece (Proxy :: Proxy rpiece)
       pathPar = fromParsedRoute pRoute
       getResponse =
-        toDomResponse reqDyn (fromDomRequest @m @route req (fromParsedRoute pRoute) reqDyn (getPathParamCtor pRoute) (apiHandler serv) page400 eMatch)
+        toDomResponse reqDyn (fromDomRequest @m @route req (fromParsedRoute pRoute) reqDyn (getPathParamCtor pRoute) (apiHandler serv) page400 getDomReqUpdEv)
 
 instance ( KnownSymbol rpiece
          , paths ~ (pp :++ '[DynamicPiece lpiece, StaticPiece rpiece])
@@ -215,6 +216,7 @@ instance ( KnownSymbol rpiece
          , route ~ (FromPieces paths)
          , UIHandler w t s m route
          , PathParam m route ~ HListToTuple (FilterDynP paths)
+         , AllDecodeParam (FilterDynP paths)
          , Encodings (ContentTypes m route) (ApiErr m route)
          , Encodings (ContentTypes m route) (ApiOut m route)
          , ToHeader (HeaderOut m route)
@@ -235,7 +237,7 @@ instance ( KnownSymbol rpiece
          , HeaderIn m route ~ ()
          , RequestBody m route ~ '[]
          ) => Router w t s ((lpiece :: *) :/ (rpiece :: Symbol)) '(m, pp) where
-  route _ serv parsedRoute page400 eMatch reqDyn req = case pathInfo req of
+  route _ serv parsedRoute page400 getDomReqUpdEv reqDyn req = case pathInfo req of
     (lpth : rpth : [])
       | rpieceTxt == rpth -> case (decodeParam (encodeUtf8 lpth) :: Maybe lpiece) of
           Just dynVal -> Matched (mkUIRequestRep (undefined :: UIRequest m route), getResponse dynVal)
@@ -246,11 +248,12 @@ instance ( KnownSymbol rpiece
       getResponse dynVal =
         let pRoute :: ParsedRoute t '(m, paths)
             pRoute = snocParsedRoute (snocParsedRoute parsedRoute $ DPiece dynVal) $ SPiece (Proxy :: Proxy rpiece)
-        in toDomResponse reqDyn $ fromDomRequest @m @route req (fromParsedRoute pRoute) reqDyn (getPathParamCtor pRoute) (apiHandler serv) page400 eMatch
+        in toDomResponse reqDyn $ fromDomRequest @m @route req (fromParsedRoute pRoute) reqDyn (getPathParamCtor pRoute) (apiHandler serv) page400 getDomReqUpdEv
 
 instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t0]))
          , UIHandler w t s m route
          , PathParam m route ~ HListToTuple (FilterDynP (pp :++ '[DynamicPiece t0]))
+         , AllDecodeParam (FilterDynP (pp :++ '[DynamicPiece t0]))
          , Encodings (ContentTypes m route) (ApiErr m route)
          , Encodings (ContentTypes m route) (ApiOut m route)
          , ToHeader (HeaderOut m route)
@@ -271,7 +274,7 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t0]))
          , HeaderIn m route ~ ()
          , RequestBody m route ~ '[]
          ) => Router w t s (DynamicPiece t0) '(m, pp) where
-  route _ serv parsedRoute page400 eMatch reqDyn req = case pathInfo req of
+  route _ serv parsedRoute page400 getDomReqUpdEv reqDyn req = case pathInfo req of
     (lpth : []) -> case (decodeParam (encodeUtf8 lpth) :: Maybe t0) of
       Just dynVal -> Matched (mkUIRequestRep (undefined :: UIRequest m route), getResponse dynVal)
       Nothing     -> NotMatched
@@ -282,7 +285,7 @@ instance ( route ~ (FromPieces (pp :++ '[DynamicPiece t0]))
           pRoute :: ParsedRoute t '(m, (pp :++ '[DynamicPiece t0]))
           pRoute = snocParsedRoute parsedRoute $ DPiece dynVal
         in toDomResponse reqDyn
-           $ fromDomRequest @m @route req (fromParsedRoute pRoute) reqDyn (getPathParamCtor pRoute) (apiHandler serv) page400 eMatch
+           $ fromDomRequest @m @route req (fromParsedRoute pRoute) reqDyn (getPathParamCtor pRoute) (apiHandler serv) page400 getDomReqUpdEv
 
 instance ( PathParam m (ns :// piece) ~ ()
          , ParamErrToApiErr (ApiErr m (ns :// piece))
@@ -309,21 +312,21 @@ instance ( PathParam m (ns :// piece) ~ ()
          , HeaderIn m route ~ ()
          , RequestBody m route ~ '[]
          ) => Router w t s ((ns :: *) :// (piece :: Symbol)) '(m, pp) where
-  route _ serv _ page400 eMatch reqDyn req = case pathInfo req of
+  route _ serv _ page400 getDomReqUpdEv reqDyn req = case pathInfo req of
     (pth : []) | symTxt (Proxy :: Proxy piece) == pth -> Matched (mkUIRequestRep (undefined :: UIRequest m route), getResponse)
     [] | T.null $ symTxt (Proxy :: Proxy piece) -> NotMatched
     _ ->  NotMatched
 
     where
       getResponse = toDomResponse reqDyn
-                    $ fromDomRequest @m @route req () reqDyn (const $ pure ()) (apiHandler serv) page400 eMatch
+                    $ fromDomRequest @m @route req () reqDyn (const ()) (apiHandler serv) page400 getDomReqUpdEv
 
 router ::
   forall apis server m t.
   ( Router m t server apis '(CUSTOM "", '[])
   , MonadWidget t m
   ) => Proxy apis -> server -> (Dynamic t [ParamErr] -> m ()) -> ReflexDomApplication t m
-router _ s page400 eMatch = route (Proxy :: Proxy '(apis, t)) s emptyParsedRoutes page400 eMatch
+router _ s page400 getDomReqUpdEv = route (Proxy :: Proxy '(apis, t)) s emptyParsedRoutes page400 getDomReqUpdEv
 
 fromDomRequest :: forall m r w t.
   ( Functor w
@@ -341,31 +344,28 @@ fromDomRequest :: forall m r w t.
   DomRequest ->
   PathParam m r ->
   Dynamic t DomRequest ->
-  (DomRequest -> Validation [ParamErr] (PathParam m r)) ->
+  (DomRequest -> PathParam m r) ->
   (Dynamic t (Request m r) -> w (Response m r)) ->
   (Dynamic t [ParamErr] ->  w ()) ->
-  Event t UIRequestRep ->
+  (UIRequestRep -> Event t DomRequest) ->
   w (Event t (Response m r))
-fromDomRequest initDomReq initPP domReqDyn ppFromDReq handlerFn page400 eMatch = do
+fromDomRequest initDomReq initPP domReqDyn ppFromDReq handlerFn page400 getDomReqUpdEv = do
   let
     reqRep = mkUIRequestRep (undefined :: UIRequest m r)
-  dIsSameRoute <- holdDyn True $ fmap (== reqRep) {-$ traceEventWith (\m -> show (reqRep,m))-} eMatch
   let
-    eDomReqUpdate = gate (current dIsSameRoute) (updated domReqDyn)
-    eReqUpdate = ffor eDomReqUpdate $ \domreq -> toWebApiReqVal (ppFromDReq domreq) domreq
-  reqValDyn <- holdDyn (toWebApiReqVal (pure initPP) initDomReq) never --eReqUpdate
+    eReqUpdate = ffor (getDomReqUpdEv reqRep) $ \domreq -> toWebApiReqVal (ppFromDReq domreq) domreq
+  reqValDyn <- holdDyn (toWebApiReqVal initPP initDomReq) eReqUpdate
   factoredErrSuccDyn <- eitherDyn reqValDyn
   -- Handles toggling of params decoding status between success & failure within same route.
-  text (T.pack $ show reqRep)
   networkView $ ffor factoredErrSuccDyn $ \case
     Left errs -> do
       page400 errs
       pure (Failure $ Right $ OtherError $ toException $ BadRequestError)
     Right waReqDyn -> handlerFn waReqDyn
   where
-    toWebApiReqVal :: Validation [ParamErr] (PathParam m r) -> DomRequest -> Either [ParamErr] (Request m r)
-    toWebApiReqVal ppVal domReq =
-      case (\pp qp ->
+    toWebApiReqVal :: PathParam m r -> DomRequest -> Either [ParamErr] (Request m r)
+    toWebApiReqVal pp domReq =
+      case (\qp ->
               Request { pathParam = pp
                       , queryParam = qp
                       , formParam = ()
@@ -374,7 +374,7 @@ fromDomRequest initDomReq initPP domReqDyn ppFromDReq handlerFn page400 eMatch =
                       , headerIn = ()
                       , requestBody = ()
                       }
-           ) <$> ppVal <*> (fromQueryParam $ queryPathInfo domReq) of
+           ) <$> (fromQueryParam $ queryPathInfo domReq) of
         Validation valE -> valE
 
 toDomResponse ::
@@ -435,14 +435,19 @@ toUIApplication r@UIRequest { uiPathParam, uiQueryParam } page404 app = withPath
     (do
         domReqMayDyn <- maybeDyn (go <$> dPathInfo)
         rec
-          dRepMay'Handler <- holdUniqDynBy (\old new -> fst old == fst new) $ do
+          dRepMay'Handler <- pure $ do
             domReqMayDyn >>= \case
               Nothing -> pure (Nothing, Nothing <$ page404)
-              Just domReqDyn -> fmap (app eNewRouteRep domReqDyn) domReqDyn >>= \case
-                NotMatched -> pure (Nothing, Nothing <$ page404)
-                Matched (reqRep, dom) -> pure (Just reqRep, Just <$> dom)
-          let eNewRouteRep = fmapMaybe id $ updated $ fmap fst dRepMay'Handler
-        pure $ fmap snd dRepMay'Handler
+              Just domReqDyn -> fmap (\domreq -> (domreq, app eNewRouteRep domReqDyn domreq)) domReqDyn >>= \case
+                (_, NotMatched) -> pure (Nothing, Nothing <$ page404)
+                (domreq, Matched (reqRep, dom)) -> pure (Just (reqRep, domreq), Just <$> dom)
+          let eNewRouteRep uirep = fforMaybe (updated $ fmap fst dRepMay'Handler) $ \case
+                Just (reqRep, domreq) -> if reqRep == uirep
+                                         then Just domreq
+                                         else Nothing
+                Nothing -> Nothing
+        dUniqRepMay'Handler <- holdUniqDynBy (\old new -> (fst <$> fst old) == (fst <$> fst new)) dRepMay'Handler
+        pure $ fmap snd dUniqRepMay'Handler
     )
   pure $ coincidence $ fmapMaybe id res
   where
@@ -482,13 +487,6 @@ uiApp def globalNavMay page404 page400 server =
   routeApp "" $ do
   maybe (pure ()) navigateToAppLink globalNavMay
   toUIApplication def page404 $ router (Proxy :: Proxy (Apis (UIInterface server))) server page400
-
-
--- ^ Use only after checking `decodeParam` succeed and always assume first piece is used
-unsafeDecodeParam :: forall piece t.(DecodeParam piece, Functor (Dynamic t), HasCallStack) => Dynamic t DomRequest -> Dynamic t piece
-unsafeDecodeParam dReq = ffor dReq $ \req ->  case pathInfo req of
-  (lpth : _)  -> fromMaybe (error "unsafeDecodeParam") (decodeParam @piece (encodeUtf8 lpth))
-  _ -> error "unsafeDecodeParam"
 
 -- Shared: Server Router
 
@@ -532,9 +530,13 @@ snocParsedRoute (ConsStaticPiece sym routes) pt  = (ConsStaticPiece sym $ snocPa
 snocParsedRoute (ConsNSPiece prov routes) pt     = (ConsNSPiece prov $ snocParsedRoute routes pt)
 snocParsedRoute (ConsDynamicPiece sym routes) pt = (ConsDynamicPiece sym $ snocParsedRoute routes pt)
 
-fromParsedRoute :: (Reflex t, (PathParam m (FromPieces pths) ~ HListToTuple (FilterDynP pths)))
+fromParsedRoute :: ((PathParam m (FromPieces pths) ~ HListToTuple (FilterDynP pths)))
                   => ParsedRoute t '(m, pths) -> PathParam m (FromPieces pths)
-fromParsedRoute proutes = case dropStaticPiece proutes of
+fromParsedRoute proutes = fromParsedRoute' (dropStaticPiece proutes) proutes
+
+fromParsedRoute' :: ((PathParam m (FromPieces pths) ~ HListToTuple (FilterDynP pths)))
+                  => HList t (FilterDynP pths) -> ParsedRoute t '(m, pths) -> PathParam m (FromPieces pths)
+fromParsedRoute' pathHL _proutes = case pathHL of
   HNil -> ()
   p1 :* HNil -> p1
   p1 :* p2 :* HNil -> (p1, p2)
@@ -553,8 +555,20 @@ dropStaticPiece (ConsStaticPiece _ ps)  = dropStaticPiece ps
 dropStaticPiece (ConsNSPiece _ ps)      = dropStaticPiece ps
 dropStaticPiece (ConsDynamicPiece p ps) = p :* dropStaticPiece ps
 
-getPathParamCtor :: HasCallStack => ParsedRoute t '(m, pths) -> DomRequest -> Validation [ParamErr] (PathParam m (FromPieces pths))
-getPathParamCtor proutes domreq = undefined
+getPathParamCtor :: (HasCallStack, AllDecodeParam (FilterDynP pths), (PathParam m (FromPieces pths) ~ HListToTuple (FilterDynP pths))) => ParsedRoute t '(m, pths) -> DomRequest -> PathParam m (FromPieces pths)
+getPathParamCtor proutes domreq = fromParsedRoute' (parseDynPiece (pathInfo domreq) proutes) proutes
+  where
+    unsafeDecodePar :: forall v.DecodeParam v => v -> Text -> v
+    unsafeDecodePar _ pp = fromMaybe (error "Panic: Unreachable code") (decodeParam @v (encodeUtf8 pp))
+    parseDynPiece :: (AllDecodeParam (FilterDynP pths)) => [Text] -> ParsedRoute t '(m, pths) -> HList t (FilterDynP pths)
+    parseDynPiece _ (Nil _) = HNil
+    parseDynPiece (_:pths) (ConsStaticPiece _ ps) = parseDynPiece pths ps
+    parseDynPiece pths (ConsNSPiece _ ps)     = parseDynPiece pths ps
+    parseDynPiece (p : pths) (ConsDynamicPiece _v ps) = unsafeDecodePar _v p :* parseDynPiece pths ps
+
+type family AllDecodeParam (dpcs :: [*]) :: Constraint where
+  AllDecodeParam '[] = ()
+  AllDecodeParam (t ': ts) = (DecodeParam t, AllDecodeParam ts)
 
 data HList :: * -> [*] -> * where
   HNil :: HList t '[]
