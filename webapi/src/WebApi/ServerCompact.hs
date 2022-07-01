@@ -12,6 +12,7 @@
 {-# LANGUAGE RankNTypes                #-}
 module WebApi.ServerCompact
   ( CompactServer (..)
+  , GetOpIdName
   ) where
 
 import GHC.Records
@@ -58,3 +59,4 @@ type family GetOpIdName api (opId :: OpId) :: Symbol where
                                                      'Text "Fix: Define OperationId for instance ApiContract " ':<>: 'ShowType m ':<>: 'Text " (" ':<>: 'ShowType r ':<>: 'Text ")" ':$$:
                                                      'Text "Example: type OperationId " ':<>: 'ShowType m ':<>: 'Text " (" ':<>: 'ShowType r ':<>: 'Text ") = 'OpId " ':<>: 'ShowType api ':<>: 'Text " <operation-name>"
                                                )
+
