@@ -23,7 +23,7 @@ import qualified Data.Text.Encoding as T
 import Data.Proxy
 import qualified Data.Map as Map
 import qualified Data.CaseInsensitive as CI
-import Network.HTTP.Types
+import Network.HTTP.Types as HT
 import           Network.HTTP.Media                    (mapContentMedia, renderHeader)
 import Language.Javascript.JSaddle
 import Control.Exception
@@ -153,7 +153,7 @@ clientOrigin baseUrl reqEvt = do
         respHdr = fromHeader $ respHdrRaw :: Validation [ParamErr] (HeaderOut meth r)
 
         toParamErr :: Either String a -> Either [ParamErr] a
-        toParamErr (Left _str) = Left []
+        toParamErr (Left str) = Left [ParseErr "" (T.pack $ str)]
         toParamErr (Right r)   = Right r
 
         decode' :: ( Decodings (ContentTypes meth r) a
@@ -177,14 +177,18 @@ clientOrigin baseUrl reqEvt = do
                <*> respHdr
                <*> pure () of
       Validation (Right success) -> success
-      Validation (Left _errs) ->
+      Validation (Left errs1) ->
         case ApiError
              <$> pure status
              <*> (Validation $ toParamErr $ decode' (Res :: Resource meth r) xhrResp)
              <*> (Just <$> respHdr)
              <*> (Just <$> (pure ())) of
           Validation (Right failure) -> (WebApi.Failure . Left) failure
-          Validation (Left errs) -> WebApi.Failure $ Right (OtherError (toException $ ApiErrParseFailException status $ T.intercalate "\n" $ fmap (T.pack . show) errs))
+          Validation (Left errs2) -> 
+            let errs = case HT.statusCode status of
+                  200 -> errs1
+                  _ -> errs2
+            in WebApi.Failure $ Right (OtherError (toException $ ApiErrParseFailException status $ T.intercalate "\n" $ fmap (T.pack . show) errs))
 
   pure $ ffor xhrRes $ \case
     Left e -> WebApi.Failure $ Right $ OtherError $ toException e
