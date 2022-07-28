@@ -34,6 +34,9 @@ module WebApi.Reflex.Dom.Router
   , WebUIServer (..)
   , UIHandler (..)
   , Dom
+  , DomResponse (..)
+  , UIRequestRep
+  , mkUIRequestRep
 
   , UIRequest
   , compactUIServer
@@ -449,7 +452,7 @@ toUIApplication r@UIRequest { uiPathParam, uiQueryParam } page404 app = withPath
         dUniqRepMay'Handler <- holdUniqDynBy (\old new -> (fst <$> fst old) == (fst <$> fst new)) dRepMay'Handler
         pure $ fmap snd dUniqRepMay'Handler
     )
-  pure $ coincidence $ fmapMaybe id res
+  switchHold never $ fmapMaybe id res
   where
     isRoot [] = True
     isRoot [""] = True
