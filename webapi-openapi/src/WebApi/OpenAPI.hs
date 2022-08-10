@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP                        #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -66,18 +67,23 @@ import GHC.SourceGen
       as',
       tuplePromotedTy
     )
-import GHC.Paths (libdir)
-import GHC ( runGhc )
 import Data.HashMap.Strict.InsOrd as HMO (toList,lookup, empty, fromList, delete)
 import Data.Text as T ( unpack, Text, append, splitAt, toUpper, take, pack, dropEnd, concat, split, toLower, breakOnEnd, isPrefixOf)
 import Data.Text.IO as T (writeFile)
+#if (MIN_VERSION_ghc(9,0,0))
+import GHC.Plugins(mkVarOcc)
+import GHC.Utils.Outputable(ppr,showSDocOneLine, defaultSDocContext)
+#else
 import GhcPlugins(getDynFlags,mkVarOcc)
+import Outputable(ppr,showSDoc)
+import GHC.Paths (libdir)
+import GHC ( runGhc )
+#endif
 import Control.Monad.State.Class ( MonadState(get), modify )
 import Control.Monad.State.Lazy(evalState)
 import Data.Set as S(Set, empty, fromList, member, insert,difference,null,toList)
 import Data.String ( IsString(fromString) )
 import Data.Bifunctor ( Bifunctor(bimap), second)
-import Outputable(ppr,showSDoc)
 import Ormolu
     ( ormolu, defaultConfig, Config(cfgCheckIdempotence) )
 import System.Process ( callCommand )
@@ -542,8 +548,14 @@ parseFilePath fp = (\x ->
 
 writeModule :: FilePath -> String -> [Extension] -> HsModule' -> IO ()
 writeModule destFp fName es hsModule = do
-    dynFlags <- runGhc (Just libdir) getDynFlags
-    let fileContent = concatMap ppExtension es <> showSDoc dynFlags (ppr hsModule)
+    contents <- do
+#if (MIN_VERSION_ghc(9,2,0))
+      pure (showSDocOneLine defaultSDocContext (ppr hsModule))  
+#else
+      dynFlags <- runGhc (Just libdir) getDynFlags
+      pure (showSDoc dynFlags (ppr hsModule))
+#endif
+    let fileContent = concatMap ppExtension es <> contents
     txt <- ormolu defaultConfig { cfgCheckIdempotence = True } "" fileContent
     createDirectoryIfMissing True destFp
     T.writeFile (destFp </> fName) txt --(T.pack fileContent)
@@ -722,7 +734,7 @@ createToJsonInstancesRecord schemaName schemaVal = do
     let schemaProperties = HMO.toList . _schemaProperties $ schemaVal
         sFields =  (`avoidKeywords` keywordsToAvoid) . lowerFirstChar . removeUnsupportedSymbols . fst <$> schemaProperties
         rFieldList = bvar . textToOccNameStr <$> sFields
-        associationList = list $ (\x -> op (string . T.unpack $ x) ".=" (var . textToRdrNameStr $x)) <$> sFields
+        associationList = list $ (\x -> op (string . T.unpack $ x) ".=" (var . textToRdrNameStr $ x)) <$> sFields
     let toJsonInst = instance' (var "ToJSON" @@ var (textToRdrNameStr schemaName))
                                [funBind "toJSON" (match [conP (textToRdrNameStr schemaName) rFieldList] (var "object" @@ associationList) ) ]
     return $ Instance toJsonInst

@@ -100,11 +100,11 @@ import           Data.ByteString
 import           WebApi.Security
 
 -- | Describes a collection of web apis.
-class WebApi (p :: *) where
+class WebApi (p :: Type) where
   -- | Version of the web api.
-  type Version p :: *
+  type Version p :: Type
   -- | List of all end points that this web api provides.
-  type Apis p :: [*]
+  type Apis p :: [Type]
 
   type Version p = ()
 
@@ -125,7 +125,7 @@ class WebApi (p :: *) where
 class ( SingMethod m
       , WebApi p
       , ReqInvariant (FormParam m r) (FileParam m r) (RequestBody m r))
-      => ApiContract (p :: *) (m :: *) (r :: *) where
+      => ApiContract (p :: Type) (m :: Type) (r :: Type) where
   -- | Type of path param that this end point takes in.
   -- Defaults to @PathParam' m r@.
   type PathParam m r
@@ -158,7 +158,7 @@ class ( SingMethod m
   type CookieOut m r
   -- | List of Content Types that this end point can serve.
   -- Defaults to @[JSON]@.
-  type ContentTypes m r :: [*]
+  type ContentTypes m r :: [Type]
   -- | List of datatypes this end point expects in the request body.
   --
   -- One can specify request's Content-Type by wrapping the data type using 'Content'.
@@ -174,7 +174,7 @@ class ( SingMethod m
   --
   -- If it is @[]@, Content-Type is decided by @FormParam m r@ and @FileParam m r@.
   -- Defaults to @[]@
-  type RequestBody m r :: [*]
+  type RequestBody m r :: [Type]
 
   type OpSecurityRequirement m r :: [SecurityRequirement Symbol]
   type OpSecurityRequirement m r = '[]
@@ -197,18 +197,18 @@ class ( SingMethod m
 -- | Type of the path params that a route 'r' has. If a custom routing system is being used, 
 -- then you will have to give an instance for 'PathParam'' for types being used in routing.
 -- Please take a look at the existing instances of 'PathParam'' for reference.
-type family PathParam' m r :: *
+type family PathParam' m r :: Type
 
 type instance PathParam' m (Static s) = ()
 type instance PathParam' m (p1 :/ p2) = HListToTuple (FilterDynP (ToPieces (p1 :/ p2)))
-type instance PathParam' m (p :// (ps :: *)) = HListToTuple (FilterDynP (ToPieces ps))
+type instance PathParam' m (p :// (ps :: Type)) = HListToTuple (FilterDynP (ToPieces ps))
 type instance PathParam' m (p :// (ps :: Symbol)) = ()
 
 data OpId
   = OpId Type Symbol
   | UndefinedOpId Type Type
 
-type family DefaultApiErr (ctype :: [*]) :: * where
+type family DefaultApiErr (ctype :: [Type]) :: Type where
   DefaultApiErr '[JSON]      = Value
   DefaultApiErr _            = LT.Text
 
@@ -326,7 +326,7 @@ _getMethodName :: (SingMethod m) => Proxy m -> Text
 _getMethodName = decodeUtf8 . singMethod  
 
 -- | Used for maintaining requestBody invariant
-type family ReqInvariant (form :: *) (file :: *) (body :: [*]) :: Constraint where
+type family ReqInvariant (form :: Type) (file :: Type) (body :: [Type]) :: Constraint where
   ReqInvariant () () '[]  = ()
   ReqInvariant () () '[a] = ()
   ReqInvariant a b '[]    = ()

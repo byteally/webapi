@@ -66,6 +66,7 @@ import qualified Data.ByteString as B
 import           Data.ByteString.Builder (toLazyByteString)
 import           Data.ByteString.Lazy (ByteString, fromStrict, toStrict)
 import           Data.Either (isRight)
+import           Data.Kind
 import           Data.List (find)
 import           Data.Maybe ( fromMaybe )
 import           Data.Proxy
@@ -308,7 +309,7 @@ instance Exception UnknownClientException where
 
 -- | Client settings for anonymous (contractless) client
 ---  Currently duplicated from ClientSettings to avoid a breaking change  
-data GClientSettings (m :: *) (r :: *) =
+data GClientSettings (m :: Type) (r :: Type) =
   GClientSettings { gBaseUrl           :: String           -- ^ base url of the API being called.
                   , gConnectionManager :: Maybe HC.Manager -- ^ connection manager for the connection.
                   }

@@ -143,6 +143,7 @@ import           Data.Trie                          ( Trie, submap )
 import qualified Data.Trie                          as Trie
 import           Data.Typeable
 import           Data.Vector                        (Vector)
+import           Data.Kind
 import qualified Data.Vector                        as V
 import           Data.Word
 import qualified GHC.Exts as GHC
@@ -192,7 +193,7 @@ instance ToJSON a => ToJSON (JsonOf a) where
 instance FromJSON a => FromJSON (JsonOf a) where
   parseJSON jval = JsonOf `fmap` parseJSON jval
 
-newtype DelimitedCollection (delim :: Symbol) (t :: *) = DelimitedCollection {getCollection :: Vector t}
+newtype DelimitedCollection (delim :: Symbol) (t :: Type) = DelimitedCollection {getCollection :: Vector t}
 #if MIN_VERSION_vector(0,12,0)
                                                          deriving (Show, Read, Eq, Ord, FromJSON, ToJSON, Monad, Applicative, Functor, Foldable, Alternative, Monoid, Semigroup)
 #else
@@ -281,7 +282,7 @@ link :: ( ToParam 'QueryParam (QueryParam m r)
         , MkPathFormatString r
         , ToParam 'PathParam (PathParam m r)
         ) =>
-          route (m :: *) (r :: *)
+          route (m :: Type) (r :: Type)
         -> Maybe ByteString
         -> PathParam m r
         -> Maybe (QueryParam m r)
@@ -410,14 +411,14 @@ class FromParam (parK :: ParamK) a where
   fromParam pt pfx = (fmap to) . gfromParam pt pfx (ParamAcc 0 False) defaultParamSettings
 
 -- | Serialize a type to 'ByteString'.
-class EncodeParam (t :: *) where
+class EncodeParam (t :: Type) where
   encodeParam :: t -> ByteString
 
   default encodeParam :: (Generic t, GHttpParam (Rep t)) => t -> ByteString
   encodeParam = gEncodeParam . from
 
 -- | (Try to) Deserialize a type from 'ByteString'.
-class DecodeParam (t :: *) where
+class DecodeParam (t :: Type) where
   decodeParam :: ByteString -> Maybe t
 
   default decodeParam :: (Generic t, GHttpParam (Rep t)) => ByteString -> Maybe t

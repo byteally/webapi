@@ -68,26 +68,28 @@ import WebApi.Contract
 import WebApi.Internal
 import WebApi.Param
 import WebApi.Util
+import Data.Kind
 
 
 -- | Get the namespace of a route
-type family NamespaceOf (r :: *) where
+type family NamespaceOf (r :: Type) where
   NamespaceOf (ns :// r) = ns
 
-data PieceType :: * -> * where
+data PieceType :: Type -> Type where
   SPiece  :: Proxy (p :: Symbol) -> PieceType (StaticPiece p)
-  NSPiece :: Proxy (ns :: *) -> PieceType (Namespace ns)
+  NSPiece :: Proxy (ns :: Type) -> PieceType (Namespace ns)
   DPiece  :: !val -> PieceType (DynamicPiece val)
 
-data ParsedRoute :: (*, [*]) -> * where
+data ParsedRoute :: (Type, [Type]) -> Type where
   Nil              :: Proxy method -> ParsedRoute '(method, '[])
   ConsStaticPiece  :: Proxy (p :: Symbol) -> ParsedRoute '(method, ps) -> ParsedRoute '(method, ((StaticPiece p) ': ps))
-  ConsNSPiece      :: Proxy (ns :: *) -> ParsedRoute '(method, ps) -> ParsedRoute '(method, ((Namespace ns) ': ps))
+  ConsNSPiece      :: Proxy (ns :: Type) -> ParsedRoute '(method, ps) -> ParsedRoute '(method, ((Namespace ns) ': ps))
   ConsDynamicPiece :: !t -> ParsedRoute '(method, ps) -> ParsedRoute '(method, ((DynamicPiece t) ': ps))
 
-data HList :: [*] -> * where
+data HList :: [Type] -> Type where
   HNil :: HList '[]
   (:*) :: !a -> HList as -> HList (a ': as)
+
 infixr 5 :*
 
 fromParsedRoute :: (PathParam m (FromPieces pths) ~ HListToTuple (FilterDynP pths))
@@ -112,13 +114,13 @@ dropStaticPiece (ConsNSPiece _ ps)      = dropStaticPiece ps
 dropStaticPiece (ConsDynamicPiece p ps) = p :* dropStaticPiece ps
 
 -- | Class to do the default routing.
-class Router (server :: *) (r :: k) (pr :: (*, [*])) where
+class Router (server :: Type) (r :: k) (pr :: (Type, [Type])) where
   route :: Proxy r -> server -> ParsedRoute pr -> RoutingApplication
 
-type family MarkDyn (pp :: *) :: * where
+type family MarkDyn (pp :: Type) :: Type where
   MarkDyn (p1 :/ t)  = (p1 :/ t)
   MarkDyn (p :// t)  = (p :// t)
-  MarkDyn (t :: *)   = DynamicPiece t
+  MarkDyn (t :: Type)   = DynamicPiece t
 
 instance ( SingMethod m
          , Router s r '(m, '[])
@@ -133,7 +135,7 @@ instance ( SingMethod m
 instance Router s (Route '[] r) pr where
   route _ _s _ _request respond = respond NotMatched
 
-instance (Router s route pr, Router s routes pr) => Router s ((route :: *) ': routes) pr where
+instance (Router s route pr, Router s routes pr) => Router s ((route :: Type) ': routes) pr where
   route _ _s parsedRoute request respond =
     route (Proxy :: Proxy route) _s parsedRoute request $ \case
       Matched a -> respond $ Matched a
@@ -142,12 +144,12 @@ instance (Router s route pr, Router s routes pr) => Router s ((route :: *) ': ro
 instance Router s '[] pr where
   route _ _s _ _ respond = respond NotMatched
 
-instance (Router s rest '(m, pp :++ '[Namespace ns])) => Router s ((ns :: *) :// (rest :: *)) '(m, pp) where
+instance (Router s rest '(m, pp :++ '[Namespace ns])) => Router s ((ns :: Type) :// (rest :: Type)) '(m, pp) where
   route _ _s parsedRoute request respond =
     route (Proxy :: Proxy rest) _s (snocParsedRoute parsedRoute $ NSPiece (Proxy :: Proxy ns)) request respond
 
 instance (Router s (MarkDyn rest) '(m, (pp :++ '[DynamicPiece piece])), DecodeParam piece)
-                      => Router s ((piece :: *) :/ (rest :: *)) '(m, pp) where
+                      => Router s ((piece :: Type) :/ (rest :: Type)) '(m, pp) where
   route _ _s parsedRoute request respond =
     case pathInfo request of
       (lpth : rpths)  -> case (decodeParam (encodeUtf8 lpth) :: Maybe piece) of
@@ -156,7 +158,7 @@ instance (Router s (MarkDyn rest) '(m, (pp :++ '[DynamicPiece piece])), DecodePa
       _ -> respond $ NotMatched
 
 instance (Router s (MarkDyn rest) '(m, (pp :++ '[StaticPiece piece])), KnownSymbol piece)
-  => Router s ((piece :: Symbol) :/ (rest :: *)) '(m, pp) where
+  => Router s ((piece :: Symbol) :/ (rest :: Type)) '(m, pp) where
   route _ _s parsedRoute request respond =
     case pathInfo request of
       (lpth : rpths) | lpieceTxt == lpth -> route (Proxy :: Proxy (MarkDyn rest)) _s (snocParsedRoute parsedRoute $ SPiece (Proxy :: Proxy piece)) request {pathInfo = rpths} respond
@@ -242,7 +244,7 @@ instance ( KnownSymbol rpiece
          , Typeable m
          , Typeable route
          , WebApiServer s
-         ) => Router s ((lpiece :: *) :/ (rpiece :: Symbol)) '(m, pp) where
+         ) => Router s ((lpiece :: Type) :/ (rpiece :: Symbol)) '(m, pp) where
   route _ serv parsedRoute request respond =
     case pathInfo request of
       (lpth : rpth : []) | rpieceTxt == rpth -> case (decodeParam (encodeUtf8 lpth) :: Maybe lpiece) of
@@ -305,7 +307,7 @@ instance ( PathParam m (ns :// piece) ~ ()
          , FromWaiRequestCtx m (ns :// piece)
          , Encodings (ContentTypes m (ns :// piece)) (ApiErr m (ns :// piece))
          , Encodings (ContentTypes m (ns :// piece)) (ApiOut m (ns :// piece))
-         ) => Router s ((ns :: *) :// (piece :: Symbol)) '(m, pp) where
+         ) => Router s ((ns :: Type) :// (piece :: Symbol)) '(m, pp) where
   route _ serv _ request respond =
     case pathInfo request of
       (pth : []) | symTxt (Proxy :: Proxy piece) == pth -> respond . Matched =<< getResponse

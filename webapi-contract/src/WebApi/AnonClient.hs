@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP                        #-}
 {-|
 Module      : WebApi.AnonClient
 License     : BSD3
@@ -51,8 +52,14 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text          as T
 import           Network.HTTP.Types
 import qualified Data.Aeson as A
-import qualified Data.HashMap.Strict as HMap
 import qualified Data.CaseInsensitive as CI
+import Data.Kind
+#if MIN_VERSION_aeson(2,0,0)
+import qualified Data.Aeson.KeyMap as A
+import qualified Data.Aeson.Key as A
+#else
+import qualified Data.HashMap.Strict as HMap
+#endif
 
 data AnonApi t m r
 
@@ -98,7 +105,7 @@ type CookieParamLabel  = "cookie"
 type ReqBodyParamLabel = "body"
 type ContentTypeLabel  = "accept"
 
-type family LookupHParam (fld :: Symbol) (xs :: [*]) where    
+type family LookupHParam (fld :: Symbol) (xs :: [Type]) where    
   LookupHParam fld (fld ::: x ': xs) = x
   LookupHParam fld (_   ::: _ ': xs) =
     LookupHParam fld xs
@@ -120,7 +127,7 @@ instance ( LookupHParam fld xs ~ LookupHParam fld ((fld' ::: x) : xs)
 instance LookupHParamCls fld '[] b where
   lookupHParam' _ _ HNil = ()
 
-type family IsHeadMatch (fld :: Symbol) (xs :: [*]) where
+type family IsHeadMatch (fld :: Symbol) (xs :: [Type]) where
   IsHeadMatch fld (fld ::: _ ': _) = 'True
   IsHeadMatch _ _                  = 'False
 
@@ -167,7 +174,7 @@ toAnonRequest _ _ params =
                     } :: Request m (AnonApiData (HParam xs) o e co ho :// r)
   in  setAccept (Proxy :: Proxy (UnProxyAcceptType (LookupHParam ContentTypeLabel xs))) req  
 
-class SetAccept (t :: Maybe *) m r where
+class SetAccept (t :: Maybe Type) m r where
   setAccept :: Proxy t -> Request m r -> Request m r
 
 instance (AcceptHeaderCtx t m r) => SetAccept ('Just t) m r where
@@ -235,7 +242,11 @@ instance ( KnownSymbol fld,
 
 instance (KnownSymbol fld, A.ToJSON x, A.ToJSON (HParam xs)) => A.ToJSON (HParam (fld ::: x ': xs)) where
   toJSON (Field v :& params) = case A.toJSON params of
+#if MIN_VERSION_aeson(2,0,0)    
+    A.Object hmap -> A.Object $ A.insert (A.fromText $ T.pack $ symbolVal (Proxy :: Proxy fld)) (A.toJSON v) hmap
+#else
     A.Object hmap -> A.Object $ HMap.insert (T.pack $ symbolVal (Proxy :: Proxy fld)) (A.toJSON v) hmap
+#endif
     _ -> error "Panic: Invariant violated! Expecting only Object"
 
 instance A.ToJSON (HParam '[]) where
@@ -247,18 +258,18 @@ infixl 6 .=
 (.=) :: Label fld -> a -> fld ::: a
 (.=) _ = Field
 
-type family UnProxyContentType (t :: *) where
+type family UnProxyContentType (t :: Type) where
   UnProxyContentType (Proxy ct) = '[ ct ]
   -- NOTE: Default content type to JSON
   UnProxyContentType ()          = '[ JSON ]
   UnProxyContentType t          =  TypeError ('Text "Expected a Proxy, but got " ':<>: 'ShowType t)
 
-type family UnProxyAcceptType (t :: *) where
+type family UnProxyAcceptType (t :: Type) where
   UnProxyAcceptType (Proxy ct) = 'Just ct
   UnProxyAcceptType ()          = 'Nothing
   UnProxyAcceptType t          =  TypeError ('Text "Expected a Proxy, but got " ':<>: 'ShowType t)
 
-type family UnProxyReqBody (t :: *) where
+type family UnProxyReqBody (t :: Type) where
   UnProxyReqBody (Body ct t) = '[ Content '[ct] (Body ct t) ]
   UnProxyReqBody ()           = '[ ]
   UnProxyReqBody t           = '[ t ]  

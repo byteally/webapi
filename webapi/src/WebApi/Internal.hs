@@ -50,7 +50,8 @@ import           WebApi.Contract
 import           WebApi.Param
 import           WebApi.Util
 import qualified Data.Text.Encoding                 as TE
-import GHC.TypeLits
+import           GHC.TypeLits
+import           Data.Kind
 
 data RouteResult a = NotMatched | Matched a
 
@@ -170,7 +171,7 @@ toWaiResponse wreq resp = case resp of
 
 
 -- | Describes the implementation of a single API end point corresponding to @ApiContract (ApiInterface p) m r@
-class (ApiContract (ApiInterface p) m r) => ApiHandler (p :: *) (m :: *) (r :: *) where
+class (ApiContract (ApiInterface p) m r) => ApiHandler (p :: Type) (m :: Type) (r :: Type) where
   -- | Handler for the API end point which returns a 'Response'.
   --
   -- TODO : 'query' type parameter is an experimental one used for trying out dependently typed params.
@@ -185,17 +186,17 @@ class (ApiContract (ApiInterface p) m r) => ApiHandler (p :: *) (m :: *) (r :: *
             -> Request m r
             -> HandlerM p (Query (Response m r) query)
 
-type family Query (t :: *) (query :: [*]) :: * where
+type family Query (t :: Type) (query :: [Type]) :: Type where
   Query t '[] = t
 
 -- | Binds implementation to interface and provides a pluggable handler monad for the endpoint handler implementation.
 class ( MonadCatch (HandlerM p)
       , MonadIO (HandlerM p)
       , WebApi (ApiInterface p)
-      ) => WebApiServer (p :: *) where
+      ) => WebApiServer (p :: Type) where
   -- | Type of the handler 'Monad'. It should implement 'MonadCatch' and 'MonadIO' classes. Defaults to 'IO'.
-  type HandlerM p :: * -> *
-  type ApiInterface p :: *
+  type HandlerM p :: Type -> Type
+  type ApiInterface p :: Type
   -- provides common defaulting information for api handlers
 
   -- | Create a value of @IO a@ from @HandlerM p a@.
@@ -213,7 +214,7 @@ data ServerSettings = ServerSettings
 serverSettings :: ServerSettings
 serverSettings = ServerSettings
 
-newtype NestedApplication (apps :: [(Symbol, *)])
+newtype NestedApplication (apps :: [(Symbol, Type)])
   = NestedApplication [Wai.Application]
 
 unconsNesApp :: NestedApplication (app ': apps) -> (Wai.Application, NestedApplication apps)
@@ -256,12 +257,12 @@ getContentType = fmap snd . find ((== hContentType) . fst)
 getAcceptType :: ResponseHeaders -> Maybe ByteString
 getAcceptType = fmap snd . find ((== hAccept) . fst)
 
-newtype Tagged (s :: [*]) b = Tagged { unTagged :: b }
+newtype Tagged (s :: [Type]) b = Tagged { unTagged :: b }
 
 toTagged :: Proxy s -> b -> Tagged s b
 toTagged _ = Tagged
 
-class EncodingType m r (ctypes :: [*]) where
+class EncodingType m r (ctypes :: [Type]) where
   getEncodingType :: Proxy ctypes -> [(MediaType, Encoding m r)]
 
 instance ( Accept ctype

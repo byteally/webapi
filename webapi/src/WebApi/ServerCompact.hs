@@ -22,8 +22,9 @@ import WebApi.Internal
 import Data.Type.Equality
 import Control.Monad.Catch
 import Control.Monad.IO.Class
+import Data.Kind
 
-data CompactServer (api :: *) (server :: (* -> *) -> *) (eff :: * -> *) = CompactServer (forall a.WebApiRequest -> eff a -> IO a) (server eff)
+data CompactServer (api :: Type) (server :: (Type -> Type) -> Type) (eff :: Type -> Type) = CompactServer (forall a.WebApiRequest -> eff a -> IO a) (server eff)
 
 instance (WebApi api, MonadCatch eff, MonadIO eff) => WebApiServer (CompactServer api s eff) where
   type HandlerM (CompactServer api s eff) = eff
@@ -37,7 +38,7 @@ instance ( ApiContract api m r
          ) => ApiHandler (CompactServer api server eff) m r where
   handler (Tagged (CompactServer _ server)) = unifyHandler @((handler == (Request m r -> eff (Response m r)))) @server @opname $ getField @(GetOpIdName api (OperationId m r)) server
 
-class UnifyHandler (isEq :: Bool) (server :: (* -> *) -> *) (fn :: Symbol) handlerAct handlerExp where
+class UnifyHandler (isEq :: Bool) (server :: (Type -> Type) -> Type) (fn :: Symbol) handlerAct handlerExp where
   unifyHandler :: handlerAct -> handlerExp
 
 

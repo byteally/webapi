@@ -15,6 +15,7 @@ Stability   : experimental
 {-# LANGUAGE TypeOperators         #-}
 {-# LANGUAGE UndecidableInstances  #-}
 {-# LANGUAGE TupleSections         #-}
+{-# LANGUAGE FlexibleContexts      #-}
 
 module WebApi.ContentTypes
        (

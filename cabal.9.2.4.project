@@ -1,0 +1,12 @@
+compiler: ghc
+packages:
+  webapi-contract
+  webapi
+  -- webapi-client-reflex-dom
+  webapi-docs
+  webapi-xml
+  webapi-openapi
+
+with-compiler: ghc-9.2.4
+index-state: 2022-08-09T04:58:03Z
+allow-newer: bytestring-trie:binary
