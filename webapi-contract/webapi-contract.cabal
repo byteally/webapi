@@ -36,6 +36,7 @@ common lib-common
                      , multiset             >= 0.3.3    && < 0.4
                      , unordered-containers >= 0.2.4    && < 0.3
                      , choice               >= 0.2.2
+                     , uuid-types           == 1.0.*
 
   ghc-options:         -Wall
   default-language:  Haskell2010

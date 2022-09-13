@@ -153,6 +153,7 @@ import           Network.HTTP.Types
 import           Network.HTTP.Types                 as Http (Header, QueryItem)
 import           WebApi.Contract
 import           WebApi.Util
+import           Data.UUID.Types                    (UUID, fromASCIIBytes, toASCIIBytes)
 #if !MIN_VERSION_base(4,9,0)
 import           Data.Semigroup                     (Semigroup)
 #endif
@@ -644,6 +645,12 @@ instance EncodeParam (Choice s) where
 instance DecodeParam (Choice s) where
   decodeParam = fmap fromBool . decodeParam
 
+instance EncodeParam UUID where
+  encodeParam   = toASCIIBytes
+
+instance DecodeParam UUID where
+  decodeParam = fromASCIIBytes
+
 class GHttpParam f where
   gEncodeParam   :: f a -> ByteString
   gDecodeParam :: ByteString -> Maybe (f a)
@@ -868,6 +875,15 @@ instance ToParam 'FormParam T.Text where
   toParam _ pfx val = [(pfx, encodeParam val)]
 
 instance ToParam 'Cookie T.Text where
+  toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
+
+instance ToParam 'QueryParam UUID where
+  toParam _ pfx val = [(pfx, Just $ encodeParam val)]
+
+instance ToParam 'FormParam UUID where
+  toParam _ pfx val = [(pfx, encodeParam val)]
+
+instance ToParam 'Cookie UUID where
   toParam _ pfx val = [(pfx, defCookieInfo $ encodeParam val)]
 
 instance (EncodeParam s, FoldCase s) => ToParam 'QueryParam (CI s) where
@@ -1457,6 +1473,27 @@ instance FromParam 'Cookie ByteString where
    Just par -> case decodeParam par of
          Just v -> Validation $ Right v
          _      -> Validation $ Left [ParseErr key "Unable to cast to ByteString"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam 'QueryParam UUID where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just (Just par) -> case decodeParam par of
+     Just v -> Validation $ Right v
+     _      -> Validation $ Left [ParseErr key "Unable to cast to UUID"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam 'FormParam UUID where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case decodeParam par of
+     Just v -> Validation $ Right v
+     _      -> Validation $ Left [ParseErr key "Unable to cast to UUID"]
+   _ ->  Validation $ Left [NotFound key]
+
+instance FromParam 'Cookie UUID where
+  fromParam pt key kvs = case lookupParam pt key kvs of
+   Just par -> case decodeParam par of
+     Just v -> Validation $ Right v
+     _      -> Validation $ Left [ParseErr key "Unable to cast to UUID"]
    _ ->  Validation $ Left [NotFound key]
 
 instance FromParam par a => FromParam par (Maybe a) where
