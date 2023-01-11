@@ -43,7 +43,6 @@ client :: forall meth r t m.
   ( DomBuilder t m
   , MonadJSM (Performable m)
   , MonadJSM m
-  , HasJSContext (Performable m)
   , PerformEvent t m
   , TriggerEvent t m
   , WebApi (NamespaceOf r)
@@ -70,7 +69,6 @@ clientOrigin :: forall meth r t m.
   ( DomBuilder t m
   , MonadJSM (Performable m)
   , MonadJSM m
-  , HasJSContext (Performable m)
   , PerformEvent t m
   , TriggerEvent t m
   , WebApi (NamespaceOf r)

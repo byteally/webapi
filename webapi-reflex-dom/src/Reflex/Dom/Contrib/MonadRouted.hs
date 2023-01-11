@@ -154,7 +154,7 @@ newtype RouteT t m a = RouteT
 
 
 deriving instance (Monad m, HasDocument m) => HasDocument (RouteT t m)
-deriving instance (Prerender js t m, Monad m, MonadFix m) => Prerender js t (RouteT t m)
+deriving instance (Prerender t m, Monad m, MonadFix m) => Prerender t (RouteT t m)
 
 runRouteT
     :: MonadWidget t m
@@ -183,9 +183,9 @@ instance DynamicWriter t w m => DynamicWriter t w (RouteT t m) where
 instance EventWriter t w m => EventWriter t w (RouteT t m) where
   tellEvent = lift . tellEvent
 
-instance HasJSContext m => HasJSContext (RouteT t m) where
-  type JSContextPhantom (RouteT t m) = JSContextPhantom m
-  askJSContext = lift askJSContext
+-- instance HasJSContext m => HasJSContext (RouteT t m) where
+--   type JSContextPhantom (RouteT t m) = JSContextPhantom m
+--   askJSContext = lift askJSContext
 
 instance (MonadHold t m, MonadFix m, Adjustable t m) => Adjustable t (RouteT t m) where
   runWithReplace a0 a' = RouteT $ runWithReplace (coerce a0) (coerceEvent a')
@@ -252,7 +252,7 @@ askUri = do
 
 -- | Path segments of original url
 askInitialSegments
-    :: (Monad m, MonadJSM m, HasJSContext m, MonadRouted t m)
+    :: (Monad m, MonadJSM m, MonadRouted t m)
     => m [PathSegment]
 askInitialSegments = do
   staticPath <- _routingInfoStaticPath <$> askRI

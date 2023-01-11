@@ -75,8 +75,6 @@ route
   , PostBuild t m
   , TriggerEvent t m
   , PerformEvent t m
-  , HasJSContext m
-  , HasJSContext (Performable m)
   , MonadJSM m
   , MonadJSM (Performable m))
   => Event t T.Text
@@ -99,8 +97,6 @@ route'
   , PostBuild t m
   , TriggerEvent t m
   , PerformEvent t m
-  , HasJSContext m
-  , HasJSContext (Performable m)
   , MonadJSM m
   , MonadJSM (Performable m)
   , MonadFix m)
@@ -124,8 +120,6 @@ partialPathRoute
   , DomBuilder t m
   , TriggerEvent t m
   , PerformEvent t m
-  , HasJSContext m
-  , HasJSContext (Performable m)
   , MonadJSM m
   , MonadJSM (Performable m)
   , MonadFix m)
@@ -183,17 +177,17 @@ getPopState = do
 
 
 -------------------------------------------------------------------------------
-goForward :: (HasJSContext m, MonadJSM m) => m ()
+goForward :: (MonadJSM m) => m ()
 goForward = withHistory forward
 
 
 -------------------------------------------------------------------------------
-goBack :: (HasJSContext m, MonadJSM m) => m ()
+goBack :: (MonadJSM m) => m ()
 goBack = withHistory back
 
 
 -------------------------------------------------------------------------------
-withHistory :: (HasJSContext m, MonadJSM m) => (History -> m a) -> m a
+withHistory :: (MonadJSM m) => (History -> m a) -> m a
 withHistory act = do
   w <- currentWindowUnchecked
   h
@@ -203,7 +197,7 @@ withHistory act = do
 
 -------------------------------------------------------------------------------
 -- | (Unsafely) get the 'GHCJS.DOM.Location.Location' of a window
-getLoc :: (HasJSContext m, MonadJSM m) => m Location
+getLoc :: (MonadJSM m) => m Location
 getLoc = do
   win <- currentWindowUnchecked
   loc
@@ -213,7 +207,7 @@ getLoc = do
 
 -------------------------------------------------------------------------------
 -- | (Unsafely) get the URL text of a window
-getUrlText :: (HasJSContext m, MonadJSM m) => m T.Text
+getUrlText :: (MonadJSM m) => m T.Text
 getUrlText = getLoc >>= getHref
 
 
@@ -222,7 +216,7 @@ type URI = U.URIRef U.Absolute
 
 
 -------------------------------------------------------------------------------
-getURI :: (HasJSContext m, MonadJSM m) => m URI
+getURI :: (MonadJSM m) => m URI
 getURI = do
   l <- getUrlText
   return $ either (error "No parse of window location") id .

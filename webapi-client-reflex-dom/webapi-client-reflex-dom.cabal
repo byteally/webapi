@@ -20,7 +20,7 @@ library
   exposed-modules:     WebApi.Client.Reflex
   -- other-modules:
   build-depends:       base             >= 4.9    && < 5
-                     , webapi-contract  == 0.4.*
+                     , webapi-contract  == 0.5.*
                      , reflex           >= 0.6.4 && < 0.9
                      , reflex-dom-core  >= 0.7   && < 0.8
                      , ghcjs-dom
