@@ -42,7 +42,7 @@ module WebApi.Reflex.Dom.Router
   , compactUIServer
   , navigateToAppLink
   , appLink
-  , AppLink
+  , AppLink (..)
   , MountPoint
   , ApiMount (..)
   ) where
