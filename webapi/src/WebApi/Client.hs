@@ -179,15 +179,9 @@ toClientRequest ::
   ) => [Word8] -> HC.Request -> Request m r -> io HC.Request
 toClientRequest extraUnres clientReq req = do
   now <- liftIO getCurrentTime
-  let cReq' = clientReq
-              { HC.method = singMethod (Proxy :: Proxy m)
-              , HC.path = uriPath
-              , HC.requestHeaders = accHeader ++ (toHeader $ headerIn req)
-              , HC.cookieJar = Just ckJar
-              }
-      accHeader = maybe [] singleton ((hAccept,) <$>  (getRawAcceptHeader req))
+  let accHeader = maybe [] singleton ((hAccept,) <$>  (getRawAcceptHeader req))
       singleton x = [x]
-      cReqQP = HC.setQueryString queryPar cReq'
+      cReqQP = HC.setQueryString queryPar clientReq
       ckJar  = HC.createCookieJar (cks now)
       cReqUE = if Prelude.null formPar
                then cReqQP
@@ -204,7 +198,13 @@ toClientRequest extraUnres clientReq req = do
                                   }
                  [] -> return cReqUE
                else if not (Prelude.null filePar) then HC.formDataBody fileParts cReqUE else return cReqUE
-  cReqMP
+  s <- cReqMP
+  let s' = s { HC.method = singMethod (Proxy :: Proxy m)
+             , HC.path = uriPath
+             , HC.requestHeaders = accHeader ++ (toHeader $ headerIn req)
+             , HC.cookieJar = Just ckJar
+            }
+  return s'            
   where queryPar = toQueryParam $ queryParam req
         formPar = toFormParam $ formParam req
         filePar = toFileParam $ fileParam req
@@ -249,7 +249,8 @@ client :: forall m r io.
           ) => ClientSettings io -> Request m r -> io (Response m r)
 client sett req = do
   cReqInit <- HC.parseRequest (baseUrl sett)
-  cReq <- toClientRequest (extraUnreserved sett) cReqInit req >>= requestHook sett
+  cReq' <- toClientRequest (extraUnreserved sett) cReqInit req 
+  cReq <- requestHook sett cReq'
   U.catches (U.withRunInIO $ \k -> HC.withResponse cReq (connectionManager sett) (k . (go >=> responseHook sett >=> fromClientResponse)))
 
     [ U.Handler (\(ex :: HC.HttpException) -> do
