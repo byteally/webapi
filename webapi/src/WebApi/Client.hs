@@ -181,7 +181,7 @@ toClientRequest extraUnres clientReq req = do
   now <- liftIO getCurrentTime
   let accHeader = maybe [] singleton ((hAccept,) <$>  (getRawAcceptHeader req))
       singleton x = [x]
-      cReqQP = HC.setQueryString queryPar clientReq
+      cReqQP = HC.setQueryString queryPar (clientReq { HC.requestHeaders = accHeader })
       ckJar  = HC.createCookieJar (cks now)
       cReqUE = if Prelude.null formPar
                then cReqQP
@@ -201,7 +201,7 @@ toClientRequest extraUnres clientReq req = do
   s <- cReqMP
   let s' = s { HC.method = singMethod (Proxy :: Proxy m)
              , HC.path = uriPath
-             , HC.requestHeaders = accHeader ++ (toHeader $ headerIn req)
+             , HC.requestHeaders = HC.requestHeaders s ++ (toHeader $ headerIn req)
              , HC.cookieJar = Just ckJar
             }
   return s'            
