@@ -68,6 +68,7 @@ import           Network.HTTP.Media.MediaType
 import           Network.HTTP.Media                 (mapContentMedia)
 import           WebApi.Util
 import           Data.ByteString.Builder (lazyByteString, Builder)
+import           Data.Kind ( Type )
 
 
 -- | Type representing content type of @text/html@.
@@ -83,7 +84,7 @@ data MultipartFormData
 data UrlEncoded
 
 -- | Encodings of type for all content types `ctypes`.
-class Encodings (ctypes :: [*]) a where
+class Encodings (ctypes :: [Type]) a where
   encodings :: Proxy ctypes -> a -> [(MediaType, Builder)]
 
 instance ( Accept ctype
@@ -96,7 +97,7 @@ instance Encodings '[] a where
   encodings _ _ = []
 
 -- | Decodings of type for all content types `ctypes`.
-class Decodings (ctypes :: [*]) a where
+class Decodings (ctypes :: [Type]) a where
   decodings :: Proxy ctypes -> ByteString -> [(MediaType, Either String a)]
 
 instance ( Accept ctype
@@ -202,7 +203,7 @@ instance Decode HTML Html where
 html :: ByteString -> Html
 html = Html
 
-class PartEncodings (xs :: [*]) where
+class PartEncodings (xs :: [Type]) where
   partEncodings :: Proxy xs
                   -> HListToRecTuple (StripContents xs)
                   -> [[(MediaType, Builder)]]
@@ -213,7 +214,7 @@ instance (PartEncodings ts, Encodings ctypes (StripContent t), MkContent t ~ Con
 instance PartEncodings '[] where
   partEncodings _ () = []
 
-class PartDecodings (xs :: [*]) where
+class PartDecodings (xs :: [Type]) where
   partDecodings :: Proxy xs -> [(SB.ByteString, ByteString)] -> Either String (HListToRecTuple (StripContents xs))
 
 instance (PartDecodings ts, Decodings ctypes (StripContent t), MkContent t ~ Content ctypes a) => PartDecodings (t ': ts) where

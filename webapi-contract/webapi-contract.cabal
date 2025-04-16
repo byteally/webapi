@@ -22,12 +22,12 @@ source-repository head
 
 common lib-common
   build-depends:       base                 >= 4.7      && < 5
-                     , text                 >= 1.2      && < 2
+                     , text                 >= 1.2      && < 2.2
                      , bytestring           >= 0.10.6.0 && < 0.12
                      , http-types           >= 0.8.6    && < 0.13
-                     , aeson                >= 0.9      && < 2.2
+                     , aeson                >= 0.9      && < 2.4
                      , http-media           >= 0.6      && < 0.9
-                     , time                 >= 1.5      && < 1.12
+                     , time                 >= 1.5      && < 1.13
                      , bytestring-lexing    == 0.5.*
                      , bytestring-trie      == 0.2.*
                      , case-insensitive     == 1.2.*

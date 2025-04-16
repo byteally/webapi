@@ -32,6 +32,7 @@ import           Data.ByteString.Char8 (pack)
 import           Data.Proxy
 import           GHC.TypeLits
 import           Network.HTTP.Types
+import           Data.Kind ( Type )
 
 -- | Type representing a GET method.
 data GET
@@ -55,7 +56,7 @@ data CONNECT
 data CUSTOM (m :: Symbol)
 
 -- | Singleton class for method types.
-class SingMethod (meth :: *) where
+class SingMethod (meth :: Type) where
   singMethod :: Proxy meth -> Method
 
 instance SingMethod GET where
