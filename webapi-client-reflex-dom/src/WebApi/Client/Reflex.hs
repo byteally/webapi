@@ -9,34 +9,35 @@
 {-# LANGUAGE PolyKinds #-}
 module WebApi.Client.Reflex where
 
-import Reflex.Dom.Core hiding (Request, Response)
-import WebApi.Contract as WebApi
-import WebApi.Util
-import WebApi.Param as WebApi
-import WebApi.ContentTypes
-import Data.Text (Text)
-import Data.ByteString (ByteString)
-import Data.ByteString.Builder (toLazyByteString)
+import           Control.Exception
+import           Control.Monad
+import           Data.Bifunctor
+import           Data.ByteString (ByteString)
+import           Data.ByteString.Builder (toLazyByteString)
 import qualified Data.ByteString.Lazy as LBS (ByteString, fromStrict, toStrict)
+import qualified Data.CaseInsensitive as CI
+import           Data.Either
+import           Data.Kind
+import           Data.List (find)
+import qualified Data.Map as Map
+import           Data.Proxy
+import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
-import Data.Proxy
-import qualified Data.Map as Map
-import qualified Data.CaseInsensitive as CI
-import Network.HTTP.Types as HT
-import           Network.HTTP.Media                    (mapContentMedia, renderHeader)
-import Language.Javascript.JSaddle
-import Control.Exception
-import Data.Bifunctor
-import Data.List (find)
-import Data.Either
-import GHCJS.DOM.FormData
-import GHCJS.DOM.File
-import Control.Monad
+import           GHCJS.DOM.File
+import           GHCJS.DOM.FormData
+import           Language.Javascript.JSaddle
+import           Network.HTTP.Media (mapContentMedia, renderHeader)
+import           Network.HTTP.Types as HT
+import           Reflex.Dom.Core hiding (Request, Response)
+import           WebApi.ContentTypes
+import           WebApi.Contract as WebApi
+import           WebApi.Param as WebApi
+import           WebApi.Util
 --import Control.Monad.IO.Class
 
 
-type family NamespaceOf (r :: *) where
+type family NamespaceOf (r :: Type) where
   NamespaceOf (ns :// (r :: k)) = ns
 
 client :: forall meth r t m.

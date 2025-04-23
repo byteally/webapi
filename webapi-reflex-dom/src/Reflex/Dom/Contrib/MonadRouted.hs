@@ -39,17 +39,18 @@ module Reflex.Dom.Contrib.MonadRouted
 
 ------------------------------------------------------------------------------
 import           Control.Monad.Exception
+import           Control.Monad.Fix
 import           Control.Monad.Reader
 import           Control.Monad.Ref
 import           Control.Monad.State.Strict
 import           Data.Coerce
-import qualified Data.List                  as L
+import qualified Data.List as L
 import           Data.Maybe
 import           Data.Monoid
-import           Data.Text                  (Text)
-import qualified Data.Text                  as T
+import           Data.Text (Text)
+import qualified Data.Text as T
 import           Data.Text.Encoding
-import           GHCJS.DOM.Types            (MonadJSM)
+import           GHCJS.DOM.Types (MonadJSM)
 import           Reflex.Dom.Contrib.Router
 import           Reflex.Dom.Core
 import           Reflex.Host.Class
