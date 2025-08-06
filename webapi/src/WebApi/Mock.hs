@@ -22,8 +22,7 @@ module WebApi.Mock
        , mockClient 
        ) where
 
-import Control.Exception
-import Data.Typeable (Typeable)
+import Control.Exception.Safe
 import GHC.Generics (Generic)
 import Network.HTTP.Types (Status, ok200)
 import qualified Network.Wai as Wai

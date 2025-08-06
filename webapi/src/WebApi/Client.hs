@@ -58,7 +58,7 @@ module WebApi.Client
        , HC.tlsManagerSettings
        ) where
 
-import           Control.Exception
+import           Control.Exception.Safe
 import           Control.Monad ( (>=>) )
 import qualified Control.Monad.Catch as C
 import           Data.Bifunctor
@@ -75,7 +75,6 @@ import qualified Data.Text as T
 import           Data.Text.Encoding (decodeUtf8)
 import qualified Data.Text.Encoding as T
 import           Data.Time.Clock ( getCurrentTime, addUTCTime, nominalDay )
-import           Data.Typeable (Typeable)
 import           Data.Word
 import           GHC.Exts
 import qualified Network.HTTP.Client as HC

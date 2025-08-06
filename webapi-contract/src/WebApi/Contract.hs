@@ -83,7 +83,7 @@ module WebApi.Contract
        , OpId (..)
        ) where
 
-import           Control.Exception (SomeException, Exception)
+import           Control.Exception.Safe (SomeException, Exception)
 import           Data.Aeson        (Value)
 import           Data.Proxy
 import           Data.Text (Text)

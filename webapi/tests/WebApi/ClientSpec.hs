@@ -15,7 +15,7 @@ import GHC.Generics
 import Data.ByteString (ByteString)
 import Data.Binary.Builder
 import Data.Aeson.Encoding
-import Control.Exception
+import Control.Exception.Safe
 import qualified Data.Text.Lazy as LT
 import Data.Proxy
 import WebApi.Contract

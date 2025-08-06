@@ -9,7 +9,7 @@
 {-# LANGUAGE PolyKinds #-}
 module WebApi.Client.Reflex where
 
-import           Control.Exception
+import           Control.Exception.Safe
 import           Control.Monad
 import           Data.Bifunctor
 import           Data.ByteString (ByteString)

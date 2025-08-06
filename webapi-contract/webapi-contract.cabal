@@ -3,7 +3,7 @@ cabal-version:       2.4
 -- documentation, see http://haskell.org/cabal/users-guide/
 
 name:                webapi-contract
-version:             0.5
+version:             0.6
 synopsis:            Contracts for webapi library
 description:         Contracts for webapi library
 homepage:            http://byteally.github.io/webapi/
@@ -37,6 +37,8 @@ common lib-common
                      , unordered-containers >= 0.2.4    && < 0.3
                      , choice               >= 0.2.2
                      , uuid-types           == 1.0.*
+                     , safe-exceptions      >= 0.1.7    && < 0.2
+
 
   ghc-options:         -Wall
   default-language:  Haskell2010

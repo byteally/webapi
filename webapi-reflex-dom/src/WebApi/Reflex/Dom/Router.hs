@@ -76,7 +76,7 @@ import qualified Data.ByteString.Char8 as Char8
 import Data.Typeable
 import Data.Maybe
 import GHC.Stack
-import Control.Exception (SomeException (..), Exception(..))
+import Control.Exception.Safe (SomeException (..), Exception(..))
 
 -- Compact Start
 import           GHC.Records

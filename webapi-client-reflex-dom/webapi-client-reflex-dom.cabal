@@ -2,7 +2,7 @@
 -- further documentation, see http://haskell.org/cabal/users-guide/
 
 name:                webapi-client-reflex-dom
-version:             0.2.0.0
+version:             0.3.0.0
 synopsis:            Type safe XHR client for webapi using reflex-dom
 -- description:
 homepage:            https://github.com/byteally/webapi
@@ -20,7 +20,7 @@ library
   exposed-modules:     WebApi.Client.Reflex
   -- other-modules:
   build-depends:       base             >= 4.9    && < 5
-                     , webapi-contract  == 0.5.*
+                     , webapi-contract  == 0.6.*
                      , reflex           >= 0.6.4 && < 0.10
                      , reflex-dom-core  >= 0.7   && < 0.9
                      , ghcjs-dom
@@ -31,6 +31,8 @@ library
                      , case-insensitive >= 1.2
                      , http-types       >= 0.8
                      , http-media       >= 0.7 && < 0.9
+                     , safe-exceptions      >= 0.1.7    && < 0.2
+                                          
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options:         -Wall -Werror -O2

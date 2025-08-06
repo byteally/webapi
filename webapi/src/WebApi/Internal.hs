@@ -21,8 +21,7 @@
 module WebApi.Internal where
 
 import           Data.Text.Encoding                 (encodeUtf8Builder)
-import           Control.Exception
-import           Control.Monad.Catch                (MonadCatch)
+import           Control.Exception.Safe
 import           Control.Monad.IO.Class             (MonadIO)
 import           Control.Monad.Trans.Resource       (runResourceT,
                                                      withInternalState)
@@ -36,7 +35,6 @@ import           Data.Monoid                        ((<>))
 import           Data.Maybe                         (fromMaybe)
 import           Data.Proxy
 import qualified Data.Text                          as T (pack)
-import           Data.Typeable                      (Typeable)
 import           Network.HTTP.Media                 (MediaType, mapAcceptMedia,
                                                      matchAccept, matchContent
                                                     , mapAccept)

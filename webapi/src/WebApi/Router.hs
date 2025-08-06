@@ -53,22 +53,21 @@ module WebApi.Router
        , symTxt
        ) where
 
-import Control.Exception (SomeException (..))
-import Control.Monad.Catch (catches, Handler (..), MonadCatch)
-import Data.Proxy
-import Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
-import Data.Typeable (Typeable)
-import GHC.TypeLits
-import Network.HTTP.Types hiding (Query)
-import Network.Wai (pathInfo, requestMethod)
---import qualified Network.Wai as Wai
-import WebApi.ContentTypes
-import WebApi.Contract
-import WebApi.Internal
-import WebApi.Param
-import WebApi.Util
-import Data.Kind
+import qualified Control.Exception.Safe as Safe
+import           Control.Monad.Catch (MonadCatch)
+import           Data.Kind
+import           Data.Proxy
+import           Data.Text as T
+import           Data.Text.Encoding (encodeUtf8)
+import           Data.Typeable (Typeable)
+import           GHC.TypeLits
+import           Network.HTTP.Types hiding (Query)
+import           Network.Wai (pathInfo, requestMethod)
+import           WebApi.ContentTypes
+import           WebApi.Contract
+import           WebApi.Internal
+import           WebApi.Param
+import           WebApi.Util
 
 
 -- | Get the namespace of a route
@@ -363,8 +362,8 @@ apiHandler :: forall query p m r.
              , ApiHandler p m r
              , Typeable m
              , Typeable r) => Tagged query p -> Request m r -> HandlerM p (Query (Response m r) query)
-apiHandler serv req =  (handler serv req) `catches` excepHandlers
-  where excepHandlers :: [Handler (HandlerM p) (Query (Response m r) query)]
-        excepHandlers = [ Handler (\ (ex :: ApiException m r) -> handleApiException (unTagged serv) ex)
-                        , Handler (\ (ex :: SomeException) -> handleSomeException (unTagged serv) ex) ]
+apiHandler serv req =  (handler serv req) `Safe.catches` excepHandlers
+  where excepHandlers :: [Safe.Handler (HandlerM p) (Query (Response m r) query)]
+        excepHandlers = [ Safe.Handler (\ (ex :: ApiException m r) -> handleApiException (unTagged serv) ex)
+                        , Safe.Handler (\ (ex :: Safe.SomeException) -> handleSomeException (unTagged serv) ex)]
 

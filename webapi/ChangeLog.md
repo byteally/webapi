@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6
+* Use `Control.Exception.Safe` everywhere instead of `Control.Exception` from `base`.
+* Lift `client` to work over `MonadUnliftIO m` instead of `IO`.
+* Added support for GHC 9.6
+
+## 0.5
+* Added support for GHC 9.2
+
 ## 0.3
 * WebApiImplementation typeclass is renamed to WebApiServer
 * Swapped the order of FromParam and ToParam class parameters.
