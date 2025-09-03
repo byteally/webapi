@@ -8,3 +8,4 @@ packages:
   webapi-xml
   webapi-openapi
   webapi-reflex-dom
+  webapi-test

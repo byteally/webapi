@@ -19,6 +19,9 @@ module WebApi.Server
        (
        -- * Creating a WAI application
          serverApp
+       , serverAppTyped
+       , getWaiApp
+       , WebApiWaiApp
        , serverSettings
        , nestedServerApp
        , nestedApi
@@ -51,6 +54,7 @@ module WebApi.Server
 import           Control.Monad.Catch
 import           Data.Proxy
 import           Data.Typeable
+import           Data.Kind
 import           Network.HTTP.Types hiding (Query)
 import qualified Network.Wai as Wai
 import           WebApi.Contract
@@ -111,6 +115,11 @@ serverApp _ server = toApplication $ router (apis server) server
   where apis :: server -> Proxy (Apis (ApiInterface server))
         apis = const Proxy
 
+newtype WebApiWaiApp (app :: Type) = WebApiWaiApp {getWaiApp :: Wai.Application}
+serverAppTyped :: ( iface ~ (ApiInterface server)
+             , Router server (Apis iface) '(CUSTOM "", '[])
+             ) => ServerSettings -> server -> WebApiWaiApp iface
+serverAppTyped ss server = WebApiWaiApp $ serverApp ss server
 
 nestedServerApp ::
   ( Router (NestedApplication (app: apps)) 'NestedR '(CUSTOM "", '[])
