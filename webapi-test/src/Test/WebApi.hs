@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Test.WebApi
   ( runWebApis
+  , runWebApis'
   , testClients
   , emptyApp
   , addApp
@@ -19,7 +20,8 @@ module Test.WebApi
 
 import Network.Wai hiding (Request, Response)
 import qualified Network.Wai as Wai
-import Network.Wai.Test
+import Network.Wai.Test hiding (getClientCookies, modifyClientCookies, setClientCookie, deleteClientCookie)
+import qualified Network.Wai.Test as WaiTest
 import qualified Network.Wai.Test.Internal as WaiInt
 import qualified Network.HTTP.Types as H
 import           Network.HTTP.Media                    (mapContentMedia)
@@ -29,6 +31,7 @@ import WebApi.Contract
 import WebApi.Param
 import WebApi.Util
 import WebApi.ContentTypes
+import WebApi.Param
 import WebApi.Internal (getContentType)
 import WebApi.Server (WebApiWaiApp, getWaiApp)
 import Web.Cookie
@@ -51,6 +54,7 @@ import qualified Data.Map.Strict as M
 -- import Data.Maybe
 import Data.Foldable
 import GHC.TypeLits
+import Data.IORef
 
 newtype WebApiSession app a = WebApiSession (Session a)
   deriving (Functor, Applicative, Monad, MonadIO, MonadReader Application, MonadState WaiInt.ClientState)
@@ -64,26 +68,49 @@ type family NamespaceOf (r :: Type) where
 toWaiRequest :: forall meth r.
   ( ToParam 'PathParam (PathParam meth r)
   , ToParam 'QueryParam (QueryParam meth r)
+  , ToParam 'FormParam (FormParam meth r)
+  , ToParam 'FileParam (FileParam meth r)
+  , ToHeader (HeaderIn meth r)
+  , PartEncodings (RequestBody meth r)
+  , ToHListRecTuple (StripContents (RequestBody meth r))
+  , MkPathFormatString r
   , SingMethod meth
   ) => Request meth r
-  -> Wai.Request
-toWaiRequest req@Request {queryParam} =
-  defaultRequest
-  & setWaiPath
-  & setWaiQP
+  -> IO Wai.Request
+toWaiRequest req@Request {queryParam, pathParam, formParam, fileParam, headerIn, requestBody} = do
+  hasValRef <- newIORef True
+  pure (defaultRequest
+        & flip setRawPathInfo uriPath
+        & setWaiQP
+        & urlEncodedBody hasValRef formPar)
   where
-    pathPcs = map (\p -> case T.decodeUtf8' p of
-                      Left e -> error $ "Panic: Unable to decode to utf8 in path: " <> (Char8.unpack p) <> ": " <> (show e)
-                      Right r -> r
-                  ) (toPathParam $ pathParam req)
+    accHeader = maybe [] (:[]) ((H.hAccept,) <$>  (getRawAcceptHeader req))
+    partEncs = partEncodings (Proxy @(RequestBody meth r)) (toRecTuple (Proxy @(StripContents (RequestBody meth r))) requestBody)
+    firstPart = head . head $ partEncs -- TODO: Check head
+    formPar = toFormParam formParam
+    filePar = toFileParam fileParam
+    uriPath = renderUriPath "" [] pathParam req
+    meth = singMethod (Proxy :: Proxy meth)
     qitms = toQueryParam queryParam
-    setWaiPath r = r { rawPathInfo = T.encodeUtf8 $ "/" <> T.intercalate "/" pathPcs
-                     , pathInfo = pathPcs
-                     }
     setWaiQP r = r { queryString = qitms
                    , rawQueryString = H.renderQuery True qitms
+                   , requestMethod = meth
+                   , requestHeaders = accHeader ++ toHeader headerIn
                    }
-  
+
+urlEncodedBody :: IORef Bool -> [(ByteString, ByteString)] -> Wai.Request -> Wai.Request
+urlEncodedBody _ [] req = req
+urlEncodedBody hasValRef headers req = req
+    { requestMethod = "POST"
+    , requestHeaders =
+        (ct, "application/x-www-form-urlencoded")
+      : filter (\(x, _) -> x /= ct) (requestHeaders req)
+    } & setRequestBodyChunks body
+  where
+    ct = "Content-Type"
+    body = atomicModifyIORef' hasValRef $ \case
+      False -> (False, "")
+      True -> (False, H.renderSimpleQuery False headers)
 
 fromResponse :: forall meth r.
   ( FromHeader (HeaderOut meth r)
@@ -92,7 +119,7 @@ fromResponse :: forall meth r.
   , Decodings (ContentTypes meth r) (ApiErr meth r)
   ) => SResponse -> Session (Response meth r)
 fromResponse SResponse {simpleStatus=status, simpleHeaders=hdrs, simpleBody=respBodyBS} = do
-  clientcooks <- getClientCookies
+  clientcooks <- WaiTest.getClientCookies
   toWebApiResponse status hdrs (M.toList $ fmap renderSetCookieBS clientcooks) respBodyBS
 
 -- TODO: Move it to core
@@ -124,7 +151,7 @@ toWebApiResponse status hdrs cookiesKV respBodyBS = do
     firstRight :: LBS.ByteString -> [Either String b] -> Either Text b
     firstRight resp = maybe (Left (T.decodeUtf8 $ LBS.toStrict $ resp)) (first T.pack) . find isRight
     
-  case H.statusIsSuccessful status of
+  case H.statusIsSuccessful status || H.statusIsRedirection status of
     True ->
       let res = Success
             <$> pure status
@@ -143,7 +170,7 @@ toWebApiResponse status hdrs cookiesKV respBodyBS = do
               <*> (Just <$> respCk)
       in pure $ case res of
         Validation (Right failure) -> (Failure . Left) failure
-        Validation (Left errs) -> Failure $ Right (OtherError (toException $ UnknownClientException $ T.intercalate "\n" $ fmap (T.pack . show) errs))
+        Validation (Left errs) -> Failure $ Right (OtherError (toException $ UnknownClientException $ (T.pack (show status)) <> ": " <> (T.intercalate "\n" $ fmap (T.pack . show) errs)))
 
 testClient :: forall meth r app.
   ( WebApi app
@@ -151,15 +178,21 @@ testClient :: forall meth r app.
   , SingMethod meth
   , ToParam 'PathParam (PathParam meth r)
   , ToParam 'QueryParam (QueryParam meth r)
+  , ToParam 'FormParam (FormParam meth r)
+  , ToParam 'FileParam (FileParam meth r)
+  , ToHeader (HeaderIn meth r)
   , FromHeader (HeaderOut meth r)
   , FromParam Cookie (CookieOut meth r)
   , Decodings (ContentTypes meth r) (ApiOut meth r)
   , Decodings (ContentTypes meth r) (ApiErr meth r)
+  , PartEncodings (RequestBody meth r)
+  , ToHListRecTuple (StripContents (RequestBody meth r))
+  , MkPathFormatString r
   ) =>
   ClientRequest meth r
   -> WebApiSession app (Response meth r)
 testClient (MKClientRequest creq) = do
-  let waiReq = toWaiRequest creq
+  waiReq <- liftIO $ toWaiRequest creq
   sresp <- WebApiSession $ request waiReq
   WebApiSession $ fromResponse sresp
 
@@ -196,10 +229,16 @@ testClients :: forall meth r app apps.
   , SingMethod meth
   , ToParam 'PathParam (PathParam meth (app://r))
   , ToParam 'QueryParam (QueryParam meth (app://r))
+  , ToParam 'FormParam (FormParam meth (app://r))
+  , ToParam 'FileParam (FileParam meth (app://r))
+  , ToHeader (HeaderIn meth (app://r))
   , FromHeader (HeaderOut meth (app://r))
   , FromParam Cookie (CookieOut meth (app://r))
   , Decodings (ContentTypes meth (app://r)) (ApiOut meth (app://r))
   , Decodings (ContentTypes meth (app://r)) (ApiErr meth (app://r))
+  , PartEncodings (RequestBody meth (app://r))
+  , ToHListRecTuple (StripContents (RequestBody meth (app://r)))
+  , MkPathFormatString (app://r)
   , Typeable app
   , AppIsElem app apps
   ) =>
@@ -214,6 +253,7 @@ testClients creq = do
       case M.lookup appRep css of
         Nothing -> error $ "Panic: app not found for: " <> show appRep
         Just cstate -> do
+          liftIO $ print $ WaiInt.clientCookies cstate
           (a, s) <- liftIO $ runStateT (runReaderT (runWebApiSession $ testClient creq) app) cstate
           modify' $ \(ClientsState css') -> ClientsState $ M.insert appRep s css'
           pure a
@@ -255,6 +295,28 @@ addApp waapp WebApiSessionsConfig {applications, clientsState} =
 runWebApis :: WebApiSessionsConfig apps -> WebApiSessions apps a -> IO a
 runWebApis WebApiSessionsConfig {applications, clientsState} (WebApiSessions sess) =
   evalStateT (runReaderT sess applications) clientsState
+
+runWebApis' :: WebApiSessionsConfig apps -> WebApiSessions apps a -> IO (a, WebApiSessionsConfig apps)
+runWebApis' WebApiSessionsConfig {applications, clientsState} (WebApiSessions sess) = do
+  (a, clientsStateNew) <- runStateT (runReaderT sess applications) clientsState
+  pure (a, WebApiSessionsConfig {applications, clientsState = clientsStateNew})
+
+
+-- getClientCookies :: WebApiSessions apps ClientCookies
+-- getClientCookies = WaiInt.clientCookies <$> lift get
+
+-- modifyClientCookies :: (ClientCookies -> ClientCookies) -> WebApiSessions apps ()
+-- modifyClientCookies f =
+--     lift (modify' (\cs -> cs{WaiInt.clientCookies = f $ WaiInt.clientCookies cs}))
+
+-- setClientCookie :: SetCookie -> WebApiSessions apps ()
+-- setClientCookie c =
+--     modifyClientCookies $
+--         M.insert (setCookieName c) c
+
+-- deleteClientCookie :: ByteString -> WebApiSessions apps ()
+-- deleteClientCookie =
+--     modifyClientCookies . M.delete  
 
 newtype ClientRequest meth r = MKClientRequest (Request meth r)
 

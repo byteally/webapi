@@ -53,9 +53,14 @@ library qc-dynamic
     -- other-modules:
     build-depends:    webapi-test
                     , wai-extra >= 3.1
+                    , cookie
                     , http-types
                     , http-media
                     , QuickCheck >= 2.14
                     , quickcheck-dynamic >= 4.0
+                    , dependent-map
+                    , dependent-sum
+                    , reflection >= 2.1
+                    , rec >= 0.2 
     hs-source-dirs:   quickcheck-dynamic
     default-language: GHC2021    

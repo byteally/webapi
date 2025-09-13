@@ -1,5 +1,6 @@
 module Test.WebApi.DynamicLogic
   ( successCall
+  , successCallWith
   , errorCall
   , someExceptionCall
   , propDL
@@ -22,22 +23,29 @@ import Test.QuickCheck.Monadic
 import Test.QuickCheck.Monadic qualified as QC
 import Test.QuickCheck.Extras
 
-  
+
 successCall :: forall meth r app apps. WebApiActionCxt apps meth app r =>
-  ClientRequest meth (app :// r)
+  ClientRequestF Input meth (app :// r)
   -> DL (ApiState apps) (Var (ApiOut meth (app :// r)))
-successCall creq = action (mkWebApiAction (SuccessCall creq))
+successCall creq = action (mkWebApiAction (SuccessCall creq defSuccessApiModel NoCookiesMod (Right . getSuccessOut)))
+
+successCallWith :: forall meth r app res apps. (Typeable res, WebApiActionCxt apps meth app r) =>
+  ClientRequestF Input meth (app :// r)
+  -> ModifyClientCookies
+  -> (ApiSuccess meth (app :// r) -> Either ResultError res)
+  -> DL (ApiState apps) (Var res)
+successCallWith creq cookMod f = action (mkWebApiAction (SuccessCall creq defSuccessApiModel cookMod f))
 
 errorCall :: forall meth r app apps.WebApiActionCxt apps meth app r =>
   ClientRequest meth (app :// r)
-  -> DL (ApiState apps) (Var (ApiErr meth (app :// r)))
-errorCall creq = action (mkWebApiAction (ErrorCall creq))
+  -> DL (ApiState apps) (Val (ApiErr meth (app :// r)))
+errorCall creq = action (mkWebApiAction (ErrorCall creq)) >>= (pure . Var id)
 
 someExceptionCall :: forall meth r app apps. WebApiActionCxt apps meth app r =>
   ClientRequest meth (app :// r)
   -> DL (ApiState apps) (Var SomeException)
 someExceptionCall creq = action (mkWebApiAction (SomeExceptionCall creq))
-  
+
 propDL :: (forall a. WebApiSessions apps a -> IO a) -> DL (ApiState apps) () -> Property
 propDL webapiRunner d = forAllDL d (prop_api webapiRunner)
 
@@ -47,16 +55,3 @@ prop_api webapiRunner s =
     monitor $ counterexample "\nExecution\n"
     _ <- runActions s
     QC.assert True
-
-{-
-prop_api :: forall apps. WebApiSessionsConfig apps -> Actions (ApiState apps) -> Property
-prop_api _ s =
-  monadicIO $ do
-    monitor $ counterexample "\nExecution\n"
-    _ <- runPropertyStateT (runPropertyReaderT (hoistPropM (runWebApiSessions @apps) WebApiSessions $ runActions s) undefined) undefined
-    QC.assert True
-
-
-hoistPropM :: (forall x. m x -> n x) -> (forall x. n x -> m x) -> PropertyM m a -> PropertyM n a
-hoistPropM fw bw p = MkPropertyM $ \hf -> fmap fw $ unPropertyM p ((fmap . fmap) bw hf)
--}
