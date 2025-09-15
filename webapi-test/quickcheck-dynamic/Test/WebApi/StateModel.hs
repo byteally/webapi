@@ -12,8 +12,7 @@ module Test.WebApi.StateModel
   , HasApiState (..)
   , DSum (..)
   , Val (..)
-  , Input
-  , ClientRequestF (..)
+  , ClientRequestVal (..)
   , mkWebApiAction
   , getOpIdFromRequest
   , getSuccessOut
@@ -23,7 +22,6 @@ module Test.WebApi.StateModel
   , defSuccessApiModel
   , initApiState
   , modifyApiState
-  , getInput
   ) where
 
 import Test.WebApi
@@ -45,7 +43,8 @@ import GHC.TypeLits
 import qualified Network.HTTP.Types as H
 import Data.Functor.Identity
 import qualified Data.Text as T
-import qualified Data.Map as M
+import qualified Data.Map.Strict as M
+import qualified Data.Set as Set
 import Data.Dependent.Map (DMap)
 import Data.Dependent.Sum (DSum (..))
 import qualified Data.Dependent.Map as DMap
@@ -107,9 +106,8 @@ getSuccessCookies (ApiSuccess {cookieOut}) = cookieOut
 data Val a where
   Const :: a -> Val a
   Var :: Typeable x => (x -> a) -> Var x -> Val a
-  HKVal :: Typeable x => (x -> a) -> Record.HK Val x -> Val a
+  HKVal :: (Typeable x, Record.FromHK x) => (x -> a) -> Record.HK Val x -> Val a -- TODO: Avoid FromHK dep
   Pair :: ((x1, x2) -> a) -> (Val x1, Val x2) -> Val a
---  ApVar :: (LookUp -> a) -> Val a
   Opt :: Val a
 
 deriving instance Functor Val
@@ -122,29 +120,52 @@ instance Applicative Val where
       Var fn v -> Var (f . fn) v
       HKVal fn hkv -> HKVal (f . fn) hkv
       Pair fn vs -> Pair (f . fn) vs
+      Opt -> error "TODO"
     Var fn v -> case a' of
       Const a -> Var (flip fn a) v
       Var fn1 v1 -> Pair (\(x, x1) -> fn x (fn1 x1)) (Var id v, Var id v1)
       HKVal fn1 hkv1 -> Pair (\(x, x1) -> fn x (fn1 x1)) (Var id v, HKVal id hkv1)
       Pair fn1 vs -> Pair (\(x, x1) -> fn x (fn1 x1)) (Var id v, Pair id vs)
+      Opt -> error "TODO"
     HKVal fn v -> case a' of
       Const a -> HKVal (flip fn a) v
       Var fn1 v1 -> Pair (\(x, x1) -> fn x (fn1 x1)) (HKVal id v, Var id v1)
       HKVal fn1 hkv1 -> Pair (\(x, x1) -> fn x (fn1 x1)) (HKVal id v, HKVal id hkv1)
       Pair fn1 vs -> Pair (\(x, x1) -> fn x (fn1 x1)) (HKVal id v, Pair id vs)
+      Opt -> error "TODO"
     Opt -> Opt
 
 resolveVal :: LookUp -> Val a -> a
 resolveVal lkp = \case
   Const v -> v
   Var f var -> f (lkp var)
+  HKVal f hk -> f $ runIdentity $ Record.fromHK $ Record.hoistHK (Identity . resolveVal lkp) hk
+  Opt -> error "TODO"
 
-data ClientRequestF f meth r = ClientRequestF
-  { query :: Record.HK f (QueryParam meth r)
-  , form :: Record.HK f (FormParam meth r)
-  , header :: Record.HK f (HeaderIn meth r)
-  , path :: Record.HK f (PathParam meth r)
+instance HasVariables (Val a) where
+  getAllVariables = \case
+    Const {} -> Set.empty
+    Var _ var -> getAllVariables var
+    HKVal _ hk -> Set.unions $ Record.hkToListWith getAllVariables hk
+    Opt -> error "TODO"
+
+data ClientRequestVal meth r = ClientRequestVal
+  { query :: Val (QueryParam meth r)
+  , form :: Val (FormParam meth r)
+  , header :: Val (HeaderIn meth r)
+  , path :: Val (PathParam meth r)
+  , file :: Val (FileParam meth r)
+  , body :: Val (HListToTuple (StripContents (RequestBody meth r)))
   }
+
+instance HasVariables (ClientRequestVal meth r) where
+  getAllVariables ClientRequestVal {query, form, header, path, file, body} =
+    getAllVariables query
+    <> getAllVariables form
+    <> getAllVariables header
+    <> getAllVariables path
+    <> getAllVariables file
+    <> getAllVariables body
 
 resolveRequest ::
   ( Record.FromHK (QueryParam meth r)
@@ -153,36 +174,31 @@ resolveRequest ::
   , Record.FromHK (PathParam meth r)
   , SingMethod meth
   ) => LookUp
-  -> ClientRequestF Input meth r
+  -> ClientRequestVal meth r
   -> Maybe (ClientRequest meth r)
-resolveRequest lkp ClientRequestF {query, form, header, path} =
+resolveRequest lkp ClientRequestVal {query, form, header, path, file, body} =
   do
-    query <- Record.fromHK $ Record.hoistHK (fmap (resolveVal lkp) . getInput) query
-    form <- Record.fromHK $ Record.hoistHK (fmap (resolveVal lkp) . getInput) form
-    header <- Record.fromHK $ Record.hoistHK (fmap (resolveVal lkp) . getInput) header
-    path <- Record.fromHK $ Record.hoistHK (fmap (resolveVal lkp) . getInput) path
-    Just $ ClientRequest {query, form, header, path, file = undefined, body = undefined}
-
--- TODO: One of the following,
--- 1. newtype Input a = Input (Maybe (Sum Val (HK Input) a))
--- 2. newtype Input a = Input (Sum (Compose Maybe Val) (HK Input) a)
-newtype Input a = Input (Maybe (Val a))
-
-instance Functor Input where
-  fmap f (Input i) = Input $ (fmap . fmap) f i
-
-getInput :: Input a -> Maybe (Val a)
-getInput (Input i) = i
+    query <- Just $ resolveVal lkp query
+    form <- Just $ resolveVal lkp form
+    header <- Just $ resolveVal lkp header
+    path <- Just $ resolveVal lkp path
+    file <- Just $ resolveVal lkp file
+    body <- Just $ resolveVal lkp body
+    Just $ ClientRequest {query, form, header, path, file, body}
 
 data WebApiAction (apps :: [Type]) (a :: Type) where
   SuccessCall :: WebApiActionCxt apps meth app r
-    => ClientRequestF Input meth (app :// r)
+    => ClientRequestVal meth (app :// r)
     -> SuccessApiModel apps meth (app :// r) res
     -> ModifyClientCookies
     -> (ApiSuccess meth (app :// r) -> Either ResultError res)
     -> WebApiAction apps res
-  ErrorCall :: WebApiActionCxt apps meth app r => ClientRequest meth (app :// r) -> WebApiAction apps (ApiErr meth (app :// r))
-  SomeExceptionCall :: WebApiActionCxt apps meth app r => ClientRequest meth (app :// r) -> WebApiAction apps (SomeException)
+  ErrorCall :: WebApiActionCxt apps meth app r
+    => ClientRequest meth (app :// r)
+    -> WebApiAction apps (ApiErr meth (app :// r))
+  SomeExceptionCall :: WebApiActionCxt apps meth app r
+    => ClientRequest meth (app :// r)
+    -> WebApiAction apps (SomeException)
 
 instance Show (WebApiAction apps a) where
   show = \case
@@ -203,21 +219,82 @@ instance Eq (WebApiAction apps a) where
     _ -> False
 
 instance HasVariables (WebApiAction apps a) where
-  getAllVariables = mempty
+  getAllVariables = \case
+    SuccessCall creq _ _ _ -> getAllVariables creq
 
-data ApiState (apps :: [Type]) = ApiState (M.Map TypeRep Unsafe.Any) -- (DMap (Tag RealWorld) Identity)
+newtype RefinementId = RefinementId Text
+  deriving newtype (Show, Eq, Ord, Read)
+
+data NamedEntity k = NamedEntity
+  { namedEntity :: M.Map k [Any Val]
+  , entityRefinement :: M.Map RefinementId (Any Val -> Bool)
+  , entityToRefinements :: M.Map k (Set.Set RefinementId)
+  }
+
+instance Ord k => Semigroup (NamedEntity k) where
+  NamedEntity {namedEntity = ne1, entityRefinement = er1, entityToRefinements = e2r1} <>
+    NamedEntity {namedEntity = ne2, entityRefinement = er2, entityToRefinements = e2r2} =
+    NamedEntity { namedEntity = M.unionWith (<>) ne1 ne2
+                , entityRefinement = M.unionWith (\p1 p2 -> \v -> p1 v && p2 v) er1 er2
+                , entityToRefinements = M.unionWith (<>) e2r1 e2r2
+                }
+
+instance Ord k => Monoid (NamedEntity k) where
+  mempty = NamedEntity
+    { namedEntity = mempty
+    , entityRefinement = mempty
+    , entityToRefinements = mempty
+    }
+
+newtype NamedEntityTyped = NamedEntityTyped (NamedEntity TypeRep)
+  deriving newtype (Semigroup, Monoid)
+
+newtype KeyedEntityId = KeyedEntityId RefinementId
+  deriving newtype (Show, Eq, Ord, Read)
+
+data NamedEntityKeyed = NamedEntityKeyed
+  { keyToName :: M.Map Trail KeyedEntityId
+  , typeOfEntities :: M.Map KeyedEntityId TypeRep
+  , namedEntityKeyed :: NamedEntity KeyedEntityId
+  }
+
+instance Semigroup NamedEntityKeyed where
+  NamedEntityKeyed {keyToName = k2n1, typeOfEntities = tys1, namedEntityKeyed = ne1} <>
+    NamedEntityKeyed {keyToName = k2n2, typeOfEntities = tys2, namedEntityKeyed = ne2} =
+    NamedEntityKeyed { keyToName = M.unionWith (\n o -> error "") k2n1 k2n2 
+                     , typeOfEntities = M.unionWith (\n o -> error "") tys1 tys2
+                     , namedEntityKeyed = ne1 <> ne2
+                     }
+
+instance Monoid NamedEntityKeyed where
+  mempty = NamedEntityKeyed { keyToName = mempty
+                            , typeOfEntities = mempty
+                            , namedEntityKeyed = mempty
+                            }
+  
+newtype Trail = Trail [Text]
+  deriving newtype (Show, Eq, Ord, Read)
+
+data ApiState (apps :: [Type]) = ApiState
+  { apiState :: M.Map TypeRep Unsafe.Any
+  , namedEntityTyped :: NamedEntityTyped
+  , namedEntityKeyed :: NamedEntityKeyed
+  }
 
 instance Show (ApiState apps) where
-  show (ApiState dmap) = "undefined" -- showTaggedPrec p $DMap.dmap
+  show (ApiState {apiState}) = "undefined" -- showTaggedPrec p $DMap.dmap
 
 instance Eq (ApiState apps) where
   s1 == s2 = undefined
 
 modifyApiState :: forall app apps stTag. (Typeable app, AppIsElem app apps) => DSum (stTag apps app) Proxy -> (DSum (stTag apps app) Identity -> DSum (stTag apps app) Identity) -> ApiState apps -> ApiState apps
-modifyApiState ctor@(tag :=> _) f (ApiState stMap) = case M.lookup (typeRep (getAppProxy' ctor)) stMap of
+modifyApiState ctor@(tag :=> _) f (ApiState {apiState = stMap, namedEntityTyped}) = case M.lookup (typeRep (getAppProxy' ctor)) stMap of
   Nothing -> undefined
   Just anyv -> case f (tag :=> (Identity $ castToTagVal tag anyv)) of
-    _ :=> (Identity newval) -> ApiState $ M.insert (typeRep (getAppProxy' ctor)) (Unsafe.unsafeCoerce newval :: Unsafe.Any) stMap
+    _ :=> (Identity newval) -> ApiState
+      { apiState = M.insert (typeRep (getAppProxy' ctor)) (Unsafe.unsafeCoerce newval :: Unsafe.Any) stMap
+      , namedEntityTyped
+      }
   where
     castToTagVal :: forall tag x.tag x -> Unsafe.Any -> x
     castToTagVal _ anyv = Unsafe.unsafeCoerce anyv :: x
@@ -226,8 +303,9 @@ class HasApiState (apps1 :: [Type]) stTag (apps :: [Type]) where
   apiStateUniv :: Proxy apps1 -> (forall app. Typeable app => DSum (stTag apps app) Proxy -> r) -> [r]
 
 initApiState :: forall apps stTag. HasApiState apps stTag apps => (forall app. Typeable app => DSum (stTag apps app) Proxy -> DSum (stTag apps app) Identity) -> ApiState apps
-initApiState f = ApiState $ M.fromList $ apiStateUniv (Proxy @apps) $ \ctor -> case f ctor of
-  tag :=> (Identity v) -> (typeRep (getAppProxy' ctor), Unsafe.unsafeCoerce v :: Unsafe.Any)
+initApiState f = ApiState { apiState = M.fromList $ apiStateUniv (Proxy @apps) $ \ctor -> case f ctor of
+                              tag :=> (Identity v) -> (typeRep (getAppProxy' ctor), Unsafe.unsafeCoerce v :: Unsafe.Any)
+                          }
 
 
 getAppProxy' :: forall stTag apps app f. Typeable app => DSum (stTag apps app) f -> Proxy app
@@ -280,7 +358,7 @@ instance StateModel (ApiState apps) where
 
   arbitraryAction _varCxt _s = pure undefined
 
-  initialState = ApiState mempty
+  initialState = ApiState {apiState = mempty, namedEntityTyped = mempty}
 
   nextState s (MkWebApiAction act) var = case act of
     SuccessCall creq SuccessApiModel {nextState=nsMay} _ _ -> maybe s (\ns -> ns var s) nsMay

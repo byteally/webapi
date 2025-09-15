@@ -25,12 +25,12 @@ import Test.QuickCheck.Extras
 
 
 successCall :: forall meth r app apps. WebApiActionCxt apps meth app r =>
-  ClientRequestF Input meth (app :// r)
+  ClientRequestVal meth (app :// r)
   -> DL (ApiState apps) (Var (ApiOut meth (app :// r)))
 successCall creq = action (mkWebApiAction (SuccessCall creq defSuccessApiModel NoCookiesMod (Right . getSuccessOut)))
 
 successCallWith :: forall meth r app res apps. (Typeable res, WebApiActionCxt apps meth app r) =>
-  ClientRequestF Input meth (app :// r)
+  ClientRequestVal meth (app :// r)
   -> ModifyClientCookies
   -> (ApiSuccess meth (app :// r) -> Either ResultError res)
   -> DL (ApiState apps) (Var res)
