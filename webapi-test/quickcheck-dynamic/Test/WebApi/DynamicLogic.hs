@@ -2,6 +2,10 @@ module Test.WebApi.DynamicLogic
   ( propDL
   , prop_api
   , runWebApiTest
+  , apiAction
+  , apiForAllVar
+  , getCtxAtTypeDL
+  , arbitraryVal
   , module Test.WebApi.StateModel
   , Reifies
   ) where
@@ -21,6 +25,8 @@ import Test.QuickCheck.Monadic
 import Test.QuickCheck.Monadic qualified as QC
 import Test.QuickCheck.Extras
 import Data.Reflection
+import Test.QuickCheck.StateModel.Variables
+import qualified Record
 
 propDL :: forall apps s. Reifies s (WebApiGlobalStateModel apps) => Proxy s -> (forall a. WebApiSessions apps a -> IO a) -> DL (ApiState s apps) () -> Property
 propDL _ webapiRunner d = forAllDL d (prop_api webapiRunner)
@@ -34,3 +40,22 @@ prop_api webapiRunner s =
 
 runWebApiTest :: WebApiGlobalStateModel apps -> (forall (s :: Type). Reifies s (WebApiGlobalStateModel apps) => Proxy s -> r) -> r
 runWebApiTest gstate runner = reify gstate (\ps -> runner ps)
+
+apiAction :: (Typeable a, Eq (Action s a), Show (Action s a)) => Action s a -> DL s (Val a)
+apiAction = fmap (Var id) . action
+
+apiForAllVar :: forall a s. Typeable a => DL s (Val a)
+apiForAllVar = fmap (Var id) forAllVar
+
+getCtxAtTypeDL :: forall a s. Typeable a => DL s [Val a]
+getCtxAtTypeDL = (fmap (Var id) . ctxAtType @a) <$> getVarContextDL
+
+arbitraryVal :: Typeable a => VarContext -> Gen (Val a)
+arbitraryVal = fmap (Var id) . arbitraryVar
+
+shrinkVal :: Typeable a => VarContext -> Val a -> [Val a]
+shrinkVal vctx = \case
+  v@Const {} -> [v]
+  Var f v -> fmap (Var f) $ shrinkVar vctx v
+  v@Opt {} -> [v]
+--  HKVal f hk -> concat $ Record.hkToListWith (shrinkVal' f vctx) hk
