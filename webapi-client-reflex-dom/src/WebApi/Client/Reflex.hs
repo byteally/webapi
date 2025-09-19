@@ -171,27 +171,29 @@ clientOrigin baseUrl reqEvt = do
         -- TODO: Handle other xhr response case
         xhrResp = LBS.fromStrict $ T.encodeUtf8 $ maybe T.empty id  $ _xhrResponse_responseText resp
 
-      in case WebApi.Success <$> pure status
-               <*> (Validation $ toParamErr $ decode' (Res :: Resource meth r) xhrResp)
-               <*> respHdr
-               <*> pure () of
-      Validation (Right success) -> success
-      Validation (Left errs1) ->
-        case ApiError
-             <$> pure status
-             <*> (Validation $ toParamErr $ decode' (Res :: Resource meth r) xhrResp)
-             <*> (Just <$> respHdr)
-             <*> (Just <$> (pure ())) of
-          Validation (Right failure) -> (WebApi.Failure . Left) failure
-          Validation (Left errs2) -> 
-            let errs = case HT.statusCode status of
-                  200 -> errs1
-                  _ -> errs2
-            in WebApi.Failure $ Right (OtherError (toException $ ApiErrParseFailException status $ T.intercalate "\n" $ fmap (T.pack . show) errs))
+      in 
+        case statusIsSuccessful status of
+          True ->
+            let res = WebApi.Success <$> pure status
+                        <*> (Validation $ toParamErr $ decode' (Res :: Resource meth r) xhrResp)
+                        <*> respHdr
+                        <*> pure ()
+            in case res of
+              Validation (Right success) -> success
+              Validation (Left errs) ->  WebApi.Failure $ Right (OtherError (toException $ ApiErrParseFailException status $ T.intercalate "\n" $ fmap (T.pack . show) errs))
+          False -> 
+            let res = ApiError 
+                        <$> pure status
+                        <*> (Validation $ toParamErr $ decode' (Res :: Resource meth r) xhrResp)
+                        <*> (Just <$> respHdr)
+                        <*> (Just <$> (pure ()))
+            in case res of
+                Validation (Right failure) -> (WebApi.Failure . Left) failure
+                Validation (Left errs) -> WebApi.Failure $ Right (OtherError (toException $ ApiErrParseFailException status $ T.intercalate "\n" $ fmap (T.pack . show) errs))
 
   pure $ ffor xhrRes $ \case
     Left e -> WebApi.Failure $ Right $ OtherError $ toException e
-    Right r -> fromClientResponse r
+    Right r -> fromClientResponse r 
 
 data ContentDecodeException
   = ContentDecodeException
