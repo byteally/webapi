@@ -23,6 +23,7 @@ module Test.WebApi.StateModel
   , getSuccessHeaders
   , getSuccessCookies
   , defSuccessApiModel
+  , defFailureApiModel
   , initApiState
   , modifyApiState
   ) where
@@ -30,6 +31,7 @@ module Test.WebApi.StateModel
 import Test.WebApi
 import Test.QuickCheck.StateModel
 import Test.QuickCheck.DynamicLogic (DynLogicModel (..))
+-- import Test.QuickCheck.StateModel.Variables (Any (..))
 import qualified Test.QuickCheck as QC
 import WebApi.Contract
 import WebApi.Param
@@ -48,9 +50,7 @@ import Data.Functor.Identity
 import qualified Data.Text as T
 import qualified Data.Map.Strict as M
 import qualified Data.Set as Set
-import Data.Dependent.Map (DMap)
 import Data.Dependent.Sum (DSum (..))
-import qualified Data.Dependent.Map as DMap
 import System.IO.Unsafe
 import qualified Unsafe.Coerce as Unsafe
 import qualified GHC.Base as Unsafe (Any)
@@ -110,7 +110,7 @@ data Val a where
   Const :: a -> Val a
   Var :: Typeable x => (x -> a) -> Var x -> Val a
   HKVal :: (Typeable x, Record.FromHK x) => (x -> a) -> Record.HK Val x -> Val a -- TODO: Avoid FromHK dep
-  Pair :: ((x1, x2) -> a) -> (Val x1, Val x2) -> Val a
+  Pair :: (Typeable x1, Typeable x2) => ((x1, x2) -> a) -> (Val x1, Val x2) -> Val a
   Opt :: Val a
 
 deriving instance Functor Val
@@ -136,6 +136,12 @@ instance Applicative Val where
       HKVal fn1 hkv1 -> Pair (\(x, x1) -> fn x (fn1 x1)) (HKVal id v, HKVal id hkv1)
       Pair fn1 vs -> Pair (\(x, x1) -> fn x (fn1 x1)) (HKVal id v, Pair id vs)
       Opt -> error "TODO"
+    Pair fn vs -> case a' of
+      Const a -> Pair ((\f -> f a) . fn) vs
+      Var fn1 v -> Pair (\(x1x2, x) -> fn x1x2 (fn1 x)) (Pair id vs, Var id v)
+      HKVal fn1 hkv1 -> Pair (\(x1x2, x) -> fn x1x2 (fn1 x)) (Pair id vs, HKVal id hkv1)
+      Pair fn1 vs1 -> Pair (\(x1x2, x4x5) -> fn x1x2 (fn1 x4x5)) (Pair id vs, Pair id vs1)
+      Opt -> error "TODO"
     Opt -> Opt
 
 resolveVal :: LookUp -> Val a -> a
@@ -143,6 +149,7 @@ resolveVal lkp = \case
   Const v -> v
   Var f var -> f (lkp var)
   HKVal f hk -> f $ runIdentity $ Record.fromHK $ Record.hoistHK (Identity . resolveVal lkp) hk
+  Pair f (v1, v2) -> f (resolveVal lkp v1, resolveVal lkp v2)
   Opt -> error "TODO"
 
 instance HasVariables (Val a) where
@@ -150,6 +157,7 @@ instance HasVariables (Val a) where
     Const {} -> Set.empty
     Var _ var -> getAllVariables var
     HKVal _ hk -> Set.unions $ Record.hkToListWith getAllVariables hk
+    Pair _ (v1, v2) -> getAllVariables v1 <> getAllVariables v2
     Opt -> error "TODO"
 
 data ClientRequestVal meth r = ClientRequestVal
@@ -181,19 +189,19 @@ resolveRequest ::
   -> Maybe (ClientRequest meth r)
 resolveRequest lkp ClientRequestVal {query, form, header, path, file, body} =
   do
-    query <- Just $ resolveVal lkp query
-    form <- Just $ resolveVal lkp form
-    header <- Just $ resolveVal lkp header
-    path <- Just $ resolveVal lkp path
-    file <- Just $ resolveVal lkp file
-    body <- Just $ resolveVal lkp body
-    Just $ ClientRequest {query, form, header, path, file, body}
+    query' <- Just $ resolveVal lkp query
+    form' <- Just $ resolveVal lkp form
+    header' <- Just $ resolveVal lkp header
+    path' <- Just $ resolveVal lkp path
+    file' <- Just $ resolveVal lkp file
+    body' <- Just $ resolveVal lkp body
+    Just $ ClientRequest {query = query', form = form', header = header', path = path', file = file', body = body'}
 
 data WebApiAction s (apps :: [Type]) (a :: Type) where
   SuccessCall :: WebApiActionCxt apps meth app r
     => ClientRequestVal meth (app :// r)
     -> SuccessApiModel s apps meth (app :// r) res
-    -> ModifyClientCookies
+    -> Maybe (ApiSuccess meth (app :// r) -> ModifyClientCookies app)
     -> (ApiSuccess meth (app :// r) -> Either ResultError res)
     -> WebApiAction s apps res
   ErrorCall :: WebApiActionCxt apps meth app r
@@ -224,6 +232,8 @@ instance Eq (WebApiAction s apps a) where
 instance HasVariables (WebApiAction s apps a) where
   getAllVariables = \case
     SuccessCall creq _ _ _ -> getAllVariables creq
+    ErrorCall _creq -> error "TODO:"
+    SomeExceptionCall _creq -> error "TODO:"
 
 newtype RefinementId = RefinementId Text
   deriving newtype (Show, Eq, Ord, Read)
@@ -234,6 +244,15 @@ data NamedEntity k = NamedEntity
   , entityToRefinements :: M.Map k (Set.Set RefinementId)
   }
 
+instance Show k => Show (NamedEntity k) where
+  show NamedEntity {namedEntity = ne, entityRefinement = er, entityToRefinements = e2r} =
+    "Entities: " ++ show (M.keys ne) ++ ", Refinements: " ++ (show $ M.keys er) ++ ", EntityRefinements: " ++ show e2r
+
+instance Eq k => Eq (NamedEntity k) where
+  NamedEntity {namedEntity = ne1, entityRefinement = er1, entityToRefinements = e2r1} ==
+    NamedEntity {namedEntity = ne2, entityRefinement = er2, entityToRefinements = e2r2} =
+    ne1 == ne2 && (M.keys er1) == (M.keys er2) && e2r1 == e2r2
+    
 instance Ord k => Semigroup (NamedEntity k) where
   NamedEntity {namedEntity = ne1, entityRefinement = er1, entityToRefinements = e2r1} <>
     NamedEntity {namedEntity = ne2, entityRefinement = er2, entityToRefinements = e2r2} =
@@ -250,7 +269,7 @@ instance Ord k => Monoid (NamedEntity k) where
     }
 
 newtype NamedEntityTyped = NamedEntityTyped (NamedEntity TypeRep)
-  deriving newtype (Semigroup, Monoid)
+  deriving newtype (Semigroup, Monoid, Show, Eq)
 
 newtype KeyedEntityId = KeyedEntityId RefinementId
   deriving newtype (Show, Eq, Ord, Read)
@@ -259,13 +278,13 @@ data NamedEntityKeyed = NamedEntityKeyed
   { keyToName :: M.Map Trail KeyedEntityId
   , typeOfEntities :: M.Map KeyedEntityId TypeRep
   , namedEntityKeyed :: NamedEntity KeyedEntityId
-  }
+  } deriving (Show, Eq)
 
 instance Semigroup NamedEntityKeyed where
   NamedEntityKeyed {keyToName = k2n1, typeOfEntities = tys1, namedEntityKeyed = ne1} <>
     NamedEntityKeyed {keyToName = k2n2, typeOfEntities = tys2, namedEntityKeyed = ne2} =
-    NamedEntityKeyed { keyToName = M.unionWith (\n o -> error "") k2n1 k2n2 
-                     , typeOfEntities = M.unionWith (\n o -> error "") tys1 tys2
+    NamedEntityKeyed { keyToName = M.unionWithKey (\k l r -> if l == r then l else error $ "Encountered duplicate trail: " ++ show k ++ "! Pointing to conflicting entities: " ++ show (l, r)) k2n1 k2n2 
+                     , typeOfEntities = M.unionWithKey (\k l r -> if l == r then l else error $ "Encountered duplicate entity: " ++ show k ++ "! with conflicting type: " ++ show (l, r)) tys1 tys2
                      , namedEntityKeyed = ne1 <> ne2
                      }
 
@@ -285,18 +304,21 @@ data ApiState (s :: Type) (apps :: [Type]) = ApiState
   }
 
 instance Show (ApiState s apps) where
-  show (ApiState {apiState}) = "undefined" -- showTaggedPrec p $DMap.dmap
+  show (ApiState {apiState, namedEntityTyped, namedEntityKeyed}) =
+    "ApiState: " ++ show (M.keys apiState) ++ ", Entites (Typed): " ++ show namedEntityTyped ++ ", Entites (Keyed): "++ show namedEntityKeyed
 
 instance Eq (ApiState s apps) where
-  s1 == s2 = undefined
+  ApiState {namedEntityTyped = net1, namedEntityKeyed = nek1} ==
+    ApiState {namedEntityTyped = net2, namedEntityKeyed = nek2} = net1 == net2 && nek1 == nek2
 
 modifyApiState :: forall app apps stTag s. (Typeable app, AppIsElem app apps) => DSum (stTag apps app) Proxy -> (DSum (stTag apps app) Identity -> DSum (stTag apps app) Identity) -> ApiState s apps -> ApiState s apps
-modifyApiState ctor@(tag :=> _) f (ApiState {apiState = stMap, namedEntityTyped}) = case M.lookup (typeRep (getAppProxy' ctor)) stMap of
+modifyApiState ctor@(tag :=> _) f (ApiState {apiState = stMap, namedEntityTyped, namedEntityKeyed}) = case M.lookup (typeRep (getAppProxy' ctor)) stMap of
   Nothing -> undefined
   Just anyv -> case f (tag :=> (Identity $ castToTagVal tag anyv)) of
     _ :=> (Identity newval) -> ApiState
       { apiState = M.insert (typeRep (getAppProxy' ctor)) (Unsafe.unsafeCoerce newval :: Unsafe.Any) stMap
       , namedEntityTyped
+      , namedEntityKeyed
       }
   where
     castToTagVal :: forall tag x.tag x -> Unsafe.Any -> x
@@ -307,7 +329,9 @@ class HasApiState (apps1 :: [Type]) stTag (apps :: [Type]) where
 
 initApiState :: forall apps stTag s. HasApiState apps stTag apps => (forall app. Typeable app => DSum (stTag apps app) Proxy -> DSum (stTag apps app) Identity) -> ApiState s apps
 initApiState f = ApiState { apiState = M.fromList $ apiStateUniv (Proxy @apps) $ \ctor -> case f ctor of
-                              tag :=> (Identity v) -> (typeRep (getAppProxy' ctor), Unsafe.unsafeCoerce v :: Unsafe.Any)
+                              _ :=> (Identity v) -> (typeRep (getAppProxy' ctor), Unsafe.unsafeCoerce v :: Unsafe.Any)
+                          , namedEntityTyped = mempty
+                          , namedEntityKeyed = mempty
                           }
 
 
@@ -335,6 +359,8 @@ defSuccessApiModel = SuccessApiModel
   , precondition = Nothing
   , validFailingAction = Nothing
   , shrinkAction = Nothing
+  , postCondition = \_ _ _ -> True
+  , postconditionOnFailure = \_ _ _ -> True
   }
 
 data FailureApiModel s apps meth r a = FailureApiModel
@@ -343,6 +369,15 @@ data FailureApiModel s apps meth r a = FailureApiModel
   , validFailingAction :: Maybe (ApiState s apps -> Bool)
   , shrinkAction :: Maybe (VarContext -> ApiState s apps -> [Any (Action (ApiState s apps))])
   , postconditionOnFailure :: (ApiState s apps, ApiState s apps) -> LookUp -> Either ErrorState a -> Bool
+  }
+
+defFailureApiModel :: FailureApiModel s apps meth r a
+defFailureApiModel = FailureApiModel
+  { failureNextState = Nothing
+  , precondition = Nothing
+  , validFailingAction = Nothing
+  , shrinkAction = Nothing
+  , postconditionOnFailure = \_ _ _ -> True
   }
 
 mkWebApiAction :: WebApiAction s apps a -> Action (ApiState s apps) a
@@ -374,19 +409,29 @@ instance (Reifies s (WebApiGlobalStateModel apps)) => StateModel (ApiState s app
     in ApiState {apiState = coerce appInitState, namedEntityTyped, namedEntityKeyed}
 
   nextState s (MkWebApiAction act) var = case act of
-    SuccessCall creq SuccessApiModel {nextState=nsMay} _ _ -> maybe s (\ns -> ns var s) nsMay
+    SuccessCall _creq SuccessApiModel {nextState=nsMay} _ _ -> maybe s (\ns -> ns var s) nsMay
+    ErrorCall {} -> error "TODO:"
+    SomeExceptionCall {} -> error "TODO:"
 
   failureNextState s (MkWebApiAction act) = case act of
-    SuccessCall creq SuccessApiModel {failureNextState=nsMay} _ _ -> maybe s (\ns -> ns s) nsMay
+    SuccessCall _creq SuccessApiModel {failureNextState=nsMay} _ _ -> maybe s (\ns -> ns s) nsMay
+    ErrorCall {} -> error "TODO:"
+    SomeExceptionCall {} -> error "TODO:"
 
   precondition s (MkWebApiAction act) = case act of
-    SuccessCall creq SuccessApiModel {precondition=pcMay} _ _ -> maybe True (\pc -> pc s) pcMay
+    SuccessCall _creq SuccessApiModel {precondition=pcMay} _ _ -> maybe True (\pc -> pc s) pcMay
+    ErrorCall {} -> error "TODO:"
+    SomeExceptionCall {} -> error "TODO:"
 
   validFailingAction s (MkWebApiAction act) = case act of
-    SuccessCall creq SuccessApiModel {validFailingAction=vfaMay} _ _ -> maybe False (\vfa -> vfa s) vfaMay
+    SuccessCall _creq SuccessApiModel {validFailingAction=vfaMay} _ _ -> maybe False (\vfa -> vfa s) vfaMay
+    ErrorCall {} -> error "TODO:"
+    SomeExceptionCall {} -> error "TODO:"
 
   shrinkAction varCxt s (MkWebApiAction act) = case act of
-    SuccessCall creq SuccessApiModel {shrinkAction=saMay} _ _ -> maybe [] (\sa -> sa varCxt s) saMay
+    SuccessCall _creq SuccessApiModel {shrinkAction=saMay} _ _ -> maybe [] (\sa -> sa varCxt s) saMay
+    ErrorCall {} -> error "TODO:"
+    SomeExceptionCall {} -> error "TODO:"
 
 
 data ErrorState =
@@ -414,29 +459,28 @@ data ResultError = MkResultError
   { err :: T.Text
   } deriving (Show)
 
-data ModifyClientCookies
+data ModifyClientCookies app
   = SetClientCookies [SetCookie]
-  | ModifyClientCookies [(ByteString, SetCookieUpdate)]
+  | ModifyClientCookies (ClientCookies -> ClientCookies)
   | DeleteClientCookies [ByteString]
-  | NoCookiesMod
-  deriving (Show)
-
-data SetCookieUpdate = SetCookieUpdate
-  { setCookieUpdateOpName :: Text
-  , setCookieUpdateOp :: SetCookie -> SetCookie
-  }
-
-instance Show SetCookieUpdate where
-  show SetCookieUpdate {setCookieUpdateOpName} = T.unpack setCookieUpdateOpName
+--  deriving (Show)
 
 
 instance (Reifies s (WebApiGlobalStateModel apps)) => RunModel (ApiState s apps) (WebApiSessions apps) where
   type Error (ApiState s apps) (WebApiSessions apps) = ErrorState
   perform _ act lkp = case act of
-    MkWebApiAction (SuccessCall creq' model cookMod f) -> do
+    MkWebApiAction (SuccessCall creq' _model cookModMay f) -> do
       case resolveRequest lkp creq' of
         Just creq -> testClients creq >>= \case
-          Success code out headerOut cookieOut -> pure $ either (Left . ResultError) Right $ f $ ApiSuccess {code, out, headerOut, cookieOut}
+          Success code out headerOut cookieOut -> do
+            let apiSucc = ApiSuccess {code, out, headerOut, cookieOut}
+            case cookModMay of
+              Nothing -> pure ()
+              Just cookMod -> case cookMod apiSucc of
+                modCk@(SetClientCookies setcooks) -> mapM_ (setClientCookie modCk) setcooks
+                modCk@(ModifyClientCookies modcooks) -> modifyClientCookies modCk modcooks
+                modCk@(DeleteClientCookies delcooks) -> mapM_ (deleteClientCookie modCk) delcooks
+            pure $ either (Left . ResultError) Right $ f apiSucc
           Failure (Right oerr) -> pure $ Left UnExpectedApiCrash
                                   { status = H.status500 -- TODO: Fix this
                                   , headerOut = [] -- TODO: Fix this
@@ -474,7 +518,7 @@ instance (Reifies s (WebApiGlobalStateModel apps)) => RunModel (ApiState s apps)
   postcondition _ _act _lkp _a = pure True
   postconditionOnFailure _ _act _lkp _a = pure True
 
-  monitoring (_s, s') act _lkp res =
+  monitoring (_s, s') act _lkp _res =
      QC.counterexample ("show res" ++ " <- " ++ actionName act ++ "\n  -- State: " ++ show s')
       . QC.tabulate "Registry size" ["Val1", "Val2"]
 
@@ -488,14 +532,14 @@ instance (Reifies s (WebApiGlobalStateModel apps)) => DynLogicModel (ApiState s 
 successCall :: forall meth r app apps s. WebApiActionCxt apps meth app r =>
   ClientRequestVal meth (app :// r)
   -> Action (ApiState s apps) (ApiOut meth (app :// r))
-successCall creq = mkWebApiAction $ SuccessCall creq defSuccessApiModel NoCookiesMod (Right . getSuccessOut)
+successCall creq = mkWebApiAction $ SuccessCall creq defSuccessApiModel Nothing (Right . getSuccessOut)
 
 successCallWith :: forall meth r app res apps s. (Typeable res, WebApiActionCxt apps meth app r) =>
   ClientRequestVal meth (app :// r)
-  -> ModifyClientCookies
+  -> Maybe (ApiSuccess meth (app :// r) -> ModifyClientCookies app)
   -> (ApiSuccess meth (app :// r) -> Either ResultError res)
   -> Action (ApiState s apps) res
-successCallWith creq cookMod f = mkWebApiAction (SuccessCall creq defSuccessApiModel cookMod f)
+successCallWith creq cookModMay f = mkWebApiAction (SuccessCall creq defSuccessApiModel cookModMay f)
 
 -- data ShowDict a where
 --   ShowDict :: Show a => ShowDict a

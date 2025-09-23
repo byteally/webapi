@@ -14,7 +14,7 @@ extra-doc-files:    CHANGELOG.md
 -- extra-source-files:
 
 common warnings
-    ghc-options: -Wall
+    ghc-options: -Wall -Werror
     build-depends:    base >= 4.18.3.0
                     , mtl
                     , text
@@ -62,5 +62,7 @@ library qc-dynamic
                     , dependent-sum
                     , reflection >= 2.1
                     , rec >= 0.2 
+                    -- , prim-uniq
+                    -- , constraints-extras
     hs-source-dirs:   quickcheck-dynamic
     default-language: GHC2021    

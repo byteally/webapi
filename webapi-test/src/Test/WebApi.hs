@@ -10,10 +10,15 @@ module Test.WebApi
   , fromClientRequest
   , toWaiRequest
   , runWebApiSessions
+  , getClientCookies
+  , modifyClientCookies
+  , setClientCookie
+  , deleteClientCookie
   , WebApiSessions (..)
   , WebApiSessionsConfig
   , WebApiSession
   , ClientRequest (ClientRequest, path, query, form, file, header, body)
+  , ClientCookies
   , UnknownClientException (..)
   , AppIsElem
   ) where
@@ -302,21 +307,27 @@ runWebApis' WebApiSessionsConfig {applications, clientsState} (WebApiSessions se
   pure (a, WebApiSessionsConfig {applications, clientsState = clientsStateNew})
 
 
--- getClientCookies :: WebApiSessions apps ClientCookies
--- getClientCookies = WaiInt.clientCookies <$> lift get
+getClientCookies :: forall app apps proxy. Typeable app => proxy app -> WebApiSessions apps ClientCookies
+getClientCookies _ = WebApiSessions $ do
+  gets $ \(ClientsState cstMap) -> case M.lookup (typeRep (Proxy @app)) cstMap of
+    Nothing -> mempty
+    Just cst -> WaiInt.clientCookies cst
 
--- modifyClientCookies :: (ClientCookies -> ClientCookies) -> WebApiSessions apps ()
--- modifyClientCookies f =
---     lift (modify' (\cs -> cs{WaiInt.clientCookies = f $ WaiInt.clientCookies cs}))
+modifyClientCookies :: forall app apps proxy. Typeable app => proxy app -> (ClientCookies -> ClientCookies) -> WebApiSessions apps ()
+modifyClientCookies _ f = WebApiSessions $ do
+  let
+    alterSt Nothing = Just (WaiInt.ClientState $ f mempty)
+    alterSt (Just cst) = Just (WaiInt.ClientState $ f $ WaiInt.clientCookies cst)
+  modify' $ \(ClientsState cstMap) -> ClientsState $ M.alter alterSt (typeRep (Proxy @app)) cstMap
 
--- setClientCookie :: SetCookie -> WebApiSessions apps ()
--- setClientCookie c =
---     modifyClientCookies $
---         M.insert (setCookieName c) c
+setClientCookie :: forall app apps proxy. Typeable app => proxy app -> SetCookie -> WebApiSessions apps ()
+setClientCookie papp c =
+  modifyClientCookies papp $
+    M.insert (setCookieName c) c
 
--- deleteClientCookie :: ByteString -> WebApiSessions apps ()
--- deleteClientCookie =
---     modifyClientCookies . M.delete  
+deleteClientCookie :: forall app apps proxy. Typeable app => proxy app -> ByteString -> WebApiSessions apps ()
+deleteClientCookie papp =
+  modifyClientCookies papp . M.delete  
 
 newtype ClientRequest meth r = MKClientRequest (Request meth r)
 
