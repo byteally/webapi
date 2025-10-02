@@ -21,23 +21,31 @@ import Test.QuickCheck
 import Test.QuickCheck.Monadic
 import Test.QuickCheck.Monadic qualified as QC
 import Data.Reflection
+import Data.IORef
 import qualified Record
+import Control.Monad.IO.Class
 
 propDL :: forall apps s. Reifies s (WebApiGlobalStateModel apps) => Proxy s -> (forall a. WebApiSessions apps a -> IO a) -> DL (ApiState s apps) () -> Property
-propDL _ webapiRunner d = forAllDL d (prop_api webapiRunner)
+propDL _ webapiRunner d = forAllDL d (prop_api undefined webapiRunner)
 
-prop_api :: forall apps s. Reifies s (WebApiGlobalStateModel apps) => (forall a. WebApiSessions apps a -> IO a) -> Actions (ApiState s apps) -> Property
-prop_api webapiRunner s =
+prop_api :: forall apps s. Reifies s (WebApiGlobalStateModel apps) => IORef (Maybe (ApiState s apps)) -> (forall a. WebApiSessions apps a -> IO a) -> Actions (ApiState s apps) -> Property
+prop_api newStRef webapiRunner s =
   monadic (ioProperty . webapiRunner) $ do
     monitor $ counterexample "\nExecution\n"
-    _ <- runActions s
+    (anonSt, env) <- runActions s
+    let 
+      newApiState = resolveNamedEntities env $ underlyingState anonSt
+    liftIO $ writeIORef newStRef (Just newApiState)
     QC.assert True
 
 runWebApiTest :: WebApiGlobalStateModel apps -> (forall (s :: Type). Reifies s (WebApiGlobalStateModel apps) => Proxy s -> r) -> r
 runWebApiTest gstate runner = reify gstate (\ps -> runner ps)
 
-apiAction :: (Typeable a, Eq (Action s a), Show (Action s a)) => Action s a -> DL s (Val a)
-apiAction = fmap (Var id) . action
+apiAction :: (Typeable a, Eq (Action (ApiState s apps) a), Show (Action (ApiState s apps) a)) => ApiAction apps a -> DL (ApiState s apps) (Val a)
+apiAction (ApiAction act) = getModelStateDL >>= (\st -> fmap (Var id) . action $ act st)
+
+-- apiAction' :: (Typeable a, Eq (Action s a), Show (Action s a)) => Action s a -> DL s (Val a)
+-- apiAction' = fmap (Var id) . action
 
 apiForAllVar :: forall a s. Typeable a => DL s (Val a)
 apiForAllVar = fmap (Var id) forAllVar
