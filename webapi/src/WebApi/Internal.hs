@@ -165,6 +165,7 @@ toWaiResponse wreq resp = case resp of
           , setCookieDomain = cookieDomain v
           , setCookieHttpOnly = fromMaybe False (cookieHttpOnly v)
           , setCookieSecure   = fromMaybe False (cookieSecure v)
+          , setCookieSameSite = cookieSameSite v
           }
 
 
