@@ -170,9 +170,9 @@ toWaiResponse wreq resp = case resp of
         
         cookieSameSite' :: CookieInfo ByteString -> Maybe SameSiteOption
         cookieSameSite' v = case (cookieSameSite v) of
-          Just SameSiteStrict -> Just Strict
-          Just SameSiteLax    -> Just Lax
-          Just SameSiteNone   -> Just None
+          Just SameSiteStrict -> Just sameSiteStrict
+          Just SameSiteLax    -> Just sameSiteLax
+          Just SameSiteNone   -> Just sameSiteNone
           _ -> Nothing
 
 
