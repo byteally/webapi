@@ -36,13 +36,13 @@ import WebApi.Contract
 import WebApi.Param
 import WebApi.Util
 import WebApi.ContentTypes
-import WebApi.Param
+-- import WebApi.Param
 import WebApi.Internal (getContentType)
 import WebApi.Server (WebApiWaiApp, getWaiApp)
 import Web.Cookie
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as LBS
-import qualified Data.ByteString.Char8 as Char8
+-- import qualified Data.ByteString.Char8 as Char8
 import Data.Kind
 import Data.Function
 import Data.Coerce
@@ -91,9 +91,9 @@ toWaiRequest req@Request {queryParam, pathParam, formParam, fileParam, headerIn,
   where
     accHeader = maybe [] (:[]) ((H.hAccept,) <$>  (getRawAcceptHeader req))
     partEncs = partEncodings (Proxy @(RequestBody meth r)) (toRecTuple (Proxy @(StripContents (RequestBody meth r))) requestBody)
-    firstPart = head . head $ partEncs -- TODO: Check head
+    _firstPart = head . head $ partEncs -- TODO: Check head
     formPar = toFormParam formParam
-    filePar = toFileParam fileParam
+    _filePar = toFileParam fileParam
     uriPath = renderUriPath "" [] pathParam req
     meth = singMethod (Proxy :: Proxy meth)
     qitms = toQueryParam queryParam
@@ -228,6 +228,9 @@ newtype WebApiSessions (apps :: [Type]) a = WebApiSessions (ReaderT Applications
 
 runWebApiSessions :: WebApiSessions apps a -> ReaderT Applications (StateT ClientsState IO) a
 runWebApiSessions = coerce
+
+-- modifyClientsState :: ClientsState -> WebApiSessions apps ()
+-- modifyClientsState _ = WebApiSessions $ undefined
 
 testClients :: forall meth r app apps.
   ( WebApi app

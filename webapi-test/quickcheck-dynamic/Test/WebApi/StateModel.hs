@@ -1,12 +1,13 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE QuantifiedConstraints #-}
 module Test.WebApi.StateModel
   ( WebApiAction (..)
   , ApiState (..)
-  , ApiAction (..)
   , WebApiActionCxt
   , ApiSuccess (..)
   , ErrorState (..)
+  , XActionError (..)
   , ResultError (..)
   , ModifyClientCookies (..)
   , SuccessApiModel
@@ -18,9 +19,20 @@ module Test.WebApi.StateModel
   , WebApiGlobalStateModel (..)
   , NER (..)
   , HasApiSession (..)
+  , WebApiSessionsCxt
+  , NoXState
+  , ContextSwitch (..)
+  -- , ApiAction (..)
+  -- , ApiActionEnv (..)
+  -- , ApiActionM
+  , ActionConfig (..)
+  , ActionConfigWith (..)
+  , RefinementId
+  , initWebApiSessionsCxt
   , successCall
   , successCallWith
-  , mkApiAction
+  -- , mkApiAction
+  , defaultActionConfig
   , mkWebApiAction
   , getOpIdFromRequest
   , getSuccessOut
@@ -37,6 +49,7 @@ module Test.WebApi.StateModel
   , setPostcondition
   , setPostconditionOnFailure
   , initApiState
+  , initApiState_
   , modifyApiState
   , apiGenAction
   , addTypedEntity
@@ -50,11 +63,19 @@ module Test.WebApi.StateModel
   , resolveNamedEntities
   , startSession
   , endSession
+  -- , genApiActionM
+  -- , dlApiActionM
+  -- , setContext1
+  -- , clearContext1
+  -- , inGlobalRange
+  -- , inGlobalRange_
+  -- , liftApiGen
+  -- , liftApiDL
   ) where
 
 import Test.WebApi
 import Test.QuickCheck.StateModel
-import Test.QuickCheck.DynamicLogic (DynLogicModel (..))
+import Test.QuickCheck.DynamicLogic (DynLogicModel (..){-, DL-})
 -- import Test.QuickCheck.StateModel.Variables (Any (..))
 import qualified Test.QuickCheck as QC
 import WebApi.Contract
@@ -82,6 +103,9 @@ import qualified Record
 import Data.Reflection
 import Data.Maybe
 import Data.Hashable
+import Data.Bifunctor
+import Control.Monad.IO.Class
+import Control.Monad.Reader
 
 type WebApiActionCxt (apps :: [Type]) (meth :: Type) (app :: Type) (r :: k) =
   ( ToParam 'PathParam (PathParam meth (app://r))
@@ -107,10 +131,6 @@ type WebApiActionCxt (apps :: [Type]) (meth :: Type) (app :: Type) (r :: k) =
   , Typeable k
   , AppIsElem app apps
   , KnownSymbol (GetOpIdName (OperationId meth (app :// r)))
-  -- , Record.FromHK (PathParam meth (app://r))
-  -- , Record.FromHK (QueryParam meth (app://r))
-  -- , Record.FromHK (FormParam meth (app://r))
-  -- , Record.FromHK (HeaderIn meth (app://r))
   )
 
 data ApiSuccess (m :: Type) (r :: Type) = ApiSuccess
@@ -207,10 +227,6 @@ instance HasVariables (ClientRequestVal meth r) where
 
 resolveRequest ::
   ( SingMethod meth
-  -- , Record.FromHK (QueryParam meth r)
-  -- , Record.FromHK (FormParam meth r)
-  -- , Record.FromHK (HeaderIn meth r)
-  -- , Record.FromHK (PathParam meth r)
   ) => LookUp
   -> ClientRequestVal meth r
   -> Maybe (ClientRequest meth r)
@@ -224,28 +240,38 @@ resolveRequest lkp ClientRequestVal {query, form, header, path, file, body} =
     body' <- Just $ resolveVal lkp body
     Just $ ClientRequest {query = query', form = form', header = header', path = path', file = file', body = body'}
 
-data WebApiAction s (apps :: [Type]) (a :: Type) where
+data WebApiAction s (c :: Type) (xstate :: Type) (apps :: [Type]) (a :: Type) where
   SuccessCall :: WebApiActionCxt apps meth app r
     => ClientRequestVal meth (app :// r)
-    -> SuccessApiModel s apps meth (app :// r) res
+    -> SuccessApiModel s c xstate apps meth (app :// r) res
     -> Maybe (ApiSuccess meth (app :// r) -> ModifyClientCookies app)
     -> (ApiSuccess meth (app :// r) -> Either ResultError res)
-    -> WebApiAction s apps res
+    -> WebApiAction s c xstate apps res
   ErrorCall :: WebApiActionCxt apps meth app r
     => ClientRequest meth (app :// r)
-    -> WebApiAction s apps (ApiErr meth (app :// r))
+    -> WebApiAction s c xstate apps (ApiErr meth (app :// r))
   SomeExceptionCall :: WebApiActionCxt apps meth app r
     => ClientRequest meth (app :// r)
-    -> WebApiAction s apps (SomeException)
+    -> WebApiAction s c xstate apps (SomeException)
+  SetContext :: (ContextSwitch c) => Hashed c -> WebApiAction s c xstate apps ()
+  ClearContext :: (ContextSwitch c) => Proxy c -> WebApiAction s c xstate apps ()
+  XAction :: Action xstate a -> WebApiAction s c xstate apps a
 
-instance Show (WebApiAction s apps a) where
+class (Hashable c, Show c, Eq c, Typeable c) => ContextSwitch c where
+  setContext :: Hashed c -> IO ()
+  clearContext :: Proxy c -> IO ()
+  
+instance StateModel xstate => Show (WebApiAction s c xstate apps a) where
   show = \case
     SuccessCall creq _ _ _ -> show . getOpIdFromRequest $ creq
     ErrorCall creq -> show . unsafePerformIO . toWaiRequest . fromClientRequest $ creq
     SomeExceptionCall creq -> show . unsafePerformIO . toWaiRequest . fromClientRequest $ creq
+    SetContext c -> "Set-Context: " ++ show c
+    ClearContext pc -> "Clear-Context: " ++ show (typeRep pc)
+    XAction xact -> show xact
 
 -- TODO: Revisit
-instance Eq (WebApiAction s apps a) where
+instance Eq (Action xstate a) => Eq (WebApiAction s c xstate apps a) where
   (==) (SuccessCall creq1 _ _ _) = \case
     SuccessCall creq2 _ _ _ -> (getOpIdFromRequest $ creq1) == (getOpIdFromRequest $ creq2)
     _ -> False
@@ -255,12 +281,24 @@ instance Eq (WebApiAction s apps a) where
   (==) (SomeExceptionCall creq1) = \case
     SomeExceptionCall creq2 -> (show . unsafePerformIO . toWaiRequest . fromClientRequest $ creq1) == (show . unsafePerformIO . toWaiRequest . fromClientRequest $ creq2)
     _ -> False
+  (==) (SetContext c1) = \case
+    SetContext c2' -> maybe False (== (Identity c1)) $ gcast (Identity c2')
+    _ -> False
+  (==) ClearContext {} = \case
+    ClearContext {} -> True
+    _ -> False
+  (==) (XAction xact1) = \case
+    XAction xact2 -> xact1 == xact2
+    _ -> False
 
-instance HasVariables (WebApiAction s apps a) where
+instance StateModel xstate => HasVariables (WebApiAction s c xstate apps a) where
   getAllVariables = \case
     SuccessCall creq _ _ _ -> getAllVariables creq
     ErrorCall _creq -> error "TODO:"
     SomeExceptionCall _creq -> error "TODO:"
+    SetContext {} -> mempty
+    ClearContext {} -> mempty
+    XAction xact -> getAllVariables xact
 
 newtype RefinementId = RefinementId Text
   deriving newtype (Show, Eq, Ord, Read)
@@ -268,7 +306,7 @@ newtype RefinementId = RefinementId Text
 data AnyVal where
   SomeVal :: Val x -> AnyVal
 
--- inClassAny :: ApiState s apps -> RefinementId -> AnyVal -> Bool
+-- inClassAny :: ApiState s c xstate apps -> RefinementId -> AnyVal -> Bool
 -- inClassAny ApiState { namedEntityTyped = NamedEntityTyped NamedEntity
 --                                       { namedEntity
 --                                       , entityRefinement
@@ -276,16 +314,16 @@ data AnyVal where
 --                                       }
 --                  } rid = \val -> undefined
 
--- notInClassAny :: ApiState s apps -> RefinementId -> AnyVal -> Bool
+-- notInClassAny :: ApiState s c xstate apps -> RefinementId -> AnyVal -> Bool
 -- notInClassAny st rid = \somev -> not $ inClassAny st rid somev
 
-inClass :: forall t apps s. Typeable t => RefinementId -> ApiState s apps -> Val t -> Bool
+inClass :: forall t c xstate apps s. Typeable t => RefinementId -> ApiState s c xstate apps -> Val t -> Bool
 inClass rid ApiState { namedEntityTyped = NamedEntityTyped ne} = inClass' (typeRep (Proxy @t)) ne rid
 
-notInClass :: forall t apps s. Typeable t => RefinementId -> ApiState s apps -> Val t -> Bool
+notInClass :: forall t c xstate apps s. Typeable t => RefinementId -> ApiState s c xstate apps -> Val t -> Bool
 notInClass rid st = \somev -> not $ inClass rid st somev
 
-inClassKeyed :: forall t apps s. Typeable t => KeyedEntityId -> RefinementId -> ApiState s apps -> Val t -> Bool
+inClassKeyed :: forall t c xstate apps s. Typeable t => KeyedEntityId -> RefinementId -> ApiState s c xstate apps -> Val t -> Bool
 inClassKeyed eid rid ApiState
   { namedEntityKeyed = NamedEntityKeyed {typeOfEntities, namedEntityKeyed}
   } = case M.lookup eid typeOfEntities of
@@ -294,7 +332,7 @@ inClassKeyed eid rid ApiState
           | typeRep (Proxy @t) == trep -> inClass' eid namedEntityKeyed rid
           | otherwise -> const False
 
-notInClassKeyed :: forall t apps s. Typeable t => KeyedEntityId -> RefinementId -> ApiState s apps -> Val t -> Bool
+notInClassKeyed :: forall t c xstate apps s. Typeable t => KeyedEntityId -> RefinementId -> ApiState s c xstate apps -> Val t -> Bool
 notInClassKeyed eid rid st = \somev -> not $ inClassKeyed eid rid st somev
 
 inClass' :: forall t k. (Typeable t, Ord k) => k -> NamedEntity k -> RefinementId -> Val t -> Bool
@@ -337,7 +375,7 @@ instance Ord k => Monoid (NamedEntity k) where
     , entityToRefinements = mempty
     }
 
-resolveNamedEntities :: Env -> ApiState s apps -> ApiState s apps
+resolveNamedEntities :: Env -> ApiState s c xstate apps -> ApiState s c xstate apps
 resolveNamedEntities env ApiState {namedEntityTyped, namedEntityKeyed = NamedEntityKeyed {namedEntityKeyed, ..}, ..} =
   ApiState { namedEntityTyped = coerce $ resolveNamedEntity (coerce namedEntityTyped)
            , namedEntityKeyed = NamedEntityKeyed {namedEntityKeyed = resolveNamedEntity namedEntityKeyed, ..}
@@ -392,7 +430,7 @@ endSession = error "TODO"
 {-
 -- name :: a -> (forall name. (a ~~ name) -> t) -> t
 do
-  globalKey <- startSession "global" $ do
+  globalKey <- startSession "global" 
 
   customerKey <- startSession "customer@example.com"
   endSession customerKey
@@ -402,32 +440,38 @@ do
 
   endSession globalKey
 
+  usingContext "user1@example.com" $ fooAct
+  usingContext "user1@example.com" $ anyActions
+  usingContext "user2@example.com" $ fooAct
+
 -}
 
   
-data ApiState (s :: Type) (apps :: [Type]) = ApiState
+data ApiState (s :: Type) (c :: Type) (xstate :: Type) (apps :: [Type]) = ApiState
   { apiState :: M.Map TypeRep Unsafe.Any
   , namedEntityTyped :: NamedEntityTyped
   , namedEntityKeyed :: NamedEntityKeyed
+  , defaultContext :: Maybe c
+  , currentContext :: Maybe c
+  , xActionState :: xstate
 --  , sessionState :: M.Map SessionKey NamedEntityTyped
   }
 
-instance Show (ApiState s apps) where
+instance Show (ApiState s c xstate apps) where
   show (ApiState {apiState, namedEntityTyped, namedEntityKeyed}) =
     "ApiState: " ++ show (M.keys apiState) ++ ", Entites (Typed): " ++ show namedEntityTyped ++ ", Entites (Keyed): "++ show namedEntityKeyed
 
-instance Eq (ApiState s apps) where
+instance Eq (ApiState s c xstate apps) where
   ApiState {namedEntityTyped = net1, namedEntityKeyed = nek1} ==
     ApiState {namedEntityTyped = net2, namedEntityKeyed = nek2} = net1 == net2 && nek1 == nek2
 
-modifyApiState :: forall app apps stTag s. (Typeable app, AppIsElem app apps) => DSum (stTag apps app) Proxy -> (DSum (stTag apps app) Identity -> DSum (stTag apps app) Identity) -> ApiState s apps -> ApiState s apps
-modifyApiState ctor@(tag :=> _) f (ApiState {apiState = stMap, namedEntityTyped, namedEntityKeyed}) = case M.lookup (typeRep (getAppProxy' ctor)) stMap of
+modifyApiState :: forall app apps stTag c xstate s. (Typeable app, AppIsElem app apps) => DSum (stTag apps app) Proxy -> (DSum (stTag apps app) Identity -> DSum (stTag apps app) Identity) -> ApiState s c xstate apps -> ApiState s c xstate apps
+modifyApiState ctor@(tag :=> _) f (ApiState {apiState = stMap, ..}) = case M.lookup (typeRep (getAppProxy' ctor)) stMap of
   Nothing -> undefined
   Just anyv -> case f (tag :=> (Identity $ castToTagVal tag anyv)) of
     _ :=> (Identity newval) -> ApiState
       { apiState = M.insert (typeRep (getAppProxy' ctor)) (Unsafe.unsafeCoerce newval :: Unsafe.Any) stMap
-      , namedEntityTyped
-      , namedEntityKeyed
+      , ..
       }
   where
     castToTagVal :: forall tag x.tag x -> Unsafe.Any -> x
@@ -436,32 +480,43 @@ modifyApiState ctor@(tag :=> _) f (ApiState {apiState = stMap, namedEntityTyped,
 class HasApiState (apps1 :: [Type]) stTag (apps :: [Type]) where
   apiStateUniv :: Proxy apps1 -> (forall app. Typeable app => DSum (stTag apps app) Proxy -> r) -> [r]
 
-initApiState :: forall apps stTag s. HasApiState apps stTag apps => (forall app. Typeable app => DSum (stTag apps app) Proxy -> DSum (stTag apps app) Identity) -> ApiState s apps
-initApiState f = ApiState { apiState = M.fromList $ apiStateUniv (Proxy @apps) $ \ctor -> case f ctor of
-                              _ :=> (Identity v) -> (typeRep (getAppProxy' ctor), Unsafe.unsafeCoerce v :: Unsafe.Any)
-                          , namedEntityTyped = mempty
-                          , namedEntityKeyed = mempty
-                          }
+initApiState :: forall c xstate apps stTag s. HasApiState apps stTag apps =>
+  (forall app. Typeable app => DSum (stTag apps app) Proxy -> DSum (stTag apps app) Identity)
+  -> xstate
+  -> ApiState s c xstate apps
+initApiState f xstate = ApiState
+  { apiState = M.fromList $ apiStateUniv (Proxy @apps) $ \ctor -> case f ctor of
+      _ :=> (Identity v) -> (typeRep (getAppProxy' ctor), Unsafe.unsafeCoerce v :: Unsafe.Any)
+  , namedEntityTyped = mempty
+  , namedEntityKeyed = mempty
+  , defaultContext = Nothing
+  , currentContext = Nothing
+  , xActionState = xstate
+  }
 
+initApiState_ :: forall c apps stTag s. HasApiState apps stTag apps =>
+  (forall app. Typeable app => DSum (stTag apps app) Proxy -> DSum (stTag apps app) Identity)
+  -> ApiState s c NoXState apps
+initApiState_ f = initApiState f NoXState
 
 getAppProxy' :: forall stTag apps app f. Typeable app => DSum (stTag apps app) f -> Proxy app
 getAppProxy' _ = Proxy
 
 
-instance HasVariables (ApiState s apps) where
+instance HasVariables (ApiState s c xstate apps) where
   getAllVariables = mempty
 
-data SuccessApiModel s apps meth r a = SuccessApiModel
-  { apiNextState :: Maybe (Var a -> ApiState s apps -> ApiState s apps)
-  , apiFailureNextState :: Maybe (ApiState s apps -> ApiState s apps)
-  , apiPrecondition :: Maybe (ApiState s apps -> Bool)
-  , apiValidFailingAction :: Maybe (ApiState s apps -> Bool)
-  , apiShrinkAction :: Maybe (VarContext -> ApiState s apps -> [Any (Action (ApiState s apps))])
-  , apiPostcondition :: (ApiState s apps, ApiState s apps) -> LookUp -> a -> Bool
-  , apiPostconditionOnFailure :: (ApiState s apps, ApiState s apps) -> LookUp -> Either ErrorState a -> Bool
+data SuccessApiModel s c xstate apps meth r a = SuccessApiModel
+  { apiNextState :: Maybe (Var a -> ApiState s c xstate apps -> ApiState s c xstate apps)
+  , apiFailureNextState :: Maybe (ApiState s c xstate apps -> ApiState s c xstate apps)
+  , apiPrecondition :: Maybe (ApiState s c xstate apps -> Bool)
+  , apiValidFailingAction :: Maybe (ApiState s c xstate apps -> Bool)
+  , apiShrinkAction :: Maybe (VarContext -> ApiState s c xstate apps -> [Any (Action (ApiState s c xstate apps))])
+  , apiPostcondition :: (ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> a -> Bool
+  , apiPostconditionOnFailure :: (ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> Either ErrorState a -> Bool
   }
 
-defSuccessApiModel :: SuccessApiModel s apps meth r a
+defSuccessApiModel :: SuccessApiModel s c xstate apps meth r a
 defSuccessApiModel = SuccessApiModel
   { apiNextState = Nothing
   , apiFailureNextState = Nothing
@@ -472,36 +527,36 @@ defSuccessApiModel = SuccessApiModel
   , apiPostconditionOnFailure = \_ _ _ -> True
   }
 
-setNextState :: (Var a -> ApiState s apps -> ApiState s apps) -> SuccessApiModel s apps meth r a -> SuccessApiModel s apps meth r a
+setNextState :: (Var a -> ApiState s c xstate apps -> ApiState s c xstate apps) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setNextState f SuccessApiModel {..} = SuccessApiModel {apiNextState = Just f, ..}
 
-setFailureNextState :: (ApiState s apps -> ApiState s apps) -> SuccessApiModel s apps meth r a -> SuccessApiModel s apps meth r a
+setFailureNextState :: (ApiState s c xstate apps -> ApiState s c xstate apps) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setFailureNextState f SuccessApiModel {..} = SuccessApiModel {apiFailureNextState = Just f, ..}
 
-setPrecondition :: (ApiState s apps -> Bool) -> SuccessApiModel s apps meth r a -> SuccessApiModel s apps meth r a
+setPrecondition :: (ApiState s c xstate apps -> Bool) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setPrecondition f SuccessApiModel {..} = SuccessApiModel {apiPrecondition = Just f, ..}
 
-setValidFailingAction :: (ApiState s apps -> Bool) -> SuccessApiModel s apps meth r a -> SuccessApiModel s apps meth r a
+setValidFailingAction :: (ApiState s c xstate apps -> Bool) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setValidFailingAction f SuccessApiModel {..} = SuccessApiModel {apiValidFailingAction = Just f, ..}
 
-setShrinkAction :: (VarContext -> ApiState s apps -> [Any (Action (ApiState s apps))]) -> SuccessApiModel s apps meth r a -> SuccessApiModel s apps meth r a
+setShrinkAction :: (VarContext -> ApiState s c xstate apps -> [Any (Action (ApiState s c xstate apps))]) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setShrinkAction f SuccessApiModel {..} = SuccessApiModel {apiShrinkAction = Just f, ..}
 
-setPostcondition :: ((ApiState s apps, ApiState s apps) -> LookUp -> a -> Bool) -> SuccessApiModel s apps meth r a -> SuccessApiModel s apps meth r a
+setPostcondition :: ((ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> a -> Bool) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setPostcondition f SuccessApiModel {..} = SuccessApiModel {apiPostcondition = f, ..}
 
-setPostconditionOnFailure :: ((ApiState s apps, ApiState s apps) -> LookUp -> Either ErrorState a -> Bool) -> SuccessApiModel s apps meth r a -> SuccessApiModel s apps meth r a
+setPostconditionOnFailure :: ((ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> Either ErrorState a -> Bool) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setPostconditionOnFailure f SuccessApiModel {..} = SuccessApiModel {apiPostconditionOnFailure = f, ..}
 
-data FailureApiModel s apps meth r a = FailureApiModel
-  { apiFailureNextState :: Maybe (ApiState s apps -> ApiState s apps)
-  , apiFailurePrecondition :: Maybe (ApiState s apps -> Bool)
-  , apiValidFailingAction :: Maybe (ApiState s apps -> Bool)
-  , apiFailureShrinkAction :: Maybe (VarContext -> ApiState s apps -> [Any (Action (ApiState s apps))])
-  , apiPostconditionOnFailure :: (ApiState s apps, ApiState s apps) -> LookUp -> Either ErrorState a -> Bool
+data FailureApiModel s c xstate apps meth r a = FailureApiModel
+  { apiFailureNextState :: Maybe (ApiState s c xstate apps -> ApiState s c xstate apps)
+  , apiFailurePrecondition :: Maybe (ApiState s c xstate apps -> Bool)
+  , apiValidFailingAction :: Maybe (ApiState s c xstate apps -> Bool)
+  , apiFailureShrinkAction :: Maybe (VarContext -> ApiState s c xstate apps -> [Any (Action (ApiState s c xstate apps))])
+  , apiPostconditionOnFailure :: (ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> Either ErrorState a -> Bool
   }
 
-defFailureApiModel :: FailureApiModel s apps meth r a
+defFailureApiModel :: FailureApiModel s c xstate apps meth r a
 defFailureApiModel = FailureApiModel
   { apiFailureNextState = Nothing
   , apiFailurePrecondition = Nothing
@@ -510,24 +565,32 @@ defFailureApiModel = FailureApiModel
   , apiPostconditionOnFailure = \_ _ _ -> True
   }
 
-mkWebApiAction :: WebApiAction s apps a -> Action (ApiState s apps) a
+mkWebApiAction :: WebApiAction s c xstate apps a -> Action (ApiState s c xstate apps) a
 mkWebApiAction = coerce
 
 -- newtype ApiInitState apps = ApiInitState (M.Map TypeRep Unsafe.Any)
 
-data WebApiGlobalStateModel apps = WebApiGlobalStateModel
-  { appAribitaryAction :: forall (s :: Type). VarContext -> ApiState s apps -> Any (Action (ApiState s apps))
-  , appInitState :: forall (s :: Type). ApiState s apps
+data WebApiGlobalStateModel c xstate apps = WebApiGlobalStateModel
+  { appAribitaryAction :: forall (s :: Type). VarContext -> ApiState s c xstate apps -> Any (Action (ApiState s c xstate apps))
+  , appInitState :: forall (s :: Type). ApiState s c xstate apps
   }
 
-instance (Reifies s (WebApiGlobalStateModel apps)) => StateModel (ApiState s apps) where
-  newtype Action (ApiState s apps) a = MkWebApiAction (WebApiAction s apps a)
-    deriving newtype (Show, Eq, HasVariables)
+deriving newtype instance Eq (Action xstate a) => Eq (Action (ApiState s c xstate apps) a)
+
+instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
+         , StateModel xstate
+         , forall a. HasVariables (Action xstate a)
+         ) => StateModel (ApiState s c xstate apps) where
+  newtype Action (ApiState s c xstate apps) a = MkWebApiAction (WebApiAction s c xstate apps a)
+    deriving newtype (Show, HasVariables)
 
   actionName = \case
     MkWebApiAction (SuccessCall creq _ _ _) -> getOpIdFromRequest creq
     MkWebApiAction (ErrorCall creq) -> getOpIdFromRequest creq
     MkWebApiAction (SomeExceptionCall creq) -> getOpIdFromRequest creq
+    MkWebApiAction a@(SetContext {}) -> show a
+    MkWebApiAction a@(ClearContext {}) -> show a
+    MkWebApiAction (XAction xact) -> actionName xact
 
   arbitraryAction varCxt s = case reflect (Proxy @s) of
     WebApiGlobalStateModel {appAribitaryAction} -> pure $ appAribitaryAction @s varCxt s
@@ -536,33 +599,48 @@ instance (Reifies s (WebApiGlobalStateModel apps)) => StateModel (ApiState s app
     let WebApiGlobalStateModel {appInitState} = reflect (Proxy @s)
     in appInitState
 
-  nextState s (MkWebApiAction act) var = case act of
+  nextState s@ApiState{xActionState, ..} (MkWebApiAction act) var = case act of
     SuccessCall _creq SuccessApiModel {apiNextState=nsMay} _ _ -> maybe s (\ns -> ns var s) nsMay
     ErrorCall {} -> error "TODO:"
     SomeExceptionCall {} -> error "TODO:"
+    SetContext {} -> s
+    ClearContext {} -> s
+    XAction xact -> ApiState {xActionState = nextState xActionState xact var, ..}
 
-  failureNextState s (MkWebApiAction act) = case act of
+  failureNextState s@ApiState{xActionState, ..} (MkWebApiAction act) = case act of
     SuccessCall _creq SuccessApiModel {apiFailureNextState=nsMay} _ _ -> maybe s (\ns -> ns s) nsMay
     ErrorCall {} -> error "TODO:"
     SomeExceptionCall {} -> error "TODO:"
+    SetContext {} -> s
+    ClearContext {} -> s
+    XAction xact -> ApiState {xActionState = failureNextState xActionState xact, ..}
 
-  precondition s (MkWebApiAction act) = case act of
+  precondition s@ApiState{xActionState} (MkWebApiAction act) = case act of
     SuccessCall _creq SuccessApiModel {apiPrecondition=pcMay} _ _ -> maybe True (\pc -> pc s) pcMay
     ErrorCall {} -> error "TODO:"
     SomeExceptionCall {} -> error "TODO:"
+    SetContext {} -> True
+    ClearContext {} -> True
+    XAction xact -> precondition xActionState xact
 
-  validFailingAction s (MkWebApiAction act) = case act of
+  validFailingAction s@ApiState{xActionState} (MkWebApiAction act) = case act of
     SuccessCall _creq SuccessApiModel {apiValidFailingAction=vfaMay} _ _ -> maybe False (\vfa -> vfa s) vfaMay
     ErrorCall {} -> error "TODO:"
     SomeExceptionCall {} -> error "TODO:"
+    SetContext {} -> False
+    ClearContext {} -> False
+    XAction xact -> validFailingAction xActionState xact
 
-  shrinkAction varCxt s (MkWebApiAction act) = case act of
+  shrinkAction varCxt s@ApiState{xActionState} (MkWebApiAction act) = case act of
     SuccessCall _creq SuccessApiModel {apiShrinkAction=saMay} _ _ -> maybe [] (\sa -> sa varCxt s) saMay
     ErrorCall {} -> error "TODO:"
     SomeExceptionCall {} -> error "TODO:"
+    SetContext {} -> []
+    ClearContext {} -> []
+    XAction xact -> fmap (\(Some xact') -> Some $ MkWebApiAction $ XAction xact') $ shrinkAction varCxt xActionState xact
 
 
--- instance Functor (Action (ApiState s apps)) where
+-- instance Functor (Action (ApiState s c xstate apps)) where
 --   fmap f = \case
 --     MkWebApiAction (SuccessCall creq apiModel cookMod resF) -> MkWebApiAction (SuccessCall creq apiModel cookMod (f . resF))
 --     _ -> error "TODO:"
@@ -586,8 +664,18 @@ data ErrorState =
   }
   | InputNotSetError -- TODO: Add missing field details
   | ResultError ResultError
+  | XActionError AnyXActionError
   deriving (Show)
 
+newtype XActionError (e :: Type) = MkXActionError e
+  deriving newtype (Show, Eq)
+
+data AnyXActionError where
+  AnyXActionError :: (Typeable e, Show e) => XActionError e -> AnyXActionError
+
+instance Show AnyXActionError where
+  show (AnyXActionError a) = show a  
+  
 data ResultError = MkResultError
   { err :: T.Text
   } deriving (Show)
@@ -598,11 +686,26 @@ data ModifyClientCookies app
   | DeleteClientCookies [ByteString]
 --  deriving (Show)
 
+data WebApiSessionsCxt = WebApiSessionsCxt
+  { -- defaultClientsState :: ClientsState
+  }
 
-instance (Reifies s (WebApiGlobalStateModel apps)) => RunModel (ApiState s apps) (WebApiSessions apps) where
-  type Error (ApiState s apps) (WebApiSessions apps) = ErrorState
-  perform _ act lkp = case act of
-    MkWebApiAction (SuccessCall creq' _model cookModMay f) -> do
+initWebApiSessionsCxt :: WebApiSessionsCxt
+initWebApiSessionsCxt = WebApiSessionsCxt
+  {
+  }
+
+instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
+         , RunModel xstate IO
+         , Typeable e
+         , Show e
+         , XActionError e ~ Error xstate IO
+         , RunModel xstate IO
+         , StateModel xstate
+         ) => RunModel (ApiState s c xstate apps) (ReaderT WebApiSessionsCxt (WebApiSessions apps)) where
+  type Error (ApiState s c xstate apps) (ReaderT WebApiSessionsCxt (WebApiSessions apps)) = ErrorState
+  perform (ApiState {xActionState}) act lkp = case act of
+    MkWebApiAction (SuccessCall creq' _model cookModMay f) -> ReaderT $ \_ -> do
       case resolveRequest lkp creq' of
         Just creq -> testClients creq >>= \case
           Success code out headerOut cookieOut -> do
@@ -624,7 +727,7 @@ instance (Reifies s (WebApiGlobalStateModel apps)) => RunModel (ApiState s apps)
                                                      , headerOut = maybe [] toHeader hd
                                                      }
         Nothing -> pure $ Left InputNotSetError
-    MkWebApiAction (ErrorCall creq) -> do
+    MkWebApiAction (ErrorCall creq) -> ReaderT $ \_ -> do
       testClients creq >>= \case
         Failure (Left (ApiError _ err _ _)) -> pure $ Right err
         Failure (Right oerr) -> pure $ Left UnExpectedApiCrash
@@ -636,7 +739,7 @@ instance (Reifies s (WebApiGlobalStateModel apps)) => RunModel (ApiState s apps)
                                                 { status = code
                                                 , headerOut = toHeader headerOut
                                                 }
-    MkWebApiAction (SomeExceptionCall creq) -> do
+    MkWebApiAction (SomeExceptionCall creq) -> ReaderT $ \_ -> do
       testClients creq >>= \case
         Failure (Right (OtherError e)) -> pure $ Right e
         Failure (Left (ApiError code _err hd _)) -> pure $ Left UnExpectedApiError
@@ -647,6 +750,11 @@ instance (Reifies s (WebApiGlobalStateModel apps)) => RunModel (ApiState s apps)
                                                 { status = code
                                                 , headerOut = toHeader headerOut
                                                 }
+    MkWebApiAction (SetContext c) -> Right <$> (liftIO $ setContext c)
+    MkWebApiAction (ClearContext pc) -> Right <$> (liftIO $ clearContext pc)
+    MkWebApiAction (XAction xact) -> ReaderT $ \_ -> do
+      res <- liftIO $ perform xActionState xact lkp
+      pure $ first (XActionError . AnyXActionError) res
 
   postcondition _ _act _lkp _a = pure True
   postconditionOnFailure _ _act _lkp _a = pure True
@@ -659,31 +767,101 @@ instance (Reifies s (WebApiGlobalStateModel apps)) => RunModel (ApiState s apps)
     QC.counterexample (show err ++ " <- " ++ actionName act ++ "\n  -- State: " ++ show s')
       . QC.tabulate "Registry size" ["Val1", "Val2"]
 
-instance (Reifies s (WebApiGlobalStateModel apps)) => DynLogicModel (ApiState s apps) where
+instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
+         , DynLogicModel xstate
+         ) => DynLogicModel (ApiState s c xstate apps) where
   restricted _ = False
 
-successCall :: forall meth r app apps s. WebApiActionCxt apps meth app r =>
+successCall :: forall meth r app c xstate apps s. WebApiActionCxt apps meth app r =>
   ClientRequestVal meth (app :// r)
-  -> Action (ApiState s apps) (ApiOut meth (app :// r))
+  -> Action (ApiState s c xstate apps) (ApiOut meth (app :// r))
 successCall creq = mkWebApiAction $ SuccessCall creq defSuccessApiModel Nothing (Right . getSuccessOut)
 
-successCallWith :: forall meth r app res apps s. (Typeable res, WebApiActionCxt apps meth app r) =>
+successCallWith :: forall meth r app res c xstate apps s. (Typeable res, WebApiActionCxt apps meth app r) =>
   ClientRequestVal meth (app :// r)
-  -> SuccessApiModel s apps meth (app :// r) res
+  -> SuccessApiModel s c xstate apps meth (app :// r) res
   -> Maybe (ApiSuccess meth (app :// r) -> ModifyClientCookies app)
   -> (ApiSuccess meth (app :// r) -> Either ResultError res)
-  -> Action (ApiState s apps) res
+  -> Action (ApiState s c xstate apps) res
 successCallWith creq apiModel cookModMay f = mkWebApiAction (SuccessCall creq apiModel cookModMay f)
 
-newtype ApiAction apps a = ApiAction (forall s. ApiState s apps -> Action (ApiState s apps) a)
 
-mkApiAction :: (forall s. ApiState s apps -> Action (ApiState s apps) a) -> ApiAction apps a
-mkApiAction act = ApiAction act
+-- newtype ApiGen apps a = ApiGen (ReaderT
+data ActionConfig s c xstate apps meth route a = ActionConfig
+  { requestMod :: ClientRequestVal meth route -> ClientRequestVal meth route
+  , apiModel :: Maybe (SuccessApiModel s c xstate apps meth route a)
+  }
+
+defaultActionConfig :: ActionConfig s c xstate apps meth route a
+defaultActionConfig = ActionConfig
+  { requestMod = id
+  , apiModel = Nothing
+  }
+
+data ActionConfigWith outcome s c xstate apps meth route a = ActionConfigWith
+  { requestMod :: ClientRequestVal meth route -> ClientRequestVal meth route
+  , apiModel :: Maybe (SuccessApiModel s c xstate apps meth route a)
+  , resultMod :: outcome meth route -> Either ResultError a
+  }  
+
+-- data ApiActionEnv c s apps = ApiActionEnv
+--   { actionState :: ApiState s c xstate apps
+--   , currentCxt :: Maybe c
+--   }
+  
+-- newtype ApiAction apps a = ApiAction (forall s. Action (ApiState s c xstate apps) a)
+
+-- newtype ApiActionM (c :: Type) apps m a = ApiActionM (forall s. ReaderT (ApiActionEnv c s apps) m a)
+
+-- instance Functor m => Functor (ApiActionM c xstate apps m) where
+--   fmap f (ApiActionM m) = ApiActionM (fmap f m)
+
+-- instance Applicative m => Applicative (ApiActionM c xstate apps m) where
+--   pure a = ApiActionM (pure a)
+--   (ApiActionM f) <*> (ApiActionM a) = ApiActionM (f <*> a)
+
+-- instance Monad m => Monad (ApiActionM c xstate apps m) where
+--   (ApiActionM m) >>= f = ApiActionM (m >>= ((\(ApiActionM im) -> im) . f))
+
+-- mkApiAction :: forall c m a apps. Applicative m => (forall s. Action (ApiState s c xstate apps) a) -> ApiActionM c xstate apps m (ApiAction apps a)
+-- mkApiAction act = ApiActionM (pure $ ApiAction act)
+
+-- mkApiAction1 :: forall c m a apps. Applicative m => (forall s. ActionConfig s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a)) -> ApiActionM c xstate apps m (ApiAction apps a)
+-- mkApiAction1 act = ApiActionM (pure $ ApiAction act)
+
+-- genApiActionM :: forall c a apps s. ApiActionEnv c s apps -> ApiActionM c xstate apps QC.Gen a -> QC.Gen a
+-- genApiActionM env (ApiActionM actM) = runReaderT actM env
+
+-- dlApiActionM :: forall c a apps s. ApiActionEnv c s apps -> forall s1. ApiActionM c xstate apps (DL (ApiState s c xstate1 apps)) a -> DL (ApiState s c xstate1 apps) a
+-- dlApiActionM env (ApiActionM actM) = runReaderT actM env
+
+-- liftApiDL :: DL s a -> ApiActionM c xstate apps (DL s) a
+-- liftApiDL dl = ApiActionM $ ReaderT $ \_ -> dl
+
+-- liftApiGen :: QC.Gen a -> ApiActionM c xstate apps QC.Gen a
+-- liftApiGen dl = ApiActionM $ ReaderT $ \_ -> dl
+
+-- setContext1 :: forall c m apps. (ContextSwitch c, Applicative m) => c -> ApiActionM c xstate apps m (ApiAction apps ())
+-- setContext1 c = mkApiAction $ mkWebApiAction $ SetContext $ hashed c
+
+-- clearContext1 :: forall c m apps. (ContextSwitch c, Applicative m) => ApiActionM c xstate apps m (ApiAction apps ())
+-- clearContext1 = mkApiAction $ mkWebApiAction $ ClearContext (Proxy @c)
+
+-- inGlobalRange :: Word -> Word -> RefinementId -> ApiAction apps a -> (Word, QC.Gen (Action (ApiState s c xstate apps) a))
+-- inGlobalRange = undefined
+
+-- inGlobalRange_ :: Typeable a => Word -> Word -> RefinementId -> ApiAction apps a -> (Word, QC.Gen (Any (Action (ApiState s c xstate apps))))
+-- inGlobalRange_ l u rid act = (fmap . fmap) Some $ inGlobalRange l u rid act
+
+
+
+-- mkApiAction :: forall c m a apps. Applicative m => (forall s. Action (ApiState s c xstate apps) a) -> ApiAction c xstate apps m a
+-- mkApiAction act = ApiAction act
   
 -- data ShowDict a where
 --   ShowDict :: Show a => ShowDict a
 
--- showDictAction :: forall apps a. Action (ApiState s apps) a -> ShowDict a
+-- showDictAction :: forall apps a. Action (ApiState s c xstate apps) a -> ShowDict a
 -- showDictAction = \case
 --   MkWebApiAction (SuccessCall {}) -> ShowDict
 
@@ -715,6 +893,8 @@ data NER pred desc = NER
 }
 
 -}
+
+-- refine :: Val t -> NamedVal t
 
 data NamedVal t where
   NamedVal :: (Show t, Eq t) => {name :: RefinementId, val :: Val t} -> NamedVal t
@@ -756,14 +936,14 @@ instance Eq (NamedVal t) where
         _ -> False
     | otherwise = False
 
-addTypedEntity :: forall t apps s.
+addTypedEntity :: forall t c xstate apps s.
   ( Typeable t
   , Show t
   , Eq t
   ) => Val t
   -> NER (Val t -> Bool) Text
-  -> ApiState s apps
-  -> ApiState s apps
+  -> ApiState s c xstate apps
+  -> ApiState s c xstate apps
 addTypedEntity val NER {}{-refinementId, entityName, refinement-} ApiState {namedEntityTyped, ..} =
   let
     ty = typeRep (Proxy @t)
@@ -797,4 +977,30 @@ type family GetOpIdName (oid :: OpId) :: Symbol where
   GetOpIdName ('OpId _ n) = n
   GetOpIdName ('UndefinedOpId m r) = TypeError ('Text "OperationId is not set for " ':<>: 'ShowType m ':<>: 'Text " " ':<>: 'ShowType r)
 
--- instance ArgDict Show Identity where
+data NoXState = NoXState
+  deriving (Show, Eq)
+
+instance HasVariables NoXState where
+  getAllVariables _ = mempty
+
+instance Show (Action NoXState a) where
+  show NoAction = "NoAction"
+
+instance Eq (Action NoXState a) where
+  _ == _ = False
+
+instance HasVariables (Action NoXState a) where
+  getAllVariables _ = mempty  
+  
+instance StateModel NoXState where
+  data Action NoXState a where
+    NoAction :: Action NoXState ()
+  initialState = NoXState
+  arbitraryAction _ _ = pure (Some NoAction)
+
+instance RunModel NoXState IO where
+  type Error NoXState IO = XActionError ()
+  perform _ NoAction _ = pure $ Right ()
+
+instance DynLogicModel NoXState where
+  
