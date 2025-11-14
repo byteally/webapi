@@ -24,7 +24,7 @@ import Test.QuickCheck.Monadic qualified as QC
 import Data.Reflection
 import Data.IORef
 import qualified Record
-import Control.Monad.IO.Class
+-- import Control.Monad.IO.Class
 import Control.Monad.Reader
 
 propDL :: forall c xstate apps e s.
@@ -48,15 +48,15 @@ prop_api :: forall c xstate apps e s.
   -> (forall a. WebApiSessions apps a -> IO a)
   -> Actions (ApiState s c xstate apps)
   -> Property
-prop_api newStRef webapiRunner s =
+prop_api _newStRef webapiRunner s =
   -- let
   --   runner = 
   monadic (ioProperty . webapiRunner . flip runReaderT initWebApiSessionsCxt) $ do
     monitor $ counterexample "\nExecution\n"
-    (anonSt, env) <- runActions s
-    let 
-      newApiState = resolveNamedEntities env $ underlyingState anonSt
-    liftIO $ writeIORef newStRef (Just newApiState)
+    (_anonSt, _env) <- runActions s
+    -- let 
+    --   newApiState = resolveNamedEntities env $ underlyingState anonSt
+    -- liftIO $ writeIORef newStRef (Just newApiState)
     QC.assert True
 
 -- runWebApiTest :: forall r apps. WebApiGlobalStateModel apps -> (forall (s :: Type). Reifies s (WebApiGlobalStateModel apps) => Proxy s -> r) -> r

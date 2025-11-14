@@ -13,6 +13,7 @@ module Test.WebApi.StateModel
   , SuccessApiModel
   , FailureApiModel
   , HasApiState (..)
+  , HasApiStateM (..)
   , DSum (..)
   , Val (..)
   , ClientRequestVal (..)
@@ -22,11 +23,14 @@ module Test.WebApi.StateModel
   , WebApiSessionsCxt
   , NoXState
   , ContextSwitch (..)
-  -- , ApiAction (..)
-  -- , ApiActionEnv (..)
-  -- , ApiActionM
+  , ApiAction (..)
+  , ApiActionWith (..)
   , ActionConfig (..)
   , ActionConfigWith (..)
+  , ApiGenM
+  , AnyVal (..)
+  , GetOpIdName
+  , runApiGenM
   , RefinementId
   , initWebApiSessionsCxt
   , successCall
@@ -51,6 +55,8 @@ module Test.WebApi.StateModel
   , initApiState
   , initApiState_
   , modifyApiState
+  , apiAction
+  , apiAction_
   , apiGenAction
   , addTypedEntity
   , inClass
@@ -63,6 +69,8 @@ module Test.WebApi.StateModel
   , resolveNamedEntities
   , startSession
   , endSession
+  , setContextDL
+  , clearContextDL
   -- , genApiActionM
   -- , dlApiActionM
   -- , setContext1
@@ -75,7 +83,7 @@ module Test.WebApi.StateModel
 
 import Test.WebApi
 import Test.QuickCheck.StateModel
-import Test.QuickCheck.DynamicLogic (DynLogicModel (..){-, DL-})
+import Test.QuickCheck.DynamicLogic (DynLogicModel (..), DL, getModelStateDL, action)
 -- import Test.QuickCheck.StateModel.Variables (Any (..))
 import qualified Test.QuickCheck as QC
 import WebApi.Contract
@@ -253,13 +261,17 @@ data WebApiAction s (c :: Type) (xstate :: Type) (apps :: [Type]) (a :: Type) wh
   SomeExceptionCall :: WebApiActionCxt apps meth app r
     => ClientRequest meth (app :// r)
     -> WebApiAction s c xstate apps (SomeException)
-  SetContext :: (ContextSwitch c) => Hashed c -> WebApiAction s c xstate apps ()
+  SetContext :: (ContextSwitch c) => c -> WebApiAction s c xstate apps ()
   ClearContext :: (ContextSwitch c) => Proxy c -> WebApiAction s c xstate apps ()
   XAction :: Action xstate a -> WebApiAction s c xstate apps a
 
 class (Hashable c, Show c, Eq c, Typeable c) => ContextSwitch c where
   setContext :: Hashed c -> IO ()
   clearContext :: Proxy c -> IO ()
+
+instance ContextSwitch () where
+  setContext _ = pure ()
+  clearContext _ = pure ()
   
 instance StateModel xstate => Show (WebApiAction s c xstate apps a) where
   show = \case
@@ -304,7 +316,7 @@ newtype RefinementId = RefinementId Text
   deriving newtype (Show, Eq, Ord, Read)
 
 data AnyVal where
-  SomeVal :: Val x -> AnyVal
+  SomeVal :: Typeable x => Val x -> AnyVal
 
 -- inClassAny :: ApiState s c xstate apps -> RefinementId -> AnyVal -> Bool
 -- inClassAny ApiState { namedEntityTyped = NamedEntityTyped NamedEntity
@@ -750,7 +762,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
                                                 { status = code
                                                 , headerOut = toHeader headerOut
                                                 }
-    MkWebApiAction (SetContext c) -> Right <$> (liftIO $ setContext c)
+    MkWebApiAction (SetContext c) -> Right <$> (liftIO $ setContext $ hashed c)
     MkWebApiAction (ClearContext pc) -> Right <$> (liftIO $ clearContext pc)
     MkWebApiAction (XAction xact) -> ReaderT $ \_ -> do
       res <- liftIO $ perform xActionState xact lkp
@@ -789,82 +801,65 @@ successCallWith creq apiModel cookModMay f = mkWebApiAction (SuccessCall creq ap
 -- newtype ApiGen apps a = ApiGen (ReaderT
 data ActionConfig s c xstate apps meth route a = ActionConfig
   { requestMod :: ClientRequestVal meth route -> ClientRequestVal meth route
-  , apiModel :: Maybe (SuccessApiModel s c xstate apps meth route a)
+  , modelMod :: SuccessApiModel s c xstate apps meth route a -> SuccessApiModel s c xstate apps meth route a
   }
 
 defaultActionConfig :: ActionConfig s c xstate apps meth route a
 defaultActionConfig = ActionConfig
   { requestMod = id
-  , apiModel = Nothing
+  , modelMod = id
   }
 
 data ActionConfigWith outcome s c xstate apps meth route a = ActionConfigWith
   { requestMod :: ClientRequestVal meth route -> ClientRequestVal meth route
   , apiModel :: Maybe (SuccessApiModel s c xstate apps meth route a)
   , resultMod :: outcome meth route -> Either ResultError a
-  }  
+  }
 
--- data ApiActionEnv c s apps = ApiActionEnv
---   { actionState :: ApiState s c xstate apps
---   , currentCxt :: Maybe c
---   }
+newtype ApiAction c xstate apps meth route a = ApiAction (forall s m. (HasApiStateM m s c xstate apps) => ActionConfig s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a))
+
+newtype ApiActionWith out c xstate apps meth route a = ApiActionWith (forall s m. (HasApiStateM m s c xstate apps) => ActionConfigWith out s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a))
+
+class Monad m => HasApiStateM m s c xstate apps where
+  getApiStateM :: m (ApiState s c xstate apps)
+
+instance HasApiStateM (DL (ApiState s c xstate apps)) s c xstate apps where
+  getApiStateM = getModelStateDL
+
+instance HasApiStateM (ApiGenM s c xstate apps) s c xstate apps where
+  getApiStateM = ask  
+
+newtype ApiGenM s c xstate apps a = ApiGenM (ReaderT (ApiState s c xstate apps) QC.Gen a)
+  deriving newtype (Functor, Applicative, Monad, MonadReader (ApiState s c xstate apps))
+
+runApiGenM :: ApiGenM s c xstate apps a -> ApiState s c xstate apps -> QC.Gen a
+runApiGenM (ApiGenM m) st = runReaderT m st
+
+apiAction :: forall s a c xstate meth route apps.
+  ( Typeable a
+  , StateModel xstate
+  , Eq (Action xstate a)
+  ) => ActionConfig s c xstate apps meth route a
+  -> ApiAction c xstate apps meth route a
+  -> DL (ApiState s c xstate apps) (Val a)
+apiAction cfg (ApiAction actF) = do
+  res <- action =<< actF cfg
+  pure $ Var id res
+
+apiAction_ :: forall s a c xstate meth route apps.
+  ( Typeable a
+  , StateModel xstate
+  , Eq (Action xstate a)
+  ) => ApiAction c xstate apps meth route a
+  -> DL (ApiState s c xstate apps) (Val a)
+apiAction_ act = apiAction defaultActionConfig act
+
+setContextDL :: (StateModel xstate, Eq (Action xstate ()), ContextSwitch c) => c -> DL (ApiState s c xstate apps) ()
+setContextDL c = () <$ action (MkWebApiAction $ SetContext c)
+
+clearContextDL :: forall c xstate apps s. (StateModel xstate, Eq (Action xstate ()), ContextSwitch c) => DL (ApiState s c xstate apps) ()
+clearContextDL = () <$ action (MkWebApiAction $ ClearContext (Proxy @c))
   
--- newtype ApiAction apps a = ApiAction (forall s. Action (ApiState s c xstate apps) a)
-
--- newtype ApiActionM (c :: Type) apps m a = ApiActionM (forall s. ReaderT (ApiActionEnv c s apps) m a)
-
--- instance Functor m => Functor (ApiActionM c xstate apps m) where
---   fmap f (ApiActionM m) = ApiActionM (fmap f m)
-
--- instance Applicative m => Applicative (ApiActionM c xstate apps m) where
---   pure a = ApiActionM (pure a)
---   (ApiActionM f) <*> (ApiActionM a) = ApiActionM (f <*> a)
-
--- instance Monad m => Monad (ApiActionM c xstate apps m) where
---   (ApiActionM m) >>= f = ApiActionM (m >>= ((\(ApiActionM im) -> im) . f))
-
--- mkApiAction :: forall c m a apps. Applicative m => (forall s. Action (ApiState s c xstate apps) a) -> ApiActionM c xstate apps m (ApiAction apps a)
--- mkApiAction act = ApiActionM (pure $ ApiAction act)
-
--- mkApiAction1 :: forall c m a apps. Applicative m => (forall s. ActionConfig s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a)) -> ApiActionM c xstate apps m (ApiAction apps a)
--- mkApiAction1 act = ApiActionM (pure $ ApiAction act)
-
--- genApiActionM :: forall c a apps s. ApiActionEnv c s apps -> ApiActionM c xstate apps QC.Gen a -> QC.Gen a
--- genApiActionM env (ApiActionM actM) = runReaderT actM env
-
--- dlApiActionM :: forall c a apps s. ApiActionEnv c s apps -> forall s1. ApiActionM c xstate apps (DL (ApiState s c xstate1 apps)) a -> DL (ApiState s c xstate1 apps) a
--- dlApiActionM env (ApiActionM actM) = runReaderT actM env
-
--- liftApiDL :: DL s a -> ApiActionM c xstate apps (DL s) a
--- liftApiDL dl = ApiActionM $ ReaderT $ \_ -> dl
-
--- liftApiGen :: QC.Gen a -> ApiActionM c xstate apps QC.Gen a
--- liftApiGen dl = ApiActionM $ ReaderT $ \_ -> dl
-
--- setContext1 :: forall c m apps. (ContextSwitch c, Applicative m) => c -> ApiActionM c xstate apps m (ApiAction apps ())
--- setContext1 c = mkApiAction $ mkWebApiAction $ SetContext $ hashed c
-
--- clearContext1 :: forall c m apps. (ContextSwitch c, Applicative m) => ApiActionM c xstate apps m (ApiAction apps ())
--- clearContext1 = mkApiAction $ mkWebApiAction $ ClearContext (Proxy @c)
-
--- inGlobalRange :: Word -> Word -> RefinementId -> ApiAction apps a -> (Word, QC.Gen (Action (ApiState s c xstate apps) a))
--- inGlobalRange = undefined
-
--- inGlobalRange_ :: Typeable a => Word -> Word -> RefinementId -> ApiAction apps a -> (Word, QC.Gen (Any (Action (ApiState s c xstate apps))))
--- inGlobalRange_ l u rid act = (fmap . fmap) Some $ inGlobalRange l u rid act
-
-
-
--- mkApiAction :: forall c m a apps. Applicative m => (forall s. Action (ApiState s c xstate apps) a) -> ApiAction c xstate apps m a
--- mkApiAction act = ApiAction act
-  
--- data ShowDict a where
---   ShowDict :: Show a => ShowDict a
-
--- showDictAction :: forall apps a. Action (ApiState s c xstate apps) a -> ShowDict a
--- showDictAction = \case
---   MkWebApiAction (SuccessCall {}) -> ShowDict
-
 type EntityName = Text
 data NER pred desc = NER
   { refinementId :: RefinementId
@@ -878,6 +873,7 @@ data NER pred desc = NER
 { id = 123
 , name = "PartnerId"
 , desc = "Unique reference to the active Trading Partners"
+, super = [100]
 }
 
 { id = 124
