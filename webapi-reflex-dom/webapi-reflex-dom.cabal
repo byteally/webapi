@@ -12,7 +12,8 @@ version:            0.3.0.0
 -- bug-reports:
 
 -- The license under which the package is released.
--- license:
+license:            BSD-3-Clause
+license-file:       LICENSE
 author:             Magesh
 maintainer:         magesh85@gmail.com
 
