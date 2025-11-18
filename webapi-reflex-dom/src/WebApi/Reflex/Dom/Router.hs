@@ -89,11 +89,11 @@ data Dom m
 instance SingMethod m => SingMethod (Dom m) where
   singMethod _ = singMethod (Proxy :: Proxy m)
 
-class WebUIServer (s :: *) where
-  type UIInterface s :: *
+class WebUIServer (s :: Type) where
+  type UIInterface s :: Type
   type UIInterface s = s
 
-class UIHandler w (t :: *) s m r where
+class UIHandler w (t :: Type) s m r where
   handler :: s -> Dynamic t (Request m r) -> w (Response m r)
 
 newtype UIRequestRep =
@@ -104,7 +104,7 @@ compactUIServer :: forall api m server t. server t (RouteT t m) -> CompactUIServ
 compactUIServer = CompactUIServer
 
 mkUIRequestRep ::
-  forall route (m :: *) (r :: *).
+  forall route (m :: Type) (r :: Type).
   ( Typeable m
   , Typeable r
   ) => route m r -> UIRequestRep
@@ -122,10 +122,10 @@ data DomResponse =
 
 type ReflexDomApplication t m = (UIRequestRep -> Event t DomRequest) -> Dynamic t DomRequest -> DomRequest -> RouteResult (UIRequestRep, m (Event t DomResponse))
 
-class Monad w => Router (w :: * -> *) (t :: *) (server :: *) (r :: k) (pr :: (*, [*])) where
+class Monad w => Router (w :: Type -> Type) (t :: Type) (server :: Type) (r :: k) (pr :: (Type, [Type])) where
   route :: Proxy '(r, t) -> server -> ParsedRoute t pr -> (Dynamic t [ParamErr] -> w ()) -> ReflexDomApplication t w
 
-instance ( SingMethod (m :: *)
+instance ( SingMethod (m :: Type)
          , Router w t s r '(Dom m, '[])
          , MonadWidget t w
          ) => Router w t s (W.Route '[Dom m] r) pr where
@@ -139,7 +139,7 @@ instance
   ( Router w t s route pr
   , Router w t s routes pr
   , Reflex t
-  ) => Router w t s ((route :: *) ': routes) pr where
+  ) => Router w t s ((route :: Type) ': routes) pr where
   route _ _s parsedRoute page400 getDomReqUpdEv request req =
      (<>)
      (route (Proxy :: Proxy '(route, t)) _s parsedRoute page400 getDomReqUpdEv request req)
@@ -148,12 +148,12 @@ instance
 instance (Monad w, Reflex t) => Router w t s '[] pr where
   route _ _ _ _ _ _ _ = NotMatched
 
-instance (Monad w, Router w t s rest '(m, pp :++ '[Namespace ns])) => Router w t s ((ns :: *) :// (rest :: *)) '(m, pp) where
+instance (Monad w, Router w t s rest '(m, pp :++ '[Namespace ns])) => Router w t s ((ns :: Type) :// (rest :: Type)) '(m, pp) where
   route _ _s parsedRoute page400 getDomReqUpdEv request req =
     route (Proxy :: Proxy '(rest, t)) _s (snocParsedRoute parsedRoute $ NSPiece (Proxy :: Proxy ns)) page400 getDomReqUpdEv request req
 
 instance (Monad w, Router w t s (MarkDyn rest) '(m, (pp :++ '[DynamicPiece piece])), DecodeParam piece, Reflex t)
-                      => Router w t s ((piece :: *) :/ (rest :: *)) '(m, pp) where
+                      => Router w t s ((piece :: Type) :/ (rest :: Type)) '(m, pp) where
   route _ _s parsedRoute page400 getDomReqUpdEv reqDyn req = case pathInfo req of
     (lpth : rpths)  -> case (decodeParam (encodeUtf8 lpth) :: Maybe piece) of
       Just dynPiece -> route (Proxy :: Proxy '((MarkDyn rest), t)) _s (snocParsedRoute parsedRoute $ DPiece dynPiece) page400 getDomReqUpdEv reqDyn (req {pathInfo = rpths})
@@ -161,7 +161,7 @@ instance (Monad w, Router w t s (MarkDyn rest) '(m, (pp :++ '[DynamicPiece piece
     _ -> NotMatched
 
 instance (Reflex t, Monad w, Router w t s (MarkDyn rest) '(m, (pp :++ '[StaticPiece piece])), KnownSymbol piece)
-  => Router w t s ((piece :: Symbol) :/ (rest :: *)) '(m, pp) where
+  => Router w t s ((piece :: Symbol) :/ (rest :: Type)) '(m, pp) where
   route _ _s parsedRoute page400 getDomReqUpdEv reqDyn req = case pathInfo req of
     (lpth : rpths) | lpieceTxt == lpth -> route (Proxy :: Proxy '((MarkDyn rest), t)) _s (snocParsedRoute parsedRoute $ SPiece (Proxy :: Proxy piece)) page400 getDomReqUpdEv reqDyn (req {pathInfo = rpths})
     _ -> NotMatched
@@ -239,7 +239,7 @@ instance ( KnownSymbol rpiece
          , CookieIn m route ~ ()
          , HeaderIn m route ~ ()
          , RequestBody m route ~ '[]
-         ) => Router w t s ((lpiece :: *) :/ (rpiece :: Symbol)) '(m, pp) where
+         ) => Router w t s ((lpiece :: Type) :/ (rpiece :: Symbol)) '(m, pp) where
   route _ serv parsedRoute page400 getDomReqUpdEv reqDyn req = case pathInfo req of
     (lpth : rpth : [])
       | rpieceTxt == rpth -> case (decodeParam (encodeUtf8 lpth) :: Maybe lpiece) of
@@ -314,7 +314,7 @@ instance ( PathParam m (ns :// piece) ~ ()
          , CookieIn m route ~ ()
          , HeaderIn m route ~ ()
          , RequestBody m route ~ '[]
-         ) => Router w t s ((ns :: *) :// (piece :: Symbol)) '(m, pp) where
+         ) => Router w t s ((ns :: Type) :// (piece :: Symbol)) '(m, pp) where
   route _ serv _ page400 getDomReqUpdEv reqDyn req = case pathInfo req of
     (pth : []) | symTxt (Proxy :: Proxy piece) == pth -> Matched (mkUIRequestRep (undefined :: UIRequest m route), getResponse)
     [] | T.null $ symTxt (Proxy :: Proxy piece) -> NotMatched
@@ -471,7 +471,7 @@ toUIApplication r@UIRequest { uiPathParam, uiQueryParam } page404 app = withPath
     go0 =
         map (\(k, v) -> (T.encodeUtf8 k, pure $ T.encodeUtf8 v))
 
-uiApp :: forall (t :: *) server m app r meth ac mp.
+uiApp :: forall (t :: Type) server m app r meth ac mp.
   ( MonadWidget t m
   , MkPathFormatString (app :// r)
   , ToParam 'PathParam (PathParam meth (app :// r))
@@ -500,15 +500,15 @@ emptyParsedRoutes :: ParsedRoute t '(CUSTOM "", '[])
 emptyParsedRoutes = Nil Proxy
 
 
-data PieceType :: * -> * -> * where
+data PieceType :: Type -> Type -> Type where
   SPiece  :: Proxy (p :: Symbol) -> PieceType t (StaticPiece p)
-  NSPiece :: Proxy (ns :: *) -> PieceType t (Namespace ns)
+  NSPiece :: Proxy (ns :: Type) -> PieceType t (Namespace ns)
   DPiece  :: !val -> PieceType t (DynamicPiece val)
 
-data ParsedRoute :: * -> (*, [*]) -> * where
+data ParsedRoute :: Type -> (Type, [Type]) -> Type where
   Nil              :: Proxy method -> ParsedRoute t '(method, '[])
   ConsStaticPiece  :: Proxy (p :: Symbol) -> ParsedRoute t '(method, ps) -> ParsedRoute t '(method, ((StaticPiece p) ': ps))
-  ConsNSPiece      :: Proxy (ns :: *) -> ParsedRoute t '(method, ps) -> ParsedRoute t '(method, ((Namespace ns) ': ps))
+  ConsNSPiece      :: Proxy (ns :: Type) -> ParsedRoute t '(method, ps) -> ParsedRoute t '(method, ((Namespace ns) ': ps))
   ConsDynamicPiece :: !v -> ParsedRoute t '(method, ps) -> ParsedRoute t '(method, ((DynamicPiece v) ': ps))
 
 data RouteResult a =
@@ -520,10 +520,10 @@ instance Semigroup (RouteResult a) where
   NotMatched <> m = m
   Matched a <> _ = Matched a
 
-type family MarkDyn (pp :: *) :: * where
+type family MarkDyn (pp :: Type) :: Type where
   MarkDyn (p1 :/ t)  = (p1 :/ t)
   MarkDyn (p :// t)  = (p :// t)
-  MarkDyn (t :: *)   = DynamicPiece t
+  MarkDyn (t :: Type)   = DynamicPiece t
 
 snocParsedRoute :: ParsedRoute t '(method, ps) -> PieceType t pt -> ParsedRoute t '(method, ps :++ '[pt])
 snocParsedRoute nil@Nil{} (SPiece sym)   = sym `ConsStaticPiece` nil
@@ -569,17 +569,17 @@ getPathParamCtor proutes domreq = fromParsedRoute' (parseDynPiece (pathInfo domr
     parseDynPiece pths (ConsNSPiece _ ps)     = parseDynPiece pths ps
     parseDynPiece (p : pths) (ConsDynamicPiece _v ps) = unsafeDecodePar _v p :* parseDynPiece pths ps
 
-type family AllDecodeParam (dpcs :: [*]) :: Constraint where
+type family AllDecodeParam (dpcs :: [Type]) :: Constraint where
   AllDecodeParam '[] = ()
   AllDecodeParam (t ': ts) = (DecodeParam t, AllDecodeParam ts)
 
-data HList :: * -> [*] -> * where
+data HList :: Type -> [Type] -> Type where
   HNil :: HList t '[]
   (:*) :: !a -> HList t as -> HList t (a ': as)
 infixr 5 :*
 
 -- Compact server
-data CompactUIServer (api :: *) (server :: *) = CompactUIServer server
+data CompactUIServer (api :: Type) (server :: Type) = CompactUIServer server
 
 instance (WebApi api) => WebUIServer (CompactUIServer api s) where
   type UIInterface (CompactUIServer api s) = api
@@ -597,7 +597,7 @@ instance ( ApiContract api m r
       hdl :: handler
       hdl = getField @(GetOpIdName api (OperationId m r)) server
 
-class UnifyHandler (isEq :: Bool) (server :: *) (fn :: Symbol) handlerAct handlerExp where
+class UnifyHandler (isEq :: Bool) (server :: Type) (fn :: Symbol) handlerAct handlerExp where
   unifyHandler :: handlerAct -> handlerExp
 
 instance (handlerAct ~ handlerExp) => UnifyHandler 'True s fn handlerAct handlerExp where

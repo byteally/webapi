@@ -1,0 +1,91 @@
+cabal-version:      3.0
+name:               webapi-test
+version:            0.1.0.0
+-- synopsis:
+-- description:
+license:            BSD-3-Clause
+license-file:       LICENSE
+author:             Magesh B
+maintainer:         magesh85@gmail.com
+-- copyright:
+category:           Testing
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+-- extra-source-files:
+
+common warnings
+    ghc-options: -Wall -Werror
+    build-depends:    base >= 4.18.3.0
+                    , mtl
+                    , text
+                    , bytestring
+                    , wai
+                    , webapi-contract
+                    , webapi
+                    , containers
+                    , unordered-containers
+    default-extensions: TypeFamilies
+                        LambdaCase
+                        DataKinds
+                        PatternSynonyms
+                        DuplicateRecordFields
+                        NoFieldSelectors
+                        StandaloneDeriving
+                        GeneralizedNewtypeDeriving
+                        DeriveGeneric
+                        DerivingStrategies
+
+library
+    import:           warnings
+    exposed-modules:  Test.WebApi
+    -- other-modules:
+    build-depends:    wai-extra >= 3.1
+                    , http-types
+                    , http-media
+                    , cookie
+    hs-source-dirs:   src
+    default-language: GHC2021
+
+library qc-dynamic
+    import:           warnings
+    visibility:        public
+    exposed-modules:  Test.WebApi.StateModel
+                      Test.WebApi.DynamicLogic
+    -- other-modules:
+    build-depends:    webapi-test
+                    , wai-extra >= 3.1
+                    , cookie
+                    , http-types
+                    , http-media
+                    , QuickCheck >= 2.14
+                    , quickcheck-dynamic >= 4.0
+                    , dependent-map
+                    , dependent-sum
+                    , reflection >= 2.1
+                    , rec >= 0.2
+                    , hashable
+    hs-source-dirs:   quickcheck-dynamic
+    default-language: GHC2021
+
+library webapi-test-tasty
+    import:           warnings
+    visibility:       public
+    exposed-modules:  Test.WebApi.Tasty
+    -- other-modules:
+    build-depends:    webapi-test
+                    , webapi-test:qc-dynamic
+                    , wai-extra >= 3.1
+                    , cookie
+                    , http-types
+                    , http-media
+                    , QuickCheck >= 2.14
+                    , quickcheck-dynamic >= 4.0
+                    , tasty
+                    , tasty-quickcheck
+                    , dependent-map
+                    , dependent-sum
+                    , reflection >= 2.1
+                    , rec >= 0.2
+                    , hashable
+    hs-source-dirs:   tasty
+    default-language: GHC2021        

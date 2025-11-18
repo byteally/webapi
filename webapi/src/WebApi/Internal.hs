@@ -157,15 +157,23 @@ toWaiResponse wreq resp = case resp of
         handleHeaders' hds cookies = let ckHs = map (\(ck, cv) -> (hSetCookie , renderSC ck cv)) cookies
                                      in hds <> ckHs
         renderSC k v = toStrict . toLazyByteString . renderSetCookie $ def
-          { setCookieName = k
-          , setCookieValue = cookieValue v
-          , setCookiePath = cookiePath v
-          , setCookieExpires = cookieExpires v
-          , setCookieMaxAge  = cookieMaxAge v
-          , setCookieDomain = cookieDomain v
+          { setCookieName     = k
+          , setCookieValue    = cookieValue v
+          , setCookiePath     = cookiePath v
+          , setCookieExpires  = cookieExpires v
+          , setCookieMaxAge   = cookieMaxAge v
+          , setCookieDomain   = cookieDomain v
           , setCookieHttpOnly = fromMaybe False (cookieHttpOnly v)
           , setCookieSecure   = fromMaybe False (cookieSecure v)
+          , setCookieSameSite = cookieSameSite' v
           }
+        
+        cookieSameSite' :: CookieInfo ByteString -> Maybe SameSiteOption
+        cookieSameSite' v = case (cookieSameSite v) of
+          Just SameSiteStrict -> Just sameSiteStrict
+          Just SameSiteLax    -> Just sameSiteLax
+          Just SameSiteNone   -> Just sameSiteNone
+          _ -> Nothing
 
 
 -- | Describes the implementation of a single API end point corresponding to @ApiContract (ApiInterface p) m r@
