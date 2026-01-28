@@ -1865,7 +1865,7 @@ instance ( EncodeParam a
 -- | Errors that occured during deserialization.
 data ParamErr = NotFound ByteString -- ^ The key was not found.
               | ParseErr ByteString T.Text -- ^ A parse error occured while deserializing the type.
-                deriving (Show, Eq)
+                deriving (Show, Eq, Read)
 
 utf8DecodeError :: String -> String -> a
 utf8DecodeError src msg = error $ "Error decoding Bytes into UTF8 string at: " ++ src ++ " Message: " ++ msg
