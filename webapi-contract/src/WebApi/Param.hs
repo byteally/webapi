@@ -694,6 +694,9 @@ instance (EncodeParam a) => ToParam 'QueryParam (NonNested a) where
 instance (EncodeParam a) => ToParam 'FormParam (NonNested a) where
   toParam _ pfx (NonNested val) = [(pfx, encodeParam val)]
 
+instance (EncodeParam a) => ToParam 'PathParam (NonNested a) where
+  toParam _ _pfx (NonNested val) = [encodeParam val]  
+
 instance (EncodeParam a) => ToParam 'Cookie (NonNested a) where
   toParam _ pfx (NonNested val) = [(pfx, defCookieInfo $ encodeParam val)]
 

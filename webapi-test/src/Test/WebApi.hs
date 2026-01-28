@@ -10,10 +10,15 @@ module Test.WebApi
   , fromClientRequest
   , toWaiRequest
   , runWebApiSessions
+  , getClientCookies
+  , modifyClientCookies
+  , setClientCookie
+  , deleteClientCookie
   , WebApiSessions (..)
   , WebApiSessionsConfig
   , WebApiSession
   , ClientRequest (ClientRequest, path, query, form, file, header, body)
+  , ClientCookies
   , UnknownClientException (..)
   , AppIsElem
   ) where
@@ -31,13 +36,13 @@ import WebApi.Contract
 import WebApi.Param
 import WebApi.Util
 import WebApi.ContentTypes
-import WebApi.Param
+-- import WebApi.Param
 import WebApi.Internal (getContentType)
 import WebApi.Server (WebApiWaiApp, getWaiApp)
 import Web.Cookie
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as LBS
-import qualified Data.ByteString.Char8 as Char8
+-- import qualified Data.ByteString.Char8 as Char8
 import Data.Kind
 import Data.Function
 import Data.Coerce
@@ -86,9 +91,9 @@ toWaiRequest req@Request {queryParam, pathParam, formParam, fileParam, headerIn,
   where
     accHeader = maybe [] (:[]) ((H.hAccept,) <$>  (getRawAcceptHeader req))
     partEncs = partEncodings (Proxy @(RequestBody meth r)) (toRecTuple (Proxy @(StripContents (RequestBody meth r))) requestBody)
-    firstPart = head . head $ partEncs -- TODO: Check head
+    _firstPart = head . head $ partEncs -- TODO: Check head
     formPar = toFormParam formParam
-    filePar = toFileParam fileParam
+    _filePar = toFileParam fileParam
     uriPath = renderUriPath "" [] pathParam req
     meth = singMethod (Proxy :: Proxy meth)
     qitms = toQueryParam queryParam
@@ -224,6 +229,9 @@ newtype WebApiSessions (apps :: [Type]) a = WebApiSessions (ReaderT Applications
 runWebApiSessions :: WebApiSessions apps a -> ReaderT Applications (StateT ClientsState IO) a
 runWebApiSessions = coerce
 
+-- modifyClientsState :: ClientsState -> WebApiSessions apps ()
+-- modifyClientsState _ = WebApiSessions $ undefined
+
 testClients :: forall meth r app apps.
   ( WebApi app
   , SingMethod meth
@@ -302,21 +310,27 @@ runWebApis' WebApiSessionsConfig {applications, clientsState} (WebApiSessions se
   pure (a, WebApiSessionsConfig {applications, clientsState = clientsStateNew})
 
 
--- getClientCookies :: WebApiSessions apps ClientCookies
--- getClientCookies = WaiInt.clientCookies <$> lift get
+getClientCookies :: forall app apps proxy. Typeable app => proxy app -> WebApiSessions apps ClientCookies
+getClientCookies _ = WebApiSessions $ do
+  gets $ \(ClientsState cstMap) -> case M.lookup (typeRep (Proxy @app)) cstMap of
+    Nothing -> mempty
+    Just cst -> WaiInt.clientCookies cst
 
--- modifyClientCookies :: (ClientCookies -> ClientCookies) -> WebApiSessions apps ()
--- modifyClientCookies f =
---     lift (modify' (\cs -> cs{WaiInt.clientCookies = f $ WaiInt.clientCookies cs}))
+modifyClientCookies :: forall app apps proxy. Typeable app => proxy app -> (ClientCookies -> ClientCookies) -> WebApiSessions apps ()
+modifyClientCookies _ f = WebApiSessions $ do
+  let
+    alterSt Nothing = Just (WaiInt.ClientState $ f mempty)
+    alterSt (Just cst) = Just (WaiInt.ClientState $ f $ WaiInt.clientCookies cst)
+  modify' $ \(ClientsState cstMap) -> ClientsState $ M.alter alterSt (typeRep (Proxy @app)) cstMap
 
--- setClientCookie :: SetCookie -> WebApiSessions apps ()
--- setClientCookie c =
---     modifyClientCookies $
---         M.insert (setCookieName c) c
+setClientCookie :: forall app apps proxy. Typeable app => proxy app -> SetCookie -> WebApiSessions apps ()
+setClientCookie papp c =
+  modifyClientCookies papp $
+    M.insert (setCookieName c) c
 
--- deleteClientCookie :: ByteString -> WebApiSessions apps ()
--- deleteClientCookie =
---     modifyClientCookies . M.delete  
+deleteClientCookie :: forall app apps proxy. Typeable app => proxy app -> ByteString -> WebApiSessions apps ()
+deleteClientCookie papp =
+  modifyClientCookies papp . M.delete  
 
 newtype ClientRequest meth r = MKClientRequest (Request meth r)
 

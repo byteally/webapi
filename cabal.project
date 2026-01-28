@@ -3,17 +3,18 @@ packages:
   webapi-contract
   webapi
   webapi-client-reflex-dom
-  webapi-swagger
+--  webapi-swagger
   webapi-docs
   webapi-xml
-  webapi-openapi
+--  webapi-openapi
   webapi-reflex-dom
   webapi-test
+--  ../rec/rec
 
 source-repository-package
   type: git
   location: https://github.com/byteally/rec
-  tag: 13b29ebfcf6f2a2230734ee6eee2f653bcf75594
+  tag: 6deffbca324faca6c2c6ded28c38fea8f5edd716
   subdir: rec
 
 allow-newer: typerep-map:base, typerep-map:ghc-prim

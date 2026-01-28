@@ -14,7 +14,7 @@ extra-doc-files:    CHANGELOG.md
 -- extra-source-files:
 
 common warnings
-    ghc-options: -Wall
+    ghc-options: -Wall -Werror
     build-depends:    base >= 4.18.3.0
                     , mtl
                     , text
@@ -23,6 +23,7 @@ common warnings
                     , webapi-contract
                     , webapi
                     , containers
+                    , unordered-containers
     default-extensions: TypeFamilies
                         LambdaCase
                         DataKinds
@@ -61,6 +62,30 @@ library qc-dynamic
                     , dependent-map
                     , dependent-sum
                     , reflection >= 2.1
-                    , rec >= 0.2 
+                    , rec >= 0.2
+                    , hashable
     hs-source-dirs:   quickcheck-dynamic
-    default-language: GHC2021    
+    default-language: GHC2021
+
+library webapi-test-tasty
+    import:           warnings
+    visibility:       public
+    exposed-modules:  Test.WebApi.Tasty
+    -- other-modules:
+    build-depends:    webapi-test
+                    , webapi-test:qc-dynamic
+                    , wai-extra >= 3.1
+                    , cookie
+                    , http-types
+                    , http-media
+                    , QuickCheck >= 2.14
+                    , quickcheck-dynamic >= 4.0
+                    , tasty
+                    , tasty-quickcheck
+                    , dependent-map
+                    , dependent-sum
+                    , reflection >= 2.1
+                    , rec >= 0.2
+                    , hashable
+    hs-source-dirs:   tasty
+    default-language: GHC2021        
