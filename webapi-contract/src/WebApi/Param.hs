@@ -98,6 +98,7 @@ module WebApi.Param
        , genericFromPathParam
        , genericToCookie
        , genericFromCookie
+       , paramParseOrNotFoundErrTxt
        ) where
 
 
