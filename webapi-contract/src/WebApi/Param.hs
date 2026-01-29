@@ -1870,6 +1870,23 @@ data ParamErr = NotFound ByteString -- ^ The key was not found.
               | ParseErr ByteString T.Text -- ^ A parse error occured while deserializing the type.
                 deriving (Show, Eq, Read)
 
+paramParseOrNotFoundErrTxt :: [ParamErr] -> T.Text
+paramParseOrNotFoundErrTxt errs =
+  case (hasNotFound, hasParseErr) of
+    (True, True)   -> "Missing parameters and parse errors detected"
+    (True, False)  -> "Parameters not found"
+    (False, True)  -> "Parameters parse Error"
+    (False, False) -> toApiErr errs
+  where
+    hasNotFound = any isNotFound errs
+    hasParseErr = any isParseErr errs
+
+    isNotFound (NotFound _)   = True
+    isNotFound _              = False
+
+    isParseErr (ParseErr _ _) = True
+    isParseErr _              = False
+
 utf8DecodeError :: String -> String -> a
 utf8DecodeError src msg = error $ "Error decoding Bytes into UTF8 string at: " ++ src ++ " Message: " ++ msg
 
