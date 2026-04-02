@@ -188,6 +188,7 @@ toClientRequest extraUnres clientReq req = do
       fileParts = if Prelude.null filePar
                   then []
                   else Prelude.map (\(pname, finfo) -> HC.partFileSource (decodeUtf8 pname) (fileContent finfo)) filePar
+      formParts = Prelude.map (\(pname, pval) -> HC.partBS (decodeUtf8 pname) pval) formPar
       cReqMP = if Prelude.null filePar && Prelude.null formPar
                then case partEncs of
                  (_ : _) -> do
@@ -196,7 +197,7 @@ toClientRequest extraUnres clientReq req = do
                                   , HC.requestBody = HC.RequestBodyLBS $ toLazyByteString b
                                   }
                  [] -> return cReqUE
-               else if not (Prelude.null filePar) then HC.formDataBody fileParts cReqUE else return cReqUE
+               else if not (Prelude.null filePar) then HC.formDataBody (formParts ++ fileParts) cReqQP else return cReqUE
   s <- cReqMP
   let s' = s { HC.method = singMethod (Proxy :: Proxy m)
              , HC.path = uriPath
