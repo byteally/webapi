@@ -187,7 +187,7 @@ toClientRequest extraUnres clientReq req = do
                else HC.urlEncodedBody formPar cReqQP
       fileParts = if Prelude.null filePar
                   then []
-                  else Prelude.map (\(pname, finfo) -> HC.partFileSource (decodeUtf8 pname) (fileContent finfo)) filePar
+                  else Prelude.map (\(pname, finfo) -> (HC.partFileSource (decodeUtf8 pname) (fileContent finfo)) { HC.partFilename = Just (T.unpack $ decodeUtf8 $ fileName finfo) }) filePar
       formParts = Prelude.map (\(pname, pval) -> HC.partBS (decodeUtf8 pname) pval) formPar
       cReqMP = if Prelude.null filePar && Prelude.null formPar
                then case partEncs of
