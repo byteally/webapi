@@ -31,7 +31,7 @@ module Test.WebApi.StateModel
   , AnyVal (..)
   , GetOpIdName
   , runApiGenM
-  , RefinementId
+  , RefinementId (..)
   , initWebApiSessionsCxt
   , successCall
   , successCallWith
