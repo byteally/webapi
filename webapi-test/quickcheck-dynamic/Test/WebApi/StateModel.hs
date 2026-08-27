@@ -1,4 +1,5 @@
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE QuantifiedConstraints #-}
 module Test.WebApi.StateModel
@@ -822,7 +823,9 @@ newtype ApiAction c xstate apps meth route a = ApiAction (forall s m. (HasApiSta
 
 newtype ApiActionWith out c xstate apps meth route a = ApiActionWith (forall s m. (HasApiStateM m s c xstate apps) => ActionConfigWith out s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a))
 
-class Monad m => HasApiStateM m s c xstate apps where
+-- | The monad determines the state it carries (DL over an ApiState, or
+-- ApiGenM), so actions can read the state without naming its indices.
+class Monad m => HasApiStateM m s c xstate apps | m -> s c xstate apps where
   getApiStateM :: m (ApiState s c xstate apps)
 
 instance HasApiStateM (DL (ApiState s c xstate apps)) s c xstate apps where
