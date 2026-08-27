@@ -43,6 +43,8 @@ library
                     , http-types
                     , http-media
                     , cookie
+                    , http-client >= 0.7
+                    , time
     hs-source-dirs:   src
     default-language: GHC2021
 

@@ -5,6 +5,7 @@ module Test.WebApi
   , testClients
   , emptyApp
   , addApp
+  , addExternalApp
   , runWebApi
   , testClient
   , fromClientRequest
@@ -60,6 +61,12 @@ import qualified Data.Map.Strict as M
 import Data.Foldable
 import GHC.TypeLits
 import Data.IORef
+import qualified Network.HTTP.Client as HC
+import Data.Time (UTCTime, getCurrentTime, addUTCTime, nominalDay)
+import Control.Exception (SomeException, try)
+import Data.Word (Word8)
+import Data.ByteString.Builder (toLazyByteString)
+import Network.HTTP.Media (renderHeader)
 
 newtype WebApiSession app a = WebApiSession (Session a)
   deriving (Functor, Applicative, Monad, MonadIO, MonadReader Application, MonadState WaiInt.ClientState)
@@ -82,26 +89,64 @@ toWaiRequest :: forall meth r.
   , SingMethod meth
   ) => Request meth r
   -> IO Wai.Request
-toWaiRequest req@Request {queryParam, pathParam, formParam, fileParam, headerIn, requestBody} = do
+toWaiRequest req = do
   hasValRef <- newIORef True
+  bodyRef <- newIORef True
+  let RequestParts {uriPath, meth, qitms, hdrs, formPar, bodyPart} = requestParts "" [] req
+      setBody r = case bodyPart of
+        Just (ct, body) | null formPar ->
+          r { requestHeaders = (H.hContentType, ct) : filter ((/= H.hContentType) . fst) (requestHeaders r) }
+            & setRequestBodyChunks (atomicModifyIORef' bodyRef $ \case
+                                       False -> (False, "")
+                                       True -> (False, LBS.toStrict body))
+        _ -> r
   pure (defaultRequest
         & flip setRawPathInfo uriPath
-        & setWaiQP
-        & urlEncodedBody hasValRef formPar)
+        & (\r -> r { queryString = qitms
+                   , rawQueryString = H.renderQuery True qitms
+                   , requestMethod = meth
+                   , requestHeaders = hdrs
+                   })
+        & urlEncodedBody hasValRef formPar
+        & setBody)
+
+-- | The transport-independent pieces of a request: what both the in-process
+-- (wai-test) and the external (http-client) clients send.
+data RequestParts = RequestParts
+  { uriPath :: ByteString
+  , meth :: ByteString
+  , qitms :: H.Query
+  , hdrs :: [H.Header]
+  , formPar :: [(ByteString, ByteString)]
+  , bodyPart :: Maybe (ByteString, LBS.ByteString) -- ^ content type + encoded body (first part)
+  }
+
+requestParts :: forall meth r.
+  ( ToParam 'PathParam (PathParam meth r)
+  , ToParam 'QueryParam (QueryParam meth r)
+  , ToParam 'FormParam (FormParam meth r)
+  , ToParam 'FileParam (FileParam meth r)
+  , ToHeader (HeaderIn meth r)
+  , PartEncodings (RequestBody meth r)
+  , ToHListRecTuple (StripContents (RequestBody meth r))
+  , MkPathFormatString r
+  , SingMethod meth
+  ) => ByteString -> [Word8] -> Request meth r -> RequestParts
+requestParts pathPrefix extraUnres req@Request {queryParam, pathParam, formParam, fileParam, headerIn, requestBody} =
+  RequestParts
+    { uriPath = renderUriPath pathPrefix extraUnres pathParam req
+    , meth = singMethod (Proxy :: Proxy meth)
+    , qitms = toQueryParam queryParam
+    , hdrs = accHeader ++ toHeader headerIn
+    , formPar = toFormParam formParam
+    , bodyPart = case partEncs of
+        ((mt, b) : _) : _ -> Just (renderHeader mt, toLazyByteString b)
+        _ -> Nothing
+    }
   where
     accHeader = maybe [] (:[]) ((H.hAccept,) <$>  (getRawAcceptHeader req))
     partEncs = partEncodings (Proxy @(RequestBody meth r)) (toRecTuple (Proxy @(StripContents (RequestBody meth r))) requestBody)
-    _firstPart = head . head $ partEncs -- TODO: Check head
-    formPar = toFormParam formParam
     _filePar = toFileParam fileParam
-    uriPath = renderUriPath "" [] pathParam req
-    meth = singMethod (Proxy :: Proxy meth)
-    qitms = toQueryParam queryParam
-    setWaiQP r = r { queryString = qitms
-                   , rawQueryString = H.renderQuery True qitms
-                   , requestMethod = meth
-                   , requestHeaders = accHeader ++ toHeader headerIn
-                   }
 
 urlEncodedBody :: IORef Bool -> [(ByteString, ByteString)] -> Wai.Request -> Wai.Request
 urlEncodedBody _ [] req = req
@@ -209,9 +254,19 @@ runWebApi (WebApiSession sess) app = runSession sess app
 
 newtype ClientsState = ClientsState (Map TypeRep WaiInt.ClientState)
 
+-- | An application reached over HTTP instead of in-process: a parsed base
+-- request (scheme, host, port, path prefix — e.g. @https://accounts.example/v2@)
+-- and the connection manager to use. Its cookies live in the same per-app
+-- 'ClientsState' slot a native app uses, converted to an http-client jar
+-- around each call, so the cookie combinators work for both kinds alike.
+data ExternalApp = ExternalApp
+  { baseRequest :: HC.Request
+  , manager :: HC.Manager
+  }
+
 data Applications = Applications
   { native :: Map TypeRep Application
-  , external :: Map TypeRep ()
+  , external :: Map TypeRep ExternalApp
   }
 
 initApps :: Applications
@@ -266,8 +321,99 @@ testClients creq = do
           modify' $ \(ClientsState css') -> ClientsState $ M.insert appRep s css'
           pure a
     Nothing -> case M.lookup appRep external of
-      Just () -> error "TODO: External Application not support yet!"
+      Just ext -> do
+        ClientsState css <- get
+        let cstate = M.findWithDefault WaiInt.initState appRep css
+        (a, s) <- liftIO $ externalClient ext cstate (fromClientRequest creq)
+        modify' $ \(ClientsState css') -> ClientsState $ M.insert appRep s css'
+        pure a
       Nothing -> error $ "Panic: app not found for: " <> show appRep
+
+-- | One request to an external app: cookies in from the app's jar, no redirect
+-- following (the model asserts on 3xx + Location, exactly as wai-test does),
+-- cookies out merged back into the jar. Transport failures surface as
+-- 'OtherError' rather than exceptions so the model can judge them.
+externalClient :: forall meth r.
+  ( ToParam 'PathParam (PathParam meth r)
+  , ToParam 'QueryParam (QueryParam meth r)
+  , ToParam 'FormParam (FormParam meth r)
+  , ToParam 'FileParam (FileParam meth r)
+  , ToHeader (HeaderIn meth r)
+  , FromHeader (HeaderOut meth r)
+  , FromParam Cookie (CookieOut meth r)
+  , Decodings (ContentTypes meth r) (ApiOut meth r)
+  , Decodings (ContentTypes meth r) (ApiErr meth r)
+  , PartEncodings (RequestBody meth r)
+  , ToHListRecTuple (StripContents (RequestBody meth r))
+  , MkPathFormatString r
+  , SingMethod meth
+  ) => ExternalApp -> WaiInt.ClientState -> Request meth r -> IO (Response meth r, WaiInt.ClientState)
+externalClient ExternalApp {baseRequest, manager} cstate req = do
+  now <- getCurrentTime
+  let RequestParts {uriPath, meth, qitms, hdrs, formPar, bodyPart} = requestParts (HC.path baseRequest) [] req
+      host = HC.host baseRequest
+      jar = HC.createCookieJar $ map (setCookieToCookie now host) $ M.elems $ WaiInt.clientCookies cstate
+      withForm r = if null formPar then r else HC.urlEncodedBody formPar r
+      withBody r = case bodyPart of
+        Just (ct, body) | null formPar ->
+          r { HC.requestHeaders = (H.hContentType, ct) : HC.requestHeaders r
+            , HC.requestBody = HC.RequestBodyLBS body }
+        _ -> r
+      hreq = (withBody . withForm) baseRequest
+        & \r -> r { HC.method = meth
+                  , HC.path = uriPath
+                  , HC.queryString = H.renderQuery True qitms
+                  , HC.requestHeaders = hdrs ++ HC.requestHeaders r
+                  , HC.cookieJar = Just jar
+                  , HC.redirectCount = 0
+                  }
+  res <- try (HC.httpLbs hreq manager)
+  case res of
+    Left (e :: SomeException) ->
+      pure (Failure $ Right $ OtherError e, cstate)
+    Right hresp -> do
+      let cooks = M.fromList
+            [ (HC.cookie_name c, cookieToSetCookie c) | c <- HC.destroyCookieJar (HC.responseCookieJar hresp) ]
+          -- the jar http-client hands back already holds the merged state
+          cstate' = WaiInt.ClientState cooks
+      resp <- toWebApiResponse
+                (HC.responseStatus hresp)
+                (HC.responseHeaders hresp)
+                (M.toList $ fmap renderSetCookieBS cooks)
+                (HC.responseBody hresp)
+      pure (resp, cstate')
+
+-- | A stored 'SetCookie' as an http-client cookie for @host@. A cookie without
+-- a Domain is host-only (what a browser would do); a session cookie gets a
+-- nominal one-day expiry so the jar keeps it.
+setCookieToCookie :: UTCTime -> ByteString -> SetCookie -> HC.Cookie
+setCookieToCookie now host sc = HC.Cookie
+  { HC.cookie_name = setCookieName sc
+  , HC.cookie_value = setCookieValue sc
+  , HC.cookie_expiry_time = case (setCookieExpires sc, setCookieMaxAge sc) of
+      (Just e, _) -> e
+      (_, Just age) -> addUTCTime (realToFrac age) now
+      _ -> addUTCTime nominalDay now
+  , HC.cookie_domain = maybe host id (setCookieDomain sc)
+  , HC.cookie_path = maybe "/" id (setCookiePath sc)
+  , HC.cookie_creation_time = now
+  , HC.cookie_last_access_time = now
+  , HC.cookie_persistent = False
+  , HC.cookie_host_only = maybe True (const False) (setCookieDomain sc)
+  , HC.cookie_secure_only = setCookieSecure sc
+  , HC.cookie_http_only = setCookieHttpOnly sc
+  }
+
+cookieToSetCookie :: HC.Cookie -> SetCookie
+cookieToSetCookie c = defaultSetCookie
+  { setCookieName = HC.cookie_name c
+  , setCookieValue = HC.cookie_value c
+  , setCookiePath = Just (HC.cookie_path c)
+  , setCookieDomain = if HC.cookie_host_only c then Nothing else Just (HC.cookie_domain c)
+  , setCookieExpires = if HC.cookie_persistent c then Just (HC.cookie_expiry_time c) else Nothing
+  , setCookieSecure = HC.cookie_secure_only c
+  , setCookieHttpOnly = HC.cookie_http_only c
+  }
 
 type AppIsElem :: Type -> [Type] -> Constraint
 type AppIsElem (app :: Type) (apps :: [Type]) = AppIsElem' apps app apps
@@ -297,6 +443,20 @@ addApp waapp WebApiSessionsConfig {applications, clientsState} =
     ClientsState cstate = clientsState
   in WebApiSessionsConfig
      { applications = Applications { native = M.insert appRep app native, external}
+     , clientsState = ClientsState $ M.insert appRep WaiInt.initState cstate
+     }
+
+-- | Register an app reached over HTTP. @base@ is the parsed base request —
+-- @HC.parseRequest "https://accounts.example/v2"@ — whose path is prefixed
+-- to every route of the app; TLS/proxy behaviour comes from the manager.
+addExternalApp :: forall app apps. Typeable app => HC.Request -> HC.Manager -> WebApiSessionsConfig apps -> WebApiSessionsConfig (app ': apps)
+addExternalApp base mgr WebApiSessionsConfig {applications, clientsState} =
+  let
+    appRep = typeRep (Proxy @app)
+    Applications {native, external} = applications
+    ClientsState cstate = clientsState
+  in WebApiSessionsConfig
+     { applications = Applications { native, external = M.insert appRep (ExternalApp base mgr) external }
      , clientsState = ClientsState $ M.insert appRep WaiInt.initState cstate
      }
 
