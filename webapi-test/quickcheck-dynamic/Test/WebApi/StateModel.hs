@@ -59,6 +59,8 @@ module Test.WebApi.StateModel
   , apiAction_
   , apiGenAction
   , addTypedEntity
+  , getTypedEntities
+  , getNamedEntities
   , inClass
   , notInClass
   , inClassKeyed
@@ -940,15 +942,29 @@ addTypedEntity :: forall t c xstate apps s.
   -> NER (Val t -> Bool) Text
   -> ApiState s c xstate apps
   -> ApiState s c xstate apps
-addTypedEntity val NER {}{-refinementId, entityName, refinement-} ApiState {namedEntityTyped, ..} =
+addTypedEntity val NER {refinementId, refinement} ApiState {namedEntityTyped, ..} =
   let
     ty = typeRep (Proxy @t)
-    nval = NamedVal {name = undefined, val = val}
-    newNET = NamedEntityTyped NamedEntity { namedEntity = M.singleton ty [Some $ nval]
-                                          , entityRefinement = undefined
-                                          , entityToRefinements = undefined
-                                          }
+    nval = NamedVal {name = refinementId, val = val}
+    -- the refinement predicate, lifted to the type-erased entity store
+    predAny :: (Val t -> Bool) -> AnyVal -> Bool
+    predAny p (SomeVal v) = maybe False p (gcast v)
+    newNET = NamedEntityTyped NamedEntity
+      { namedEntity = M.singleton ty [Some nval]
+      , entityRefinement = maybe mempty (M.singleton refinementId . predAny) refinement
+      , entityToRefinements = maybe mempty (const $ M.singleton ty (Set.singleton refinementId)) refinement
+      }
   in ApiState {namedEntityTyped = namedEntityTyped <> newNET, ..}
+
+-- | Every entity of type @t@ the model has recorded, newest last.
+getTypedEntities :: forall t c xstate apps s. Typeable t => ApiState s c xstate apps -> [Val t]
+getTypedEntities ApiState {namedEntityTyped = NamedEntityTyped NamedEntity {namedEntity}} =
+  [ v | Some (NamedVal {val = v'}) <- M.findWithDefault [] (typeRep (Proxy @t)) namedEntity, Just v <- [gcast v'] ]
+
+-- | The entities of type @t@ recorded under a given name.
+getNamedEntities :: forall t c xstate apps s. Typeable t => RefinementId -> ApiState s c xstate apps -> [Val t]
+getNamedEntities rid ApiState {namedEntityTyped = NamedEntityTyped NamedEntity {namedEntity}} =
+  [ v | Some (NamedVal {name, val = v'}) <- M.findWithDefault [] (typeRep (Proxy @t)) namedEntity, name == rid, Just v <- [gcast v'] ]
 
 getOpIdFromRequest :: forall meth app r req. (KnownSymbol (GetOpIdName (OperationId meth (app://r))), Typeable app, Typeable r) => req meth (app://r) -> String
 getOpIdFromRequest _ =
