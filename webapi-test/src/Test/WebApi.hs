@@ -67,6 +67,9 @@ import Data.Foldable
 import GHC.TypeLits
 import Data.IORef
 import qualified Network.HTTP.Client as HC
+import qualified Network.HTTP.Client.MultipartFormData as HCM
+import qualified Data.ByteString as SB
+import qualified Data.ByteString.Char8 as BC
 import Data.Time (UTCTime, getCurrentTime, addUTCTime, nominalDay)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Control.Exception (SomeException, try)
@@ -98,14 +101,25 @@ toWaiRequest :: forall meth r.
 toWaiRequest req = do
   hasValRef <- newIORef True
   bodyRef <- newIORef True
-  let RequestParts {uriPath, meth, qitms, hdrs, formPar, bodyPart} = requestParts "" [] req
+  let RequestParts {uriPath, meth, qitms, hdrs, formPar, filePar, bodyPart} = requestParts "" [] req
       setBody r = case bodyPart of
-        Just (ct, body) | null formPar ->
+        Just (ct, body) | null formPar && null filePar ->
           r { requestHeaders = (H.hContentType, ct) : filter ((/= H.hContentType) . fst) (requestHeaders r) }
             & setRequestBodyChunks (atomicModifyIORef' bodyRef $ \case
                                        False -> (False, "")
                                        True -> (False, LBS.toStrict body))
         _ -> r
+  -- files (with any form fields) go as multipart/form-data, built here
+  -- since wai-test has no multipart client
+  multipart <- if null filePar then pure id else do
+    parts <- multipartBody formPar filePar
+    partsRef <- newIORef True
+    pure $ \r ->
+      r { requestMethod = if requestMethod r == "GET" then "POST" else requestMethod r
+        , requestHeaders = (H.hContentType, "multipart/form-data; boundary=" <> multipartBoundary) : filter ((/= H.hContentType) . fst) (requestHeaders r) }
+        & setRequestBodyChunks (atomicModifyIORef' partsRef $ \case
+                                   False -> (False, "")
+                                   True -> (False, LBS.toStrict parts))
   pure (defaultRequest
         & flip setRawPathInfo uriPath
         & (\r -> r { queryString = qitms
@@ -113,8 +127,24 @@ toWaiRequest req = do
                    , requestMethod = meth
                    , requestHeaders = hdrs
                    })
-        & urlEncodedBody hasValRef formPar
-        & setBody)
+        & (if null filePar then urlEncodedBody hasValRef formPar else id)
+        & setBody
+        & multipart)
+
+multipartBoundary :: ByteString
+multipartBoundary = "----webapi-test-boundary-7f3a9c"
+
+-- | A multipart/form-data body of the form fields and the files (their
+-- contents read from disk).
+multipartBody :: [(ByteString, ByteString)] -> [(ByteString, FileInfo)] -> IO LBS.ByteString
+multipartBody formPar filePar = do
+  fileParts <- mapM filePart filePar
+  pure $ LBS.fromChunks $ concatMap fieldPart formPar ++ concat fileParts ++ ["--", multipartBoundary, "--\r\n"]
+  where
+    fieldPart (k, v) = ["--", multipartBoundary, "\r\nContent-Disposition: form-data; name=\"", k, "\"\r\n\r\n", v, "\r\n"]
+    filePart (k, FileInfo {fileName, fileContentType, fileContent}) = do
+      content <- SB.readFile fileContent
+      pure ["--", multipartBoundary, "\r\nContent-Disposition: form-data; name=\"", k, "\"; filename=\"", fileName, "\"\r\nContent-Type: ", fileContentType, "\r\n\r\n", content, "\r\n"]
 
 -- | The transport-independent pieces of a request: what both the in-process
 -- (wai-test) and the external (http-client) clients send.
@@ -124,6 +154,7 @@ data RequestParts = RequestParts
   , qitms :: H.Query
   , hdrs :: [H.Header]
   , formPar :: [(ByteString, ByteString)]
+  , filePar :: [(ByteString, FileInfo)] -- ^ files to send as multipart parts
   , bodyPart :: Maybe (ByteString, LBS.ByteString) -- ^ content type + encoded body (first part)
   }
 
@@ -145,6 +176,7 @@ requestParts pathPrefix extraUnres req@Request {queryParam, pathParam, formParam
     , qitms = toQueryParam queryParam
     , hdrs = accHeader ++ toHeader headerIn
     , formPar = toFormParam formParam
+    , filePar = toFileParam fileParam
     , bodyPart = case partEncs of
         ((mt, b) : _) : _ -> Just (renderHeader mt, toLazyByteString b)
         _ -> Nothing
@@ -152,7 +184,6 @@ requestParts pathPrefix extraUnres req@Request {queryParam, pathParam, formParam
   where
     accHeader = maybe [] (:[]) ((H.hAccept,) <$>  (getRawAcceptHeader req))
     partEncs = partEncodings (Proxy @(RequestBody meth r)) (toRecTuple (Proxy @(StripContents (RequestBody meth r))) requestBody)
-    _filePar = toFileParam fileParam
 
 urlEncodedBody :: IORef Bool -> [(ByteString, ByteString)] -> Wai.Request -> Wai.Request
 urlEncodedBody _ [] req = req
@@ -407,16 +438,22 @@ externalClient :: forall meth r.
   ) => ExternalApp -> WaiInt.ClientState -> Request meth r -> IO (Response meth r, WaiInt.ClientState)
 externalClient ExternalApp {baseRequest, manager} cstate req = do
   now <- getCurrentTime
-  let RequestParts {uriPath, meth, qitms, hdrs, formPar, bodyPart} = requestParts (HC.path baseRequest) [] req
+  let RequestParts {uriPath, meth, qitms, hdrs, formPar, filePar, bodyPart} = requestParts (HC.path baseRequest) [] req
       host = HC.host baseRequest
       jar = HC.createCookieJar $ map (setCookieToCookie now host) $ M.elems $ WaiInt.clientCookies cstate
-      withForm r = if null formPar then r else HC.urlEncodedBody formPar r
+      withForm r = if null formPar || not (null filePar) then r else HC.urlEncodedBody formPar r
       withBody r = case bodyPart of
-        Just (ct, body) | null formPar ->
+        Just (ct, body) | null formPar && null filePar ->
           r { HC.requestHeaders = (H.hContentType, ct) : HC.requestHeaders r
             , HC.requestBody = HC.RequestBodyLBS body }
         _ -> r
-      hreq = (withBody . withForm) baseRequest
+      -- files (with any form fields) as multipart/form-data, like WebApi.Client
+      withFiles r = if null filePar then pure r else HCM.formDataBody
+        ( [ HCM.partBS (T.decodeUtf8 k) v | (k, v) <- formPar ]
+          ++ [ (HCM.partFileSource (T.decodeUtf8 k) fileContent) { HCM.partFilename = Just (BC.unpack fileName), HCM.partContentType = Just fileContentType }
+             | (k, FileInfo {fileName, fileContentType, fileContent}) <- filePar ] ) r
+  hreq0 <- withFiles ((withBody . withForm) baseRequest)
+  let hreq = hreq0
         & \r -> r { HC.method = meth
                   , HC.path = uriPath
                   , HC.queryString = H.renderQuery True qitms

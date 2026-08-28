@@ -18,7 +18,10 @@ module Test.WebApi.Val
   , GValRep (..)
   , resolveVal
   , resolveValWith
+  , Suppliers (..)
+  , noSuppliers
   , freshLabels
+  , tempFiles
   , shrinkVal
   , fromVar
   , fresh
@@ -39,6 +42,7 @@ import Data.Kind (Type)
 import Data.Proxy
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.ByteString (ByteString)
 import Data.Typeable
 import GHC.Generics
 import GHC.TypeLits
@@ -58,6 +62,9 @@ data Val a where
   -- execution (never a witness of the program, so never replayed) and
   -- what to make of it; the same label within one step gets one token.
   Fresh :: Text -> (Text -> a) -> Val a
+  -- | A file the step sends: its name and contents live in the model, the
+  -- path they are written to exists only while the step runs.
+  TempFile :: Text -> ByteString -> (FilePath -> a) -> Val a
 
 instance Functor Val where
   fmap f = \case
@@ -68,6 +75,7 @@ instance Functor Val where
     v@Fields {} -> Map f v
     Unset n -> Unset n
     Fresh l g -> Fresh l (f . g)
+    TempFile n c g -> TempFile n c (f . g)
 
 -- | Constants fold; anything symbolic becomes a 'Pair' so every leaf stays
 -- visible to resolution, variable collection and shrinking. An 'Unset'
@@ -79,14 +87,28 @@ instance Applicative Val where
   f <*> Const a = fmap ($ a) f
   f <*> a = Pair (\(g, x) -> g x) (f, a)
 
--- | 'Left' names the first 'Unset' leaf — or 'Fresh' one: those are known
--- only while their step runs ('resolveValWith').
-resolveVal :: LookUp -> Val a -> Either Text a
-resolveVal = resolveValWith (\l -> Left ("fresh value " <> l <> " is known only while its step runs"))
+-- | What a step supplies while it runs: fresh tokens by label, and the
+-- paths its files were written to, by name.
+data Suppliers = Suppliers
+  { freshOf :: Text -> Either Text Text
+  , fileOf :: Text -> Either Text FilePath
+  }
 
--- | With the step's fresh tokens, by label.
-resolveValWith :: (Text -> Either Text Text) -> LookUp -> Val a -> Either Text a
-resolveValWith fr lkp = go
+-- | Outside a step: nothing is supplied.
+noSuppliers :: Suppliers
+noSuppliers = Suppliers
+  { freshOf = \l -> Left ("fresh value " <> l <> " is known only while its step runs")
+  , fileOf = \n -> Left ("file " <> n <> " exists only while its step runs")
+  }
+
+-- | 'Left' names the first 'Unset' leaf — or a 'Fresh' / 'TempFile' one:
+-- those are known only while their step runs ('resolveValWith').
+resolveVal :: LookUp -> Val a -> Either Text a
+resolveVal = resolveValWith noSuppliers
+
+-- | With what the step supplies.
+resolveValWith :: Suppliers -> LookUp -> Val a -> Either Text a
+resolveValWith sup@Suppliers {freshOf, fileOf} lkp = go
   where
     go :: Val x -> Either Text x
     go = \case
@@ -94,9 +116,22 @@ resolveValWith fr lkp = go
       Var f v -> Right (f (lkp v))
       Pair f (v1, v2) -> f <$> ((,) <$> go v1 <*> go v2)
       Map f v -> f <$> go v
-      Fields gv -> to <$> gResolve fr lkp gv
+      Fields gv -> to <$> gResolve sup lkp gv
       Unset n -> Left n
-      Fresh l f -> f <$> fr l
+      Fresh l f -> f <$> freshOf l
+      TempFile n _ f -> f <$> fileOf n
+
+-- | The files the value carries, by name.
+tempFiles :: Val a -> [(Text, ByteString)]
+tempFiles = \case
+  Const {} -> []
+  Var {} -> []
+  Pair _ (v1, v2) -> tempFiles v1 ++ tempFiles v2
+  Map _ v -> tempFiles v
+  Fields gv -> gTempFiles gv
+  Unset {} -> []
+  Fresh {} -> []
+  TempFile n c _ -> [(n, c)]
 
 -- | The labels of the fresh leaves.
 freshLabels :: Val a -> Set.Set Text
@@ -108,6 +143,7 @@ freshLabels = \case
   Fields gv -> gFreshLabels gv
   Unset {} -> mempty
   Fresh l _ -> Set.singleton l
+  TempFile {} -> mempty
 
 instance HasVariables (Val a) where
   getAllVariables = \case
@@ -118,6 +154,7 @@ instance HasVariables (Val a) where
     Fields gv -> gVars gv
     Unset {} -> mempty
     Fresh {} -> mempty
+    TempFile {} -> mempty
 
 -- | Shrink one leaf at a time: a variable to an earlier one of its type
 -- (see 'shrinkVar'); constants and unset leaves do not shrink.
@@ -130,6 +167,7 @@ shrinkVal vctx = \case
   Fields gv -> Fields <$> gShrink vctx gv
   Unset {} -> []
   Fresh {} -> []
+  TempFile {} -> []
 
 fromVar :: Typeable a => Var a -> Val a
 fromVar = Var id
@@ -183,9 +221,10 @@ data GVal (f :: Type -> Type) where
 class GValRep f where
   gConst :: f p -> GVal f
   gExplode :: Val (f p) -> GVal f
-  gResolve :: (Text -> Either Text Text) -> LookUp -> GVal f -> Either Text (f p)
+  gResolve :: Suppliers -> LookUp -> GVal f -> Either Text (f p)
   gVars :: GVal f -> Set.Set (Any Var)
   gFreshLabels :: GVal f -> Set.Set Text
+  gTempFiles :: GVal f -> [(Text, ByteString)]
   gShrink :: VarContext -> GVal f -> [GVal f]
 
 instance GValRep f => GValRep (M1 i c f) where
@@ -194,6 +233,7 @@ instance GValRep f => GValRep (M1 i c f) where
   gResolve fr lkp (GM1 g) = M1 <$> gResolve fr lkp g
   gVars (GM1 g) = gVars g
   gFreshLabels (GM1 g) = gFreshLabels g
+  gTempFiles (GM1 g) = gTempFiles g
   gShrink vc (GM1 g) = GM1 <$> gShrink vc g
 
 instance (GValRep f, GValRep g) => GValRep (f :*: g) where
@@ -202,6 +242,7 @@ instance (GValRep f, GValRep g) => GValRep (f :*: g) where
   gResolve fr lkp (GProd a b) = (:*:) <$> gResolve fr lkp a <*> gResolve fr lkp b
   gVars (GProd a b) = gVars a <> gVars b
   gFreshLabels (GProd a b) = gFreshLabels a <> gFreshLabels b
+  gTempFiles (GProd a b) = gTempFiles a ++ gTempFiles b
   gShrink vc (GProd a b) = [GProd a' b | a' <- gShrink vc a] ++ [GProd a b' | b' <- gShrink vc b]
 
 instance GValRep (K1 i a) where
@@ -210,6 +251,7 @@ instance GValRep (K1 i a) where
   gResolve fr lkp (GK1 v) = K1 <$> resolveValWith fr lkp v
   gVars (GK1 v) = getAllVariables v
   gFreshLabels (GK1 v) = freshLabels v
+  gTempFiles (GK1 v) = tempFiles v
   gShrink vc (GK1 v) = GK1 <$> shrinkVal vc v
 
 instance GValRep U1 where
@@ -218,6 +260,7 @@ instance GValRep U1 where
   gResolve _ _ GU1 = Right U1
   gVars GU1 = mempty
   gFreshLabels GU1 = mempty
+  gTempFiles GU1 = []
   gShrink _ GU1 = []
 
 -- | Get a field by selector name, from a 'GVal'.

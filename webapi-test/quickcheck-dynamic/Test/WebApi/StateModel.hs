@@ -32,6 +32,8 @@ module Test.WebApi.StateModel
   , Refinement (..)
   , refinementNames
   , ensuresRefinement
+  , refutesRefinement
+  , withRefutation
   , recordsAs
   , declares
   , withContract
@@ -120,6 +122,11 @@ import Test.WebApi
 import Test.QuickCheck.StateModel
 import Test.QuickCheck.DynamicLogic (DynLogicModel (..), DL, getModelStateDL, action, forAllNonVariableQ, withGenQ)
 import qualified Data.ByteString.Char8 as BC
+import qualified Data.ByteString as SB
+import qualified Data.Text.Encoding as T
+import System.Directory (getTemporaryDirectory)
+import System.IO (openBinaryTempFile, hClose)
+import Control.Monad (forM)
 import qualified Data.ByteString.Lazy.Char8 as LBC
 import Data.Char (toLower)
 import Data.List (intercalate, isInfixOf)
@@ -220,22 +227,22 @@ instance HasVariables (ClientRequestVal meth r) where
     <> getAllVariables file
     <> getAllVariables body
 
--- | 'Left' names the request field nobody supplied; the fresh tokens by
--- label are the step's ('stepFresh').
+-- | 'Left' names the request field nobody supplied; the suppliers are the
+-- step's ('stepSuppliers').
 resolveRequest ::
   ( SingMethod meth
-  ) => (Text -> Either Text Text)
+  ) => Suppliers
   -> LookUp
   -> ClientRequestVal meth r
   -> Either Text (ClientRequest meth r)
-resolveRequest fr lkp ClientRequestVal {query, form, header, path, file, body} =
+resolveRequest sup lkp ClientRequestVal {query, form, header, path, file, body} =
   do
-    query' <- resolveValWith fr lkp query
-    form' <- resolveValWith fr lkp form
-    header' <- resolveValWith fr lkp header
-    path' <- resolveValWith fr lkp path
-    file' <- resolveValWith fr lkp file
-    body' <- resolveValWith fr lkp body
+    query' <- resolveValWith sup lkp query
+    form' <- resolveValWith sup lkp form
+    header' <- resolveValWith sup lkp header
+    path' <- resolveValWith sup lkp path
+    file' <- resolveValWith sup lkp file
+    body' <- resolveValWith sup lkp body
     Right $ ClientRequest {query = query', form = form', header = header', path = path', file = file', body = body'}
 
 -- | The labels of the request's fresh leaves.
@@ -243,19 +250,37 @@ requestFreshLabels :: ClientRequestVal meth r -> Set.Set Text
 requestFreshLabels ClientRequestVal {query, form, header, path, file, body} =
   freshLabels query <> freshLabels form <> freshLabels header <> freshLabels path <> freshLabels file <> freshLabels body
 
--- | Start a step and make its fresh tokens.
-stepFresh :: Set.Set Text -> WebApiSessions apps (Text -> Either Text Text)
-stepFresh labels = do
+-- | The files the request carries, by name.
+requestTempFiles :: ClientRequestVal meth r -> [(Text, ByteString)]
+requestTempFiles ClientRequestVal {query, form, header, path, file, body} =
+  tempFiles query ++ tempFiles form ++ tempFiles header ++ tempFiles path ++ tempFiles file ++ tempFiles body
+
+-- | Start a step: make its fresh tokens, write its files.
+stepSuppliers :: ClientRequestVal meth r -> WebApiSessions apps Suppliers
+stepSuppliers creq = do
   beginStep
-  mapM_ freshToken (Set.toList labels)
-  freshLookup <$> freshTokens
+  mapM_ freshToken (Set.toList (requestFreshLabels creq))
+  toks <- freshTokens
+  paths <- liftIO $ forM (requestTempFiles creq) $ \(n, c) -> do
+    dir <- getTemporaryDirectory
+    (p, h) <- openBinaryTempFile dir (T.unpack (T.map (\ch -> if ch == '/' then '_' else ch) n))
+    SB.hPut h c
+    hClose h
+    pure (n, p)
+  pure Suppliers
+    { freshOf = freshLookup toks
+    , fileOf = \n -> maybe (Left ("runner bug: no file was written for " <> n)) Right (lookup n paths)
+    }
 
 freshLookup :: M.Map Text Text -> Text -> Either Text Text
 freshLookup toks l = maybe (Left ("runner bug: no token was made for fresh " <> l)) Right (M.lookup l toks)
 
--- | For a report: a fresh leaf shows as its label.
-freshPlaceholder :: Text -> Either Text Text
-freshPlaceholder l = Right ("<fresh " <> l <> ">")
+-- | For a report: a fresh leaf shows as its label, a file as its name.
+placeholders :: Suppliers
+placeholders = Suppliers
+  { freshOf = \l -> Right ("<fresh " <> l <> ">")
+  , fileOf = \n -> Right ("<file " <> T.unpack n <> ">")
+  }
 
 -- | Every request with one leaf shrunk (see 'shrinkVal').
 shrinkRequest :: VarContext -> ClientRequestVal meth r -> [ClientRequestVal meth r]
@@ -531,6 +556,8 @@ data SuccessApiModel s c xstate apps meth r a = SuccessApiModel
     -- counterexample; 'actionName' stays the operation id
   , apiEnsures :: Set.Set RefinementId
     -- ^ the refinements the step's value is checked against ('ensuresRefinement')
+  , apiRefutes :: Set.Set RefinementId
+    -- ^ the refinements the step's value is checked to be outside of ('refutesRefinement')
   , apiRecords :: Set.Set RefinementId
     -- ^ the classes the step records its value under ('recordsAs')
   }
@@ -547,6 +574,7 @@ defSuccessApiModel = SuccessApiModel
   , label = Nothing
   , apiVariables = mempty
   , apiEnsures = mempty
+  , apiRefutes = mempty
   , apiRecords = mempty
   }
 
@@ -762,8 +790,8 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
   type Error (ApiState s c xstate apps) (ReaderT WebApiSessionsCxt (WebApiSessions apps)) = ErrorState
   perform (ApiState {xActionState}) act lkp = case act of
     MkWebApiAction (SuccessCall creq' _model cookModMay f) -> ReaderT $ \_ -> do
-      fr <- stepFresh (requestFreshLabels creq')
-      case resolveRequest fr lkp creq' of
+      sup <- stepSuppliers creq'
+      case resolveRequest sup lkp creq' of
         Right creq -> testClients creq >>= \case
           Success code out headerOut cookieOut -> do
             let apiSucc = ApiSuccess {code, out, headerOut, cookieOut}
@@ -785,8 +813,8 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
                                                      }
         Left field -> pure $ Left (InputNotSetError field)
     MkWebApiAction (ErrorCall creq' expected _model f) -> ReaderT $ \_ -> do
-      fr <- stepFresh (requestFreshLabels creq')
-      case resolveRequest fr lkp creq' of
+      sup <- stepSuppliers creq'
+      case resolveRequest sup lkp creq' of
         Right creq -> testClients creq >>= \case
           Failure (Left apiErr@(ApiError code _err hd _))
             | matchesFailure expected code -> pure $ either (Left . ResultError) Right $ f apiErr
@@ -833,7 +861,8 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
       check :: forall meth r x. SingMethod meth => ClientRequestVal meth r -> SuccessApiModel s c xstate apps meth r x -> x -> PostconditionM (ReaderT WebApiSessionsCxt (WebApiSessions apps)) Bool
       check creq SuccessApiModel {apiPostcondition} x = do
         toks <- lift (lift freshTokens)
-        case resolveRequest (freshLookup toks) lkp creq >>= \req -> apiPostcondition ss lkp req x of
+        -- the files were written for the call; the view names them
+        case resolveRequest placeholders {freshOf = freshLookup toks} lkp creq >>= \req -> apiPostcondition ss lkp req x of
           Right () -> pure True
           Left why -> do
             counterexamplePost ("  postcondition failed: " ++ T.unpack why)
@@ -876,16 +905,18 @@ requestReport :: forall meth r.
   , MkPathFormatString r
   , SingMethod meth
   ) => LookUp -> ClientRequestVal meth r -> [String]
-requestReport lkp creq = case resolveRequest freshPlaceholder lkp creq of
+requestReport lkp creq = case resolveRequest placeholders lkp creq of
   Left field -> ["request: <" ++ T.unpack field ++ " is not set>"]
   Right resolved ->
     let
-      RequestParts {uriPath, meth, qitms, hdrs, formPar, bodyPart} = requestParts BC.empty [] (fromClientRequest resolved)
+      RequestParts {uriPath, meth, qitms, hdrs, formPar, filePar, bodyPart} = requestParts BC.empty [] (fromClientRequest resolved)
       requestLine = "request: " ++ BC.unpack meth ++ " " ++ BC.unpack uriPath ++ BC.unpack (H.renderQuery True qitms)
       headerLines = [ "header: " ++ BC.unpack (CI.original k) ++ ": " ++ masked (CI.original k) (BC.unpack v) | (k, v) <- hdrs, k /= H.hAccept ]
       formLines = [ "form: " ++ intercalate "&" [ BC.unpack k ++ "=" ++ masked k (BC.unpack v) | (k, v) <- formPar ] | not (null formPar) ]
+      fileLines = [ "file " ++ BC.unpack k ++ ": " ++ BC.unpack fileName ++ " (" ++ BC.unpack fileContentType ++ ", " ++ show (SB.length content) ++ " bytes)"
+                  | (k, FileInfo {fileName, fileContentType}) <- filePar, let content = fromMaybe SB.empty (lookup (T.decodeUtf8 fileName) (requestTempFiles creq)) ]
       bodyLines = [ "body (" ++ BC.unpack ct ++ "): " ++ clip (LBC.unpack body) | Just (ct, body) <- [bodyPart] ]
-    in requestLine : headerLines ++ formLines ++ bodyLines
+    in requestLine : headerLines ++ formLines ++ fileLines ++ bodyLines
   where
     -- credentials do not belong in a test report
     masked k v
@@ -951,6 +982,7 @@ expectingFailure expected pre (MkWebApiAction act) = case act of
       , label
       , apiVariables
       , apiEnsures = mempty
+      , apiRefutes = mempty
       , apiRecords = mempty
       }
     (const (Right ()))
@@ -981,12 +1013,14 @@ data ApiAction c xstate apps meth route a = ApiAction
   , requestFillers :: [RequestFiller c xstate apps meth route]
   , actionRefinements :: [Refinement meth route a]
   , contracts :: [RefinementId]
+  , refutations :: [RefinementId]
+    -- ^ declared refinements every run's value must be outside of
   }
 
 newtype RequestFiller c xstate apps meth route = RequestFiller (forall s m. HasApiStateM m s c xstate apps => ClientRequestVal meth route -> m (ClientRequestVal meth route))
 
 mkApiAction :: (forall s m. HasApiStateM m s c xstate apps => ActionConfig m s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a)) -> ApiAction c xstate apps meth route a
-mkApiAction f = ApiAction { buildAction = f, requestFillers = [], actionRefinements = [], contracts = [] }
+mkApiAction f = ApiAction { buildAction = f, requestFillers = [], actionRefinements = [], contracts = [], refutations = [] }
 
 -- | A class of an action's values decided by a predicate — a named,
 -- stackable postcondition: a value is in it when the predicate holds and
@@ -1015,6 +1049,21 @@ ensuresRefinement r = noteEnsured . foldr ((.) . check) id (chain r)
       andPostcondition (\_ lkp req x -> either (\why -> Left ("refinement " <> n <> ": " <> why)) Right (holds lkp req x))
     noteEnsured SuccessApiModel {apiEnsures, ..} = SuccessApiModel {apiEnsures = apiEnsures <> Set.fromList (refinementNames r), ..}
 
+-- | Check the step's value is *not* in the refinement: outside a class
+-- means its predicate fails or one of its bases' does (the class is their
+-- conjunction). Refuting never makes a class drawable.
+refutesRefinement :: forall meth r a s c xstate apps. Refinement meth r a -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+refutesRefinement r@Refinement {refinementName = rid@(RefinementId n)} = noteRefuted . andPostcondition (\_ lkp req x -> check lkp req x)
+  where
+    check :: LookUp -> ClientRequest meth r -> a -> Either Text ()
+    check lkp req x = case [ () | Refinement {holds} <- chain r, Left _ <- [holds lkp req x] ] of
+      [] -> Left ("refinement " <> n <> " holds, which the step refutes")
+      _ -> Right ()
+    chain :: Refinement meth r a -> [Refinement meth r a]
+    chain x@Refinement {refines} = x : concatMap chain refines
+    noteRefuted :: SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+    noteRefuted SuccessApiModel {apiRefutes, ..} = SuccessApiModel {apiRefutes = Set.insert rid apiRefutes, ..}
+
 -- | Note that the step records its value under the class (the recording
 -- itself is the model's next-state); 'runApiAction' refuses a declared
 -- refinement the step does not ensure.
@@ -1032,6 +1081,12 @@ withContract rid act@ApiAction {contracts, ..} = case lookupRefinement rid act o
   Just _ -> ApiAction {contracts = contracts ++ [rid], ..}
   Nothing -> error $ "withContract " ++ show rid ++ ": not a refinement the action declares"
 
+-- | Promise that no run's value is in a declared refinement.
+withRefutation :: RefinementId -> ApiAction c xstate apps meth route a -> ApiAction c xstate apps meth route a
+withRefutation rid act@ApiAction {refutations, ..} = case lookupRefinement rid act of
+  Just _ -> ApiAction {refutations = refutations ++ [rid], ..}
+  Nothing -> error $ "withRefutation " ++ show rid ++ ": not a refinement the action declares"
+
 lookupRefinement :: RefinementId -> ApiAction c xstate apps meth route a -> Maybe (Refinement meth route a)
 lookupRefinement rid ApiAction {actionRefinements} = case [ r | r@Refinement {refinementName} <- actionRefinements, refinementName == rid ] of
   r : _ -> Just r
@@ -1041,10 +1096,13 @@ lookupRefinement rid ApiAction {actionRefinements} = case [ r | r@Refinement {re
 -- the contracts on top of the configuration's model; and the rule that
 -- a declared refinement is recorded only when ensured.
 runApiAction :: HasApiStateM m s c xstate apps => ApiAction c xstate apps meth route a -> ActionConfig m s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a)
-runApiAction apiAct@ApiAction {buildAction, requestFillers, actionRefinements, contracts} ActionConfig {requestMod, modelMod} = do
+runApiAction apiAct@ApiAction {buildAction, requestFillers, actionRefinements, contracts, refutations} ActionConfig {requestMod, modelMod} = do
   act <- buildAction ActionConfig
     { requestMod = \creq -> requestMod creq >>= \creq' -> foldM (\r (RequestFiller fill) -> fill r) creq' requestFillers
-    , modelMod = \model -> foldr ensuresRefinement (modelMod model) [ r | rid <- contracts, Just r <- [lookupRefinement rid apiAct] ]
+    , modelMod = \model ->
+        foldr refutesRefinement
+          (foldr ensuresRefinement (modelMod model) [ r | rid <- contracts, Just r <- [lookupRefinement rid apiAct] ])
+          [ r | rid <- refutations, Just r <- [lookupRefinement rid apiAct] ]
     }
   let
     declared = Set.fromList (map (\Refinement {refinementName} -> refinementName) actionRefinements)
@@ -1106,6 +1164,7 @@ data Part meth route t where
   HeaderP :: Part meth route (HeaderIn meth route)
   PathP :: Part meth route (PathParam meth route)
   BodyP :: Part meth route (HListToTuple (StripContents (RequestBody meth route)))
+  FileP :: Part meth route (FileParam meth route)
 
 overPart :: Functor f => Part meth route t -> (Val t -> f (Val t)) -> ClientRequestVal meth route -> f (ClientRequestVal meth route)
 overPart part f ClientRequestVal {..} = case part of
@@ -1114,6 +1173,7 @@ overPart part f ClientRequestVal {..} = case part of
   HeaderP -> (\v -> ClientRequestVal {header = v, ..}) <$> f header
   PathP -> (\v -> ClientRequestVal {path = v, ..}) <$> f path
   BodyP -> (\v -> ClientRequestVal {body = v, ..}) <$> f body
+  FileP -> (\v -> ClientRequestVal {file = v, ..}) <$> f file
 
 -- | Declare a filler for a field of a request part: what the field gets
 -- when neither the action's default nor a script supplied it.
@@ -1253,6 +1313,7 @@ instance Show (NamedVal t) where
     Fields _ -> "<fields>"
     Unset n -> "<unset " ++ T.unpack n ++ ">"
     Fresh l _ -> "<fresh " ++ T.unpack l ++ ">"
+    TempFile n _ _ -> "<file " ++ T.unpack n ++ ">"
 
 showAnyNamedVal :: Any NamedVal -> String
 showAnyNamedVal (Some nv) = show nv

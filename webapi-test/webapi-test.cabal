@@ -67,6 +67,7 @@ library qc-dynamic
                     , reflection >= 2.1
                     , hashable
                     , case-insensitive
+                    , directory
     hs-source-dirs:   quickcheck-dynamic
     default-language: GHC2021
 
