@@ -29,6 +29,17 @@ module Test.WebApi.StateModel
   , ApiAction (..)
   , mkApiAction
   , runApiAction
+  , Refinement (..)
+  , refinementNames
+  , ensuresRefinement
+  , recordsAs
+  , declares
+  , withContract
+  , lookupRefinement
+  , registerClass
+  , registerClassRep
+  , generateAmong
+  , drawEntity
   , RequestFiller (..)
   , Filler (..)
   , Part (..)
@@ -139,6 +150,7 @@ import qualified Unsafe.Coerce as Unsafe
 import qualified GHC.Base as Unsafe (Any)
 import Data.Reflection
 import Data.Hashable
+import Data.Maybe (fromMaybe)
 import GHC.Generics (Rep)
 import Data.Bifunctor
 import Control.Monad.IO.Class
@@ -435,6 +447,9 @@ data ApiState (s :: Type) (c :: Type) (xstate :: Type) (apps :: [Type]) = ApiSta
   , generateFrom :: Maybe (Set.Set Text)
     -- ^ the actions (by the name the generator knows them under) generation
     -- draws from; 'Nothing' = every registered action
+  , classTypes :: M.Map RefinementId TypeRep
+    -- ^ the type each registered class holds ('registerClass'); recording
+    -- another type under it is a model bug
 --  , sessionState :: M.Map SessionKey NamedEntityTyped
   }
 
@@ -472,7 +487,18 @@ initApiState f xstate = ApiState
   , currentContext = Nothing
   , xActionState = xstate
   , generateFrom = Nothing
+  , classTypes = mempty
   }
+
+-- | Register a class with the type its entities have; a second
+-- registration with another type is an error.
+registerClass :: forall t c xstate apps s. Typeable t => RefinementId -> ApiState s c xstate apps -> ApiState s c xstate apps
+registerClass rid = registerClassRep rid (typeRep (Proxy @t))
+
+registerClassRep :: RefinementId -> TypeRep -> ApiState s c xstate apps -> ApiState s c xstate apps
+registerClassRep rid ty ApiState {classTypes, ..} = case M.lookup rid classTypes of
+  Just ty' | ty' /= ty -> error $ "class " ++ show rid ++ " is registered with two types: " ++ show ty' ++ " and " ++ show ty
+  _ -> ApiState {classTypes = M.insert rid ty classTypes, ..}
 
 initApiState_ :: forall c apps stTag s. HasApiState apps stTag apps =>
   (forall app. Typeable app => DSum (stTag apps app) Proxy -> DSum (stTag apps app) Identity)
@@ -503,6 +529,10 @@ data SuccessApiModel s c xstate apps meth r a = SuccessApiModel
   , label :: Maybe Text
     -- ^ the step's name where it was written (a script's rule), for the
     -- counterexample; 'actionName' stays the operation id
+  , apiEnsures :: Set.Set RefinementId
+    -- ^ the refinements the step's value is checked against ('ensuresRefinement')
+  , apiRecords :: Set.Set RefinementId
+    -- ^ the classes the step records its value under ('recordsAs')
   }
 
 defSuccessApiModel :: SuccessApiModel s c xstate apps meth r a
@@ -516,6 +546,8 @@ defSuccessApiModel = SuccessApiModel
   , apiPostconditionOnFailure = \_ _ _ -> True
   , label = Nothing
   , apiVariables = mempty
+  , apiEnsures = mempty
+  , apiRecords = mempty
   }
 
 labelSuffix :: SuccessApiModel s c xstate apps meth r a -> String
@@ -918,6 +950,8 @@ expectingFailure expected pre (MkWebApiAction act) = case act of
       , apiPostconditionOnFailure = \_ _ _ -> True
       , label
       , apiVariables
+      , apiEnsures = mempty
+      , apiRecords = mempty
       }
     (const (Right ()))
   _ -> Nothing
@@ -937,26 +971,89 @@ defaultActionConfig = ActionConfig
   }
 
 -- | An action a model exports: how it builds its step from a
--- configuration, and the fillers for the request fields it leaves
--- 'Unset' ('fills') — applied after the configuration's overrides, so a
--- script's value wins and a generated step gets the filler's.
+-- configuration; the fillers for the request fields it leaves 'Unset'
+-- ('fills') — applied after the configuration's overrides, so a script's
+-- value wins and a generated step gets the filler's; the refinements of
+-- its values it declares ('declares'), and those every run must satisfy
+-- ('withContract').
 data ApiAction c xstate apps meth route a = ApiAction
   { buildAction :: forall s m. HasApiStateM m s c xstate apps => ActionConfig m s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a)
   , requestFillers :: [RequestFiller c xstate apps meth route]
+  , actionRefinements :: [Refinement meth route a]
+  , contracts :: [RefinementId]
   }
 
 newtype RequestFiller c xstate apps meth route = RequestFiller (forall s m. HasApiStateM m s c xstate apps => ClientRequestVal meth route -> m (ClientRequestVal meth route))
 
 mkApiAction :: (forall s m. HasApiStateM m s c xstate apps => ActionConfig m s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a)) -> ApiAction c xstate apps meth route a
-mkApiAction f = ApiAction { buildAction = f, requestFillers = [] }
+mkApiAction f = ApiAction { buildAction = f, requestFillers = [], actionRefinements = [], contracts = [] }
 
--- | The action's step: the configuration's overrides, then the fillers.
+-- | A class of an action's values decided by a predicate — a named,
+-- stackable postcondition: a value is in it when the predicate holds and
+-- it is in every base. Values are symbolic until the step runs, so a
+-- refinement is decided *then*: as a check the step ensures
+-- ('ensuresRefinement') or the action promises ('withContract'); a value
+-- may be recorded under it only when so ensured ('recordsAs'), which is
+-- what makes drawing from the class afterwards sound.
+data Refinement meth r a = Refinement
+  { refinementName :: RefinementId
+  , refines :: [Refinement meth r a]
+  , holds :: LookUp -> ClientRequest meth r -> a -> Either Text ()
+  }
+
+-- | The refinement and its bases, transitively (itself first).
+refinementNames :: Refinement meth r a -> [RefinementId]
+refinementNames Refinement {refinementName, refines} = refinementName : concatMap refinementNames refines
+
+-- | Check the step's value against the refinement and its bases; a
+-- failure names the one that does not hold.
+ensuresRefinement :: Refinement meth r a -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+ensuresRefinement r = noteEnsured . foldr ((.) . check) id (chain r)
+  where
+    chain x@Refinement {refines} = x : concatMap chain refines
+    check Refinement {refinementName = RefinementId n, holds} =
+      andPostcondition (\_ lkp req x -> either (\why -> Left ("refinement " <> n <> ": " <> why)) Right (holds lkp req x))
+    noteEnsured SuccessApiModel {apiEnsures, ..} = SuccessApiModel {apiEnsures = apiEnsures <> Set.fromList (refinementNames r), ..}
+
+-- | Note that the step records its value under the class (the recording
+-- itself is the model's next-state); 'runApiAction' refuses a declared
+-- refinement the step does not ensure.
+recordsAs :: RefinementId -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+recordsAs rid SuccessApiModel {apiRecords, ..} = SuccessApiModel {apiRecords = Set.insert rid apiRecords, ..}
+
+-- | Declare a refinement of the action's values.
+declares :: Refinement meth route a -> ApiAction c xstate apps meth route a -> ApiAction c xstate apps meth route a
+declares r ApiAction {actionRefinements, ..} = ApiAction {actionRefinements = actionRefinements ++ [r], ..}
+
+-- | Promise a declared refinement on every run of the action — a script's
+-- step or a generated one.
+withContract :: RefinementId -> ApiAction c xstate apps meth route a -> ApiAction c xstate apps meth route a
+withContract rid act@ApiAction {contracts, ..} = case lookupRefinement rid act of
+  Just _ -> ApiAction {contracts = contracts ++ [rid], ..}
+  Nothing -> error $ "withContract " ++ show rid ++ ": not a refinement the action declares"
+
+lookupRefinement :: RefinementId -> ApiAction c xstate apps meth route a -> Maybe (Refinement meth route a)
+lookupRefinement rid ApiAction {actionRefinements} = case [ r | r@Refinement {refinementName} <- actionRefinements, refinementName == rid ] of
+  r : _ -> Just r
+  [] -> Nothing
+
+-- | The action's step: the configuration's overrides, then the fillers;
+-- the contracts on top of the configuration's model; and the rule that
+-- a declared refinement is recorded only when ensured.
 runApiAction :: HasApiStateM m s c xstate apps => ApiAction c xstate apps meth route a -> ActionConfig m s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a)
-runApiAction ApiAction {buildAction, requestFillers} ActionConfig {requestMod, modelMod} =
-  buildAction ActionConfig
+runApiAction apiAct@ApiAction {buildAction, requestFillers, actionRefinements, contracts} ActionConfig {requestMod, modelMod} = do
+  act <- buildAction ActionConfig
     { requestMod = \creq -> requestMod creq >>= \creq' -> foldM (\r (RequestFiller fill) -> fill r) creq' requestFillers
-    , modelMod
+    , modelMod = \model -> foldr ensuresRefinement (modelMod model) [ r | rid <- contracts, Just r <- [lookupRefinement rid apiAct] ]
     }
+  let
+    declared = Set.fromList (map (\Refinement {refinementName} -> refinementName) actionRefinements)
+    unsound :: forall s' c' xstate' apps' meth' r' a'. SuccessApiModel s' c' xstate' apps' meth' r' a' -> [RefinementId]
+    unsound SuccessApiModel {apiEnsures, apiRecords} = Set.toList ((apiRecords `Set.intersection` declared) `Set.difference` apiEnsures)
+  case unWebApiAction act of
+    SuccessCall _ model _ _ | rid : _ <- unsound model ->
+      error $ "the step records its value as " ++ show rid ++ ", a refinement it does not ensure"
+    _ -> pure act
 
 -- | How a field nobody supplied gets its value.
 newtype Filler c xstate apps x = Filler (forall s m. HasApiStateM m s c xstate apps => m (Val x))
@@ -971,11 +1068,36 @@ constFiller x = Filler (pure (Const x))
 -- | One of the entities recorded under the class, by position (shrinking
 -- toward the earliest); 'Unset' when there is none.
 entityFiller :: forall x c xstate apps. Typeable x => RefinementId -> Filler c xstate apps x
-entityFiller rid@(RefinementId klass) = Filler $ do
+entityFiller rid@(RefinementId klass) = Filler $ drawEntity rid >>= \case
+  Nothing -> pure (Unset ("an entity of class " <> klass))
+  Just (SomeVal v) -> pure $ fromMaybe (error $ T.unpack $ "an entity of another type is recorded under class " <> klass) (gcast v)
+
+-- | One of the entities recorded under the class, by position (a
+-- quantified choice as a DL step, a draw when generating; shrinking
+-- toward the earliest); 'Nothing' when there is none.
+drawEntity :: HasApiStateM m s c xstate apps => RefinementId -> m (Maybe AnyVal)
+drawEntity rid = do
   st <- getApiStateM
-  case getNamedEntities @x rid st of
-    [] -> pure (Unset ("an entity of class " <> klass))
-    vs -> elementsM vs
+  case getNamedEntitiesAny rid st of
+    [] -> pure Nothing
+    vs -> Just <$> elementsM vs
+
+-- | Generation among the model's exported actions (by the name
+-- 'generateFrom' scopes with): one whose precondition holds in the
+-- state, with its model-default request; when none is enabled any scoped
+-- one is returned and the DL discards it.
+generateAmong :: StateModel xstate
+  => [(Text, ApiState s c xstate apps -> QC.Gen (Any (Action (ApiState s c xstate apps))))]
+  -> ApiState s c xstate apps
+  -> QC.Gen (Any (Action (ApiState s c xstate apps)))
+generateAmong actions st@ApiState {generateFrom} = do
+  let scoped = [ gen | (name, gen) <- actions, maybe True (Set.member name) generateFrom ]
+  candidates <- mapM ($ st) scoped
+  let enabled = [ a | a@(Some act) <- candidates, webApiPrecondition st (unWebApiAction act) ]
+  case (enabled, candidates) of
+    (_ : _, _) -> QC.elements enabled
+    ([], _ : _) -> QC.elements candidates
+    ([], []) -> error "generateAmong: no action to generate from"
 
 -- | A part of a request, to name the field a filler fills.
 data Part meth route t where
@@ -997,9 +1119,9 @@ overPart part f ClientRequestVal {..} = case part of
 -- when neither the action's default nor a script supplied it.
 fills :: forall name x t c xstate apps meth route a. (Generic t, GValRep (Rep t), GGetField name x (Rep t), GSetField name x (Rep t))
   => Part meth route t -> Filler c xstate apps x -> ApiAction c xstate apps meth route a -> ApiAction c xstate apps meth route a
-fills part (Filler make) ApiAction {buildAction, requestFillers} = ApiAction
-  { buildAction
-  , requestFillers = requestFillers ++ [RequestFiller (overPart part (fillField @name make))]
+fills part (Filler make) ApiAction {requestFillers, ..} = ApiAction
+  { requestFillers = requestFillers ++ [RequestFiller (overPart part (fillField @name make))]
+  , ..
   }
 
 data ActionConfigWith outcome s c xstate apps meth route a = ActionConfigWith
@@ -1158,10 +1280,13 @@ addTypedEntity :: forall t c xstate apps s.
   -> NER
   -> ApiState s c xstate apps
   -> ApiState s c xstate apps
-addTypedEntity val NER {refinementId} ApiState {namedEntityTyped, ..} =
+addTypedEntity val NER {refinementId} ApiState {namedEntityTyped, classTypes, ..} =
   let
-    newNET = NamedEntityTyped NamedEntity { namedEntity = M.singleton (typeRep (Proxy @t)) [Some NamedVal {name = refinementId, val}] }
-  in ApiState {namedEntityTyped = namedEntityTyped <> newNET, ..}
+    ty = typeRep (Proxy @t)
+    newNET = NamedEntityTyped NamedEntity { namedEntity = M.singleton ty [Some NamedVal {name = refinementId, val}] }
+  in case M.lookup refinementId classTypes of
+    Just ty' | ty' /= ty -> error $ "an entity of type " ++ show ty ++ " recorded under class " ++ show refinementId ++ ", which holds " ++ show ty'
+    _ -> ApiState {namedEntityTyped = namedEntityTyped <> newNET, classTypes, ..}
 
 -- | Every entity of type @t@ the model has recorded, newest last.
 getTypedEntities :: forall t c xstate apps s. Typeable t => ApiState s c xstate apps -> [Val t]
