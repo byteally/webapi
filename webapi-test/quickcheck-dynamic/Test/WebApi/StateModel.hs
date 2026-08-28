@@ -60,6 +60,7 @@ module Test.WebApi.StateModel
   , setPostconditionOnFailure
   , setLabel
   , andPostcondition
+  , addVariables
   , initApiState
   , initApiState_
   , modifyApiState
@@ -291,11 +292,12 @@ instance StateModel xstate => Show (WebApiAction s c xstate apps a) where
 
 -- TODO: Revisit
 instance Eq (Action xstate a) => Eq (WebApiAction s c xstate apps a) where
-  (==) (SuccessCall creq1 _ _ _) = \case
-    SuccessCall creq2 _ _ _ -> (getOpIdFromRequest $ creq1) == (getOpIdFromRequest $ creq2)
+  -- a labelled step (a script's) is itself; generated ones are their operation
+  (==) (SuccessCall creq1 SuccessApiModel {label = l1} _ _) = \case
+    SuccessCall creq2 SuccessApiModel {label = l2} _ _ -> getOpIdFromRequest creq1 == getOpIdFromRequest creq2 && l1 == l2
     _ -> False
-  (==) (ErrorCall creq1 expected1 _ _) = \case
-    ErrorCall creq2 expected2 _ _ -> getOpIdFromRequest creq1 == getOpIdFromRequest creq2 && expected1 == expected2
+  (==) (ErrorCall creq1 expected1 SuccessApiModel {label = l1} _) = \case
+    ErrorCall creq2 expected2 SuccessApiModel {label = l2} _ -> getOpIdFromRequest creq1 == getOpIdFromRequest creq2 && expected1 == expected2 && l1 == l2
     _ -> False
   (==) (SomeExceptionCall creq1) = \case
     SomeExceptionCall creq2 -> (show . unsafePerformIO . toWaiRequest . fromClientRequest $ creq1) == (show . unsafePerformIO . toWaiRequest . fromClientRequest $ creq2)
@@ -315,8 +317,8 @@ instance Eq (Action xstate a) => Eq (WebApiAction s c xstate apps a) where
 
 instance StateModel xstate => HasVariables (WebApiAction s c xstate apps a) where
   getAllVariables = \case
-    SuccessCall creq _ _ _ -> getAllVariables creq
-    ErrorCall creq _ _ _ -> getAllVariables creq
+    SuccessCall creq SuccessApiModel {apiVariables} _ _ -> getAllVariables creq <> apiVariables
+    ErrorCall creq _ SuccessApiModel {apiVariables} _ -> getAllVariables creq <> apiVariables
     SomeExceptionCall {} -> mempty
     SetContext {} -> mempty
     ClearContext {} -> mempty
@@ -543,6 +545,10 @@ data SuccessApiModel s c xstate apps meth r a = SuccessApiModel
     -- ^ over the result of the performed call; 'Left' says why it does not
     -- hold (the counterexample carries it, with the result)
   , apiPostconditionOnFailure :: (ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> Either ErrorState a -> Bool
+  , apiVariables :: Set.Set (Any Var)
+    -- ^ variables the model's hooks look up besides the request's (a
+    -- postcondition over an earlier result): the DL must know them, or
+    -- shrinking may drop the step that binds them and keep this one
   , label :: Maybe Text
     -- ^ the step's name where it was written (a script's rule), for the
     -- counterexample; 'actionName' stays the operation id
@@ -558,6 +564,7 @@ defSuccessApiModel = SuccessApiModel
   , apiPostcondition = \_ _ _ -> Right ()
   , apiPostconditionOnFailure = \_ _ _ -> True
   , label = Nothing
+  , apiVariables = mempty
   }
 
 labelSuffix :: SuccessApiModel s c xstate apps meth r a -> String
@@ -588,6 +595,10 @@ andPostcondition f SuccessApiModel {apiPostcondition, ..} = SuccessApiModel {api
 
 setLabel :: Text -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setLabel l SuccessApiModel {..} = SuccessApiModel {label = Just l, ..}
+
+-- | Declare variables the model's hooks look up (see 'apiVariables').
+addVariables :: Set.Set (Any Var) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+addVariables vs SuccessApiModel {apiVariables, ..} = SuccessApiModel {apiVariables = apiVariables <> vs, ..}
 
 setPostconditionOnFailure :: ((ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> Either ErrorState a -> Bool) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setPostconditionOnFailure f SuccessApiModel {..} = SuccessApiModel {apiPostconditionOnFailure = f, ..}
@@ -933,7 +944,7 @@ expectingFailure :: Eq (Action xstate ()) =>
   -> Action (ApiState s c xstate apps) a
   -> Maybe (Action (ApiState s c xstate apps) ())
 expectingFailure expected pre (MkWebApiAction act) = case act of
-  SuccessCall creq SuccessApiModel {apiFailureNextState, label} _ _ -> Just $ mkWebApiAction $ ErrorCall creq expected
+  SuccessCall creq SuccessApiModel {apiFailureNextState, label, apiVariables} _ _ -> Just $ mkWebApiAction $ ErrorCall creq expected
     SuccessApiModel
       { apiNextState = (\ns _ st -> ns st) <$> apiFailureNextState
       , apiFailureNextState
@@ -943,6 +954,7 @@ expectingFailure expected pre (MkWebApiAction act) = case act of
       , apiPostcondition = \_ _ _ -> Right ()
       , apiPostconditionOnFailure = \_ _ _ -> True
       , label
+      , apiVariables
       }
     (const (Right ()))
   _ -> Nothing
@@ -977,21 +989,29 @@ class Monad m => HasApiStateM m s c xstate apps | m -> s c xstate apps where
   -- | A generated value (with its shrinks): a quantified variable of the DL
   -- program, or a draw when the action itself is being generated.
   genValM :: (Typeable a, Show a, Eq a) => QC.Gen a -> (a -> [a]) -> m a
+  -- | An index below the count, shrinking toward 0 — and, as a quantified
+  -- variable, valid only while it is below the count: a choice among
+  -- state-dependent candidates replays as a *position* when the program
+  -- around it is shrunk, instead of as a value that may no longer exist.
+  genIndexM :: Int -> m Int
 
 instance HasApiStateM (DL (ApiState s c xstate apps)) s c xstate apps where
   getApiStateM = getModelStateDL
   genValM gen shr = forAllNonVariableQ (withGenQ gen (const True) shr)
+  genIndexM n = forAllNonVariableQ (withGenQ (QC.choose (0, n - 1)) (\i -> i >= 0 && i < n) (\i -> [0 .. i - 1]))
 
 instance HasApiStateM (ApiGenM s c xstate apps) s c xstate apps where
   getApiStateM = ask
   genValM gen _ = ApiGenM (lift gen)
+  genIndexM n = ApiGenM (lift (QC.choose (0, n - 1)))
 
 -- | One of the candidates — a quantified choice when the action is a DL
--- step, a draw when it is being generated — shrinking toward the earlier
--- ones (a model listing its candidates oldest-first shrinks to the oldest).
-elementsM :: (HasApiStateM m s c xstate apps, Typeable a, Show a, Eq a) => [a] -> m a
+-- step, a draw when it is being generated — by position, shrinking toward
+-- the first (a model listing its candidates oldest-first shrinks to the
+-- oldest; see 'genIndexM').
+elementsM :: HasApiStateM m s c xstate apps => [a] -> m a
 elementsM [] = error "elementsM: nothing to choose from"
-elementsM xs = genValM (QC.elements xs) (\x -> takeWhile (/= x) xs)
+elementsM xs = (xs !!) <$> genIndexM (length xs)
 
 newtype ApiGenM s c xstate apps a = ApiGenM (ReaderT (ApiState s c xstate apps) QC.Gen a)
   deriving newtype (Functor, Applicative, Monad, MonadReader (ApiState s c xstate apps))
