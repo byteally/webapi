@@ -38,6 +38,7 @@ module Test.WebApi.StateModel
   , successCallWith
   , failingCall
   , failingCallWith
+  , expectingFailure
   , ExpectedFailure (..)
   -- , mkApiAction
   , defaultActionConfig
@@ -68,6 +69,7 @@ module Test.WebApi.StateModel
   , addTypedEntity
   , getTypedEntities
   , getNamedEntities
+  , getNamedEntitiesAny
   , inClass
   , notInClass
   , inClassKeyed
@@ -920,6 +922,31 @@ failingCallWith :: forall meth r app res c xstate apps s. (Typeable res, Show re
   -> Action (ApiState s c xstate apps) res
 failingCallWith creq expected apiModel f = mkWebApiAction (ErrorCall creq expected apiModel f)
 
+-- | A successful call as a negative scenario: the same request, expected
+-- to fail. The model's precondition does not apply (a negative scenario
+-- is by nature outside it) — the given one does; the step's result is
+-- unit; its next state is the model's 'apiFailureNextState' (identity by
+-- default); the label stays. 'Nothing' for anything but a 'SuccessCall'.
+expectingFailure :: Eq (Action xstate ()) =>
+  ExpectedFailure
+  -> (ApiState s c xstate apps -> Bool)
+  -> Action (ApiState s c xstate apps) a
+  -> Maybe (Action (ApiState s c xstate apps) ())
+expectingFailure expected pre (MkWebApiAction act) = case act of
+  SuccessCall creq SuccessApiModel {apiFailureNextState, label} _ _ -> Just $ mkWebApiAction $ ErrorCall creq expected
+    SuccessApiModel
+      { apiNextState = (\ns _ st -> ns st) <$> apiFailureNextState
+      , apiFailureNextState
+      , apiPrecondition = Just pre
+      , apiValidFailingAction = Nothing
+      , apiShrinkAction = Nothing
+      , apiPostcondition = \_ _ _ -> Right ()
+      , apiPostconditionOnFailure = \_ _ _ -> True
+      , label
+      }
+    (const (Right ()))
+  _ -> Nothing
+
 
 -- newtype ApiGen apps a = ApiGen (ReaderT
 data ActionConfig s c xstate apps meth route a = ActionConfig
@@ -1118,6 +1145,11 @@ getTypedEntities ApiState {namedEntityTyped = NamedEntityTyped NamedEntity {name
 getNamedEntities :: forall t c xstate apps s. Typeable t => RefinementId -> ApiState s c xstate apps -> [Val t]
 getNamedEntities rid ApiState {namedEntityTyped = NamedEntityTyped NamedEntity {namedEntity}} =
   [ v | Some (NamedVal {name, val = v'}) <- M.findWithDefault [] (typeRep (Proxy @t)) namedEntity, name == rid, Just v <- [gcast v'] ]
+
+-- | Every entity recorded under the name, whatever its type, oldest first.
+getNamedEntitiesAny :: RefinementId -> ApiState s c xstate apps -> [AnyVal]
+getNamedEntitiesAny rid ApiState {namedEntityTyped = NamedEntityTyped NamedEntity {namedEntity}} =
+  [ SomeVal v | vs <- M.elems namedEntity, Some (NamedVal {name, val = v}) <- vs, name == rid ]
 
 -- | Whether any entity (of any type) is recorded under the name.
 hasNamedEntity :: RefinementId -> ApiState s c xstate apps -> Bool
