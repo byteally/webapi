@@ -13,6 +13,9 @@ module Test.WebApi
   , runWebApiSessions
   , getClientCookies
   , modifyClientCookies
+  , beginStep
+  , freshToken
+  , freshTokens
   , setClientCookie
   , deleteClientCookie
   , WebApiSessions (..)
@@ -65,6 +68,7 @@ import GHC.TypeLits
 import Data.IORef
 import qualified Network.HTTP.Client as HC
 import Data.Time (UTCTime, getCurrentTime, addUTCTime, nominalDay)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Control.Exception (SomeException, try)
 import Data.Word (Word8)
 import Data.ByteString.Builder (toLazyByteString)
@@ -254,7 +258,58 @@ runWebApi :: forall app a.
   -> IO a
 runWebApi (WebApiSession sess) app = runSession sess app
 
-newtype ClientsState = ClientsState (Map TypeRep WaiInt.ClientState)
+-- | The per-app client states (cookies), and the supply of fresh tokens.
+data ClientsState = ClientsState
+  { clientStates :: Map TypeRep WaiInt.ClientState
+  , freshSupply :: FreshSupply
+  }
+
+-- | Tokens made up as steps run ('freshToken'): a nonce chosen when the
+-- sessions start and a counter, so no two executions make the same one;
+-- and the tokens of the step being run, by label — one token per label
+-- per step, whoever asks.
+data FreshSupply = FreshSupply
+  { nonce :: Text
+  , next :: Int
+  , current :: Map Text Text
+  }
+
+initFreshSupply :: FreshSupply
+initFreshSupply = FreshSupply { nonce = "", next = 0, current = mempty }
+
+-- | Start a step: the tokens made for the previous one are forgotten.
+beginStep :: WebApiSessions apps ()
+beginStep = modify' $ \ClientsState {clientStates, freshSupply = FreshSupply {nonce, next}} ->
+  ClientsState {clientStates, freshSupply = FreshSupply {nonce, next, current = mempty}}
+
+-- | The token for a label in the step being run: made once per step (the
+-- same label asks again and gets the same one), never twice in a run.
+freshToken :: Text -> WebApiSessions apps Text
+freshToken label = do
+  ClientsState {clientStates, freshSupply = FreshSupply {nonce, next, current}} <- get
+  case M.lookup label current of
+    Just t -> pure t
+    Nothing -> do
+      let t = nonce <> "n" <> T.pack (show next)
+      put ClientsState {clientStates, freshSupply = FreshSupply {nonce, next = next + 1, current = M.insert label t current}}
+      pure t
+
+-- | The tokens made for the step being run, by label.
+freshTokens :: WebApiSessions apps (Map Text Text)
+freshTokens = gets $ \ClientsState {freshSupply = FreshSupply {current}} -> current
+
+-- | Milliseconds since the epoch in base 36: distinct across runs, short
+-- enough to sit inside a name.
+newNonce :: IO Text
+newNonce = do
+  t <- getPOSIXTime
+  pure $ T.pack $ base36 (floor (t * 1000) :: Integer)
+  where
+    base36 0 = "0"
+    base36 n = reverse (go n)
+    go 0 = []
+    go k = let (q, r) = k `divMod` 36 in (digits !! fromInteger r) : go q
+    digits = ['0'..'9'] ++ ['a'..'z']
 
 -- | An application reached over HTTP instead of in-process: a parsed base
 -- request (scheme, host, port, path prefix — e.g. @https://accounts.example/v2@)
@@ -278,7 +333,7 @@ initApps = Applications
   }
 
 initClientsState :: ClientsState
-initClientsState = ClientsState mempty
+initClientsState = ClientsState { clientStates = mempty, freshSupply = initFreshSupply }
 
 newtype WebApiSessions (apps :: [Type]) a = WebApiSessions (ReaderT Applications (StateT ClientsState IO) a)
   deriving (Functor, Applicative, Monad, MonadIO, MonadReader Applications, MonadState ClientsState)
@@ -314,20 +369,20 @@ testClients creq = do
     appRep = typeRep (Proxy :: Proxy app)
   WebApiSessions $ ReaderT $ \Applications {native, external} -> case M.lookup appRep native of
     Just app -> do
-      ClientsState css <- get
+      ClientsState {clientStates = css} <- get
       case M.lookup appRep css of
         Nothing -> error $ "Panic: app not found for: " <> show appRep
         Just cstate -> do
           liftIO $ print $ WaiInt.clientCookies cstate
           (a, s) <- liftIO $ runStateT (runReaderT (runWebApiSession $ testClient creq) app) cstate
-          modify' $ \(ClientsState css') -> ClientsState $ M.insert appRep s css'
+          modify' $ \st@ClientsState {clientStates = css'} -> st {clientStates = M.insert appRep s css'}
           pure a
     Nothing -> case M.lookup appRep external of
       Just ext -> do
-        ClientsState css <- get
+        ClientsState {clientStates = css} <- get
         let cstate = M.findWithDefault WaiInt.initState appRep css
         (a, s) <- liftIO $ externalClient ext cstate (fromClientRequest creq)
-        modify' $ \(ClientsState css') -> ClientsState $ M.insert appRep s css'
+        modify' $ \st@ClientsState {clientStates = css'} -> st {clientStates = M.insert appRep s css'}
         pure a
       Nothing -> error $ "Panic: app not found for: " <> show appRep
 
@@ -442,10 +497,10 @@ addApp waapp WebApiSessionsConfig {applications, clientsState} =
     app = getWaiApp waapp
     appRep = typeRep (Proxy @app)
     Applications {native, external} = applications
-    ClientsState cstate = clientsState
+    ClientsState {clientStates = cstate, freshSupply} = clientsState
   in WebApiSessionsConfig
      { applications = Applications { native = M.insert appRep app native, external}
-     , clientsState = ClientsState $ M.insert appRep WaiInt.initState cstate
+     , clientsState = ClientsState { clientStates = M.insert appRep WaiInt.initState cstate, freshSupply }
      }
 
 -- | Register an app reached over HTTP. @base@ is the parsed base request —
@@ -456,25 +511,29 @@ addExternalApp base mgr WebApiSessionsConfig {applications, clientsState} =
   let
     appRep = typeRep (Proxy @app)
     Applications {native, external} = applications
-    ClientsState cstate = clientsState
+    ClientsState {clientStates = cstate, freshSupply} = clientsState
   in WebApiSessionsConfig
      { applications = Applications { native, external = M.insert appRep (ExternalApp base mgr) external }
-     , clientsState = ClientsState $ M.insert appRep WaiInt.initState cstate
+     , clientsState = ClientsState { clientStates = M.insert appRep WaiInt.initState cstate, freshSupply }
      }
 
+-- | Run the sessions; each run gets its own nonce for fresh tokens.
 runWebApis :: WebApiSessionsConfig apps -> WebApiSessions apps a -> IO a
-runWebApis WebApiSessionsConfig {applications, clientsState} (WebApiSessions sess) =
-  evalStateT (runReaderT sess applications) clientsState
+runWebApis cfg sess = fst <$> runWebApis' cfg sess
 
 runWebApis' :: WebApiSessionsConfig apps -> WebApiSessions apps a -> IO (a, WebApiSessionsConfig apps)
 runWebApis' WebApiSessionsConfig {applications, clientsState} (WebApiSessions sess) = do
-  (a, clientsStateNew) <- runStateT (runReaderT sess applications) clientsState
+  n <- newNonce
+  let
+    ClientsState {clientStates, freshSupply = FreshSupply {next, current}} = clientsState
+    st0 = ClientsState {clientStates, freshSupply = FreshSupply {nonce = n, next, current}}
+  (a, clientsStateNew) <- runStateT (runReaderT sess applications) st0
   pure (a, WebApiSessionsConfig {applications, clientsState = clientsStateNew})
 
 
 getClientCookies :: forall app apps proxy. Typeable app => proxy app -> WebApiSessions apps ClientCookies
 getClientCookies _ = WebApiSessions $ do
-  gets $ \(ClientsState cstMap) -> case M.lookup (typeRep (Proxy @app)) cstMap of
+  gets $ \ClientsState {clientStates = cstMap} -> case M.lookup (typeRep (Proxy @app)) cstMap of
     Nothing -> mempty
     Just cst -> WaiInt.clientCookies cst
 
@@ -483,7 +542,7 @@ modifyClientCookies _ f = WebApiSessions $ do
   let
     alterSt Nothing = Just (WaiInt.ClientState $ f mempty)
     alterSt (Just cst) = Just (WaiInt.ClientState $ f $ WaiInt.clientCookies cst)
-  modify' $ \(ClientsState cstMap) -> ClientsState $ M.alter alterSt (typeRep (Proxy @app)) cstMap
+  modify' $ \st@ClientsState {clientStates = cstMap} -> st {clientStates = M.alter alterSt (typeRep (Proxy @app)) cstMap}
 
 setClientCookie :: forall app apps proxy. Typeable app => proxy app -> SetCookie -> WebApiSessions apps ()
 setClientCookie papp c =

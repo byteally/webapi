@@ -17,13 +17,20 @@ module Test.WebApi.Val
   , GVal (..)
   , GValRep (..)
   , resolveVal
+  , resolveValWith
+  , freshLabels
   , shrinkVal
   , fromVar
+  , fresh
   , fields
+  , explodeVal
   , setField
+  , getField
+  , fillField
   , unsetField
   , unsetLabel
   , GSetField
+  , GGetField
   ) where
 
 import Test.QuickCheck.StateModel (Var, LookUp, HasVariables (..), VarContext, Any, shrinkVar)
@@ -47,6 +54,10 @@ data Val a where
   Fields :: (Generic a, GValRep (Rep a)) => GVal (Rep a) -> Val a
   -- | Nobody supplied this leaf; the label names it (@Type.field@).
   Unset :: Text -> Val a
+  -- | A value made up when the step runs — a token unique to the
+  -- execution (never a witness of the program, so never replayed) and
+  -- what to make of it; the same label within one step gets one token.
+  Fresh :: Text -> (Text -> a) -> Val a
 
 instance Functor Val where
   fmap f = \case
@@ -56,6 +67,7 @@ instance Functor Val where
     Map g v -> Map (f . g) v
     v@Fields {} -> Map f v
     Unset n -> Unset n
+    Fresh l g -> Fresh l (f . g)
 
 -- | Constants fold; anything symbolic becomes a 'Pair' so every leaf stays
 -- visible to resolution, variable collection and shrinking. An 'Unset'
@@ -67,15 +79,35 @@ instance Applicative Val where
   f <*> Const a = fmap ($ a) f
   f <*> a = Pair (\(g, x) -> g x) (f, a)
 
--- | 'Left' names the first 'Unset' leaf.
+-- | 'Left' names the first 'Unset' leaf — or 'Fresh' one: those are known
+-- only while their step runs ('resolveValWith').
 resolveVal :: LookUp -> Val a -> Either Text a
-resolveVal lkp = \case
-  Const a -> Right a
-  Var f v -> Right (f (lkp v))
-  Pair f (v1, v2) -> f <$> ((,) <$> resolveVal lkp v1 <*> resolveVal lkp v2)
-  Map f v -> f <$> resolveVal lkp v
-  Fields gv -> to <$> gResolve lkp gv
-  Unset n -> Left n
+resolveVal = resolveValWith (\l -> Left ("fresh value " <> l <> " is known only while its step runs"))
+
+-- | With the step's fresh tokens, by label.
+resolveValWith :: (Text -> Either Text Text) -> LookUp -> Val a -> Either Text a
+resolveValWith fr lkp = go
+  where
+    go :: Val x -> Either Text x
+    go = \case
+      Const a -> Right a
+      Var f v -> Right (f (lkp v))
+      Pair f (v1, v2) -> f <$> ((,) <$> go v1 <*> go v2)
+      Map f v -> f <$> go v
+      Fields gv -> to <$> gResolve fr lkp gv
+      Unset n -> Left n
+      Fresh l f -> f <$> fr l
+
+-- | The labels of the fresh leaves.
+freshLabels :: Val a -> Set.Set Text
+freshLabels = \case
+  Const {} -> mempty
+  Var {} -> mempty
+  Pair _ (v1, v2) -> freshLabels v1 <> freshLabels v2
+  Map _ v -> freshLabels v
+  Fields gv -> gFreshLabels gv
+  Unset {} -> mempty
+  Fresh l _ -> Set.singleton l
 
 instance HasVariables (Val a) where
   getAllVariables = \case
@@ -85,6 +117,7 @@ instance HasVariables (Val a) where
     Map _ v -> getAllVariables v
     Fields gv -> gVars gv
     Unset {} -> mempty
+    Fresh {} -> mempty
 
 -- | Shrink one leaf at a time: a variable to an earlier one of its type
 -- (see 'shrinkVar'); constants and unset leaves do not shrink.
@@ -96,9 +129,14 @@ shrinkVal vctx = \case
   Map f v -> Map f <$> shrinkVal vctx v
   Fields gv -> Fields <$> gShrink vctx gv
   Unset {} -> []
+  Fresh {} -> []
 
 fromVar :: Typeable a => Var a -> Val a
 fromVar = Var id
+
+-- | A fresh token (see 'Fresh').
+fresh :: Text -> Val Text
+fresh l = Fresh l id
 
 -- | A record kept field by field, every field a constant to begin with.
 fields :: (Generic a, GValRep (Rep a)) => a -> Val a
@@ -106,10 +144,26 @@ fields = Fields . gConst . from
 
 -- | Replace one field (by its selector name) of a record value.
 setField :: forall name x a. (Generic a, GValRep (Rep a), GSetField name x (Rep a)) => Val x -> Val a -> Val a
-setField v = \case
-  Fields gv -> Fields (gSetField @name v gv)
-  Const a -> Fields (gSetField @name v (gConst (from a)))
-  other -> Pair (\(r, x) -> to (gSetRep @name x (from r))) (other, v)
+setField v r = Fields (gSetField @name v (explodeVal r))
+
+-- | The field, by selector name.
+getField :: forall name x a. (Generic a, GValRep (Rep a), GGetField name x (Rep a)) => Val a -> Val x
+getField = gGetField @name . explodeVal
+
+-- | Fill the field when nobody supplied it ('Unset'); a supplied one stays.
+fillField :: forall name x a m. (Monad m, Generic a, GValRep (Rep a), GGetField name x (Rep a), GSetField name x (Rep a)) => m (Val x) -> Val a -> m (Val a)
+fillField make r = case getField @name r of
+  Unset _ -> (\x -> setField @name x r) <$> make
+  _ -> pure r
+
+-- | A record value kept field by field, whatever node it was: a constant
+-- is split, a symbolic node is projected per field (a whole 'Unset' part
+-- makes every field 'Unset').
+explodeVal :: (Generic a, GValRep (Rep a)) => Val a -> GVal (Rep a)
+explodeVal = \case
+  Fields gv -> gv
+  Const x -> gConst (from x)
+  v -> gExplode (from <$> v)
 
 -- | Leave one field (by its selector name) unset: the request cannot be
 -- performed until something (a script override, a model default) fills it.
@@ -128,33 +182,68 @@ data GVal (f :: Type -> Type) where
 
 class GValRep f where
   gConst :: f p -> GVal f
-  gResolve :: LookUp -> GVal f -> Either Text (f p)
+  gExplode :: Val (f p) -> GVal f
+  gResolve :: (Text -> Either Text Text) -> LookUp -> GVal f -> Either Text (f p)
   gVars :: GVal f -> Set.Set (Any Var)
+  gFreshLabels :: GVal f -> Set.Set Text
   gShrink :: VarContext -> GVal f -> [GVal f]
 
 instance GValRep f => GValRep (M1 i c f) where
   gConst (M1 f) = GM1 (gConst f)
-  gResolve lkp (GM1 g) = M1 <$> gResolve lkp g
+  gExplode v = GM1 (gExplode (unM1 <$> v))
+  gResolve fr lkp (GM1 g) = M1 <$> gResolve fr lkp g
   gVars (GM1 g) = gVars g
+  gFreshLabels (GM1 g) = gFreshLabels g
   gShrink vc (GM1 g) = GM1 <$> gShrink vc g
 
 instance (GValRep f, GValRep g) => GValRep (f :*: g) where
   gConst (f :*: g) = GProd (gConst f) (gConst g)
-  gResolve lkp (GProd a b) = (:*:) <$> gResolve lkp a <*> gResolve lkp b
+  gExplode v = GProd (gExplode ((\(a :*: _) -> a) <$> v)) (gExplode ((\(_ :*: b) -> b) <$> v))
+  gResolve fr lkp (GProd a b) = (:*:) <$> gResolve fr lkp a <*> gResolve fr lkp b
   gVars (GProd a b) = gVars a <> gVars b
+  gFreshLabels (GProd a b) = gFreshLabels a <> gFreshLabels b
   gShrink vc (GProd a b) = [GProd a' b | a' <- gShrink vc a] ++ [GProd a b' | b' <- gShrink vc b]
 
 instance GValRep (K1 i a) where
   gConst (K1 a) = GK1 (Const a)
-  gResolve lkp (GK1 v) = K1 <$> resolveVal lkp v
+  gExplode v = GK1 (unK1 <$> v)
+  gResolve fr lkp (GK1 v) = K1 <$> resolveValWith fr lkp v
   gVars (GK1 v) = getAllVariables v
+  gFreshLabels (GK1 v) = freshLabels v
   gShrink vc (GK1 v) = GK1 <$> shrinkVal vc v
 
 instance GValRep U1 where
   gConst U1 = GU1
-  gResolve _ GU1 = Right U1
+  gExplode _ = GU1
+  gResolve _ _ GU1 = Right U1
   gVars GU1 = mempty
+  gFreshLabels GU1 = mempty
   gShrink _ GU1 = []
+
+-- | Get a field by selector name, from a 'GVal'.
+class GGetField (name :: Symbol) (x :: Type) (f :: Type -> Type) | name f -> x where
+  gGetField :: GVal f -> Val x
+
+instance GGetField name x f => GGetField name x (D1 c f) where
+  gGetField (GM1 g) = gGetField @name g
+
+instance GGetField name x f => GGetField name x (C1 c f) where
+  gGetField (GM1 g) = gGetField @name g
+
+instance (FieldIn name f ~ inLeft, GGetFieldProd inLeft name x f g) => GGetField name x (f :*: g) where
+  gGetField = gGetFieldProd @inLeft @name
+
+instance (x ~ x') => GGetField name x (S1 ('MetaSel ('Just name) su ss ds) (K1 i x')) where
+  gGetField (GM1 (GK1 v)) = v
+
+class GGetFieldProd (inLeft :: Bool) (name :: Symbol) (x :: Type) (f :: Type -> Type) (g :: Type -> Type) | name f g -> x where
+  gGetFieldProd :: GVal (f :*: g) -> Val x
+
+instance GGetField name x f => GGetFieldProd 'True name x f g where
+  gGetFieldProd (GProd a _) = gGetField @name a
+
+instance GGetField name x g => GGetFieldProd 'False name x f g where
+  gGetFieldProd (GProd _ b) = gGetField @name b
 
 -- | Set a field by selector name, in a 'GVal' or a plain 'Rep' value.
 class GSetField (name :: Symbol) (x :: Type) (f :: Type -> Type) | name f -> x where

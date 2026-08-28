@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -25,6 +27,15 @@ module Test.WebApi.StateModel
   , NoXState
   , ContextSwitch (..)
   , ApiAction (..)
+  , mkApiAction
+  , runApiAction
+  , RequestFiller (..)
+  , Filler (..)
+  , Part (..)
+  , fills
+  , freshFiller
+  , constFiller
+  , entityFiller
   , ApiActionWith (..)
   , ActionConfig (..)
   , ActionConfigWith (..)
@@ -134,9 +145,11 @@ import qualified GHC.Base as Unsafe (Any)
 import Data.Reflection
 import Data.Maybe
 import Data.Hashable
+import GHC.Generics (Rep)
 import Data.Bifunctor
 import Control.Monad.IO.Class
 import Control.Monad.Reader
+import Control.Monad (foldM)
 
 type WebApiActionCxt (apps :: [Type]) (meth :: Type) (app :: Type) (r :: k) =
   ( ToParam 'PathParam (PathParam meth (app://r))
@@ -201,21 +214,42 @@ instance HasVariables (ClientRequestVal meth r) where
     <> getAllVariables file
     <> getAllVariables body
 
--- | 'Left' names the request field nobody supplied.
+-- | 'Left' names the request field nobody supplied; the fresh tokens by
+-- label are the step's ('stepFresh').
 resolveRequest ::
   ( SingMethod meth
-  ) => LookUp
+  ) => (Text -> Either Text Text)
+  -> LookUp
   -> ClientRequestVal meth r
   -> Either Text (ClientRequest meth r)
-resolveRequest lkp ClientRequestVal {query, form, header, path, file, body} =
+resolveRequest fr lkp ClientRequestVal {query, form, header, path, file, body} =
   do
-    query' <- resolveVal lkp query
-    form' <- resolveVal lkp form
-    header' <- resolveVal lkp header
-    path' <- resolveVal lkp path
-    file' <- resolveVal lkp file
-    body' <- resolveVal lkp body
+    query' <- resolveValWith fr lkp query
+    form' <- resolveValWith fr lkp form
+    header' <- resolveValWith fr lkp header
+    path' <- resolveValWith fr lkp path
+    file' <- resolveValWith fr lkp file
+    body' <- resolveValWith fr lkp body
     Right $ ClientRequest {query = query', form = form', header = header', path = path', file = file', body = body'}
+
+-- | The labels of the request's fresh leaves.
+requestFreshLabels :: ClientRequestVal meth r -> Set.Set Text
+requestFreshLabels ClientRequestVal {query, form, header, path, file, body} =
+  freshLabels query <> freshLabels form <> freshLabels header <> freshLabels path <> freshLabels file <> freshLabels body
+
+-- | Start a step and make its fresh tokens.
+stepFresh :: Set.Set Text -> WebApiSessions apps (Text -> Either Text Text)
+stepFresh labels = do
+  beginStep
+  mapM_ freshToken (Set.toList labels)
+  freshLookup <$> freshTokens
+
+freshLookup :: M.Map Text Text -> Text -> Either Text Text
+freshLookup toks l = maybe (Left ("runner bug: no token was made for fresh " <> l)) Right (M.lookup l toks)
+
+-- | For a report: a fresh leaf shows as its label.
+freshPlaceholder :: Text -> Either Text Text
+freshPlaceholder l = Right ("<fresh " <> l <> ">")
 
 -- | Every request with one leaf shrunk (see 'shrinkVal').
 shrinkRequest :: VarContext -> ClientRequestVal meth r -> [ClientRequestVal meth r]
@@ -253,6 +287,10 @@ data WebApiAction s (c :: Type) (xstate :: Type) (apps :: [Type]) (a :: Type) wh
   -- | A named step that only moves the model (nothing is performed):
   -- seeding knowledge, scoping generation ('setGenerateFromDL'), …
   ModelOnly :: String -> (ApiState s c xstate apps -> ApiState s c xstate apps) -> WebApiAction s c xstate apps ()
+  -- | A step whose result is a token made when it runs (unique to the
+  -- execution): a fresh value the DL binds like any other result, so a
+  -- request and a later assertion can share it and a replay makes a new one.
+  FreshValue :: Text -> WebApiAction s c xstate apps Text
   XAction :: Action xstate a -> WebApiAction s c xstate apps a
 
 -- | What an 'ErrorCall' expects of the response.
@@ -288,6 +326,7 @@ instance StateModel xstate => Show (WebApiAction s c xstate apps a) where
     SetContext c -> "Set-Context: " ++ show c
     ClearContext pc -> "Clear-Context: " ++ show (typeRep pc)
     ModelOnly n _ -> "Model: " ++ n
+    FreshValue l -> "fresh " ++ T.unpack l
     XAction xact -> show xact
 
 -- TODO: Revisit
@@ -311,6 +350,9 @@ instance Eq (Action xstate a) => Eq (WebApiAction s c xstate apps a) where
   (==) (ModelOnly n1 _) = \case
     ModelOnly n2 _ -> n1 == n2
     _ -> False
+  (==) (FreshValue l1) = \case
+    FreshValue l2 -> l1 == l2
+    _ -> False
   (==) (XAction xact1) = \case
     XAction xact2 -> xact1 == xact2
     _ -> False
@@ -323,6 +365,7 @@ instance StateModel xstate => HasVariables (WebApiAction s c xstate apps a) wher
     SetContext {} -> mempty
     ClearContext {} -> mempty
     ModelOnly {} -> mempty
+    FreshValue {} -> mempty
     XAction xact -> getAllVariables xact
 
 newtype RefinementId = RefinementId Text
@@ -541,9 +584,9 @@ data SuccessApiModel s c xstate apps meth r a = SuccessApiModel
   , apiPrecondition :: Maybe (ApiState s c xstate apps -> Bool)
   , apiValidFailingAction :: Maybe (ApiState s c xstate apps -> Bool)
   , apiShrinkAction :: Maybe (VarContext -> ApiState s c xstate apps -> [Any (Action (ApiState s c xstate apps))])
-  , apiPostcondition :: (ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> a -> Either Text ()
-    -- ^ over the result of the performed call; 'Left' says why it does not
-    -- hold (the counterexample carries it, with the result)
+  , apiPostcondition :: (ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> ClientRequest meth r -> a -> Either Text ()
+    -- ^ over the request as it went out and the result of the call; 'Left'
+    -- says why it does not hold (the counterexample carries it)
   , apiPostconditionOnFailure :: (ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> Either ErrorState a -> Bool
   , apiVariables :: Set.Set (Any Var)
     -- ^ variables the model's hooks look up besides the request's (a
@@ -561,7 +604,7 @@ defSuccessApiModel = SuccessApiModel
   , apiPrecondition = Nothing
   , apiValidFailingAction = Nothing
   , apiShrinkAction = Nothing
-  , apiPostcondition = \_ _ _ -> Right ()
+  , apiPostcondition = \_ _ _ _ -> Right ()
   , apiPostconditionOnFailure = \_ _ _ -> True
   , label = Nothing
   , apiVariables = mempty
@@ -585,13 +628,13 @@ setValidFailingAction f SuccessApiModel {..} = SuccessApiModel {apiValidFailingA
 setShrinkAction :: (VarContext -> ApiState s c xstate apps -> [Any (Action (ApiState s c xstate apps))]) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setShrinkAction f SuccessApiModel {..} = SuccessApiModel {apiShrinkAction = Just f, ..}
 
-setPostcondition :: ((ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> a -> Either Text ()) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+setPostcondition :: ((ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> ClientRequest meth r -> a -> Either Text ()) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setPostcondition f SuccessApiModel {..} = SuccessApiModel {apiPostcondition = f, ..}
 
 -- | Require another postcondition besides the model's own (the model's is
 -- checked first; the first failure is reported).
-andPostcondition :: ((ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> a -> Either Text ()) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
-andPostcondition f SuccessApiModel {apiPostcondition, ..} = SuccessApiModel {apiPostcondition = \ss lkp a -> apiPostcondition ss lkp a >> f ss lkp a, ..}
+andPostcondition :: ((ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> ClientRequest meth r -> a -> Either Text ()) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+andPostcondition f SuccessApiModel {apiPostcondition, ..} = SuccessApiModel {apiPostcondition = \ss lkp req a -> apiPostcondition ss lkp req a >> f ss lkp req a, ..}
 
 setLabel :: Text -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setLabel l SuccessApiModel {..} = SuccessApiModel {label = Just l, ..}
@@ -649,6 +692,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     MkWebApiAction a@(SetContext {}) -> show a
     MkWebApiAction a@(ClearContext {}) -> show a
     MkWebApiAction a@(ModelOnly {}) -> show a
+    MkWebApiAction (FreshValue {}) -> "fresh"
     MkWebApiAction (XAction xact) -> actionName xact
 
   arbitraryAction varCxt s = case reflect (Proxy @s) of
@@ -665,6 +709,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     SetContext c -> ApiState {xActionState, currentContext = Just c, ..}
     ClearContext {} -> ApiState {xActionState, currentContext = Nothing, ..}
     ModelOnly _ f -> f s
+    FreshValue {} -> s
     XAction xact -> ApiState {xActionState = nextState xActionState xact var, ..}
 
   failureNextState s@ApiState{xActionState, ..} (MkWebApiAction act) = case act of
@@ -674,6 +719,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     SetContext {} -> s
     ClearContext {} -> s
     ModelOnly {} -> s
+    FreshValue {} -> s
     XAction xact -> ApiState {xActionState = failureNextState xActionState xact, ..}
 
   precondition s (MkWebApiAction act) = webApiPrecondition s act
@@ -685,6 +731,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     SetContext {} -> False
     ClearContext {} -> False
     ModelOnly {} -> False
+    FreshValue {} -> False
     XAction xact -> validFailingAction xActionState xact
 
   shrinkAction varCxt s@ApiState{xActionState} (MkWebApiAction act) = case act of
@@ -700,6 +747,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     SetContext {} -> []
     ClearContext {} -> []
     ModelOnly {} -> []
+    FreshValue {} -> []
     XAction xact -> fmap (\(Some xact') -> Some $ MkWebApiAction $ XAction xact') $ shrinkAction varCxt xActionState xact
 
 
@@ -774,7 +822,8 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
   type Error (ApiState s c xstate apps) (ReaderT WebApiSessionsCxt (WebApiSessions apps)) = ErrorState
   perform (ApiState {xActionState}) act lkp = case act of
     MkWebApiAction (SuccessCall creq' _model cookModMay f) -> ReaderT $ \_ -> do
-      case resolveRequest lkp creq' of
+      fr <- stepFresh (requestFreshLabels creq')
+      case resolveRequest fr lkp creq' of
         Right creq -> testClients creq >>= \case
           Success code out headerOut cookieOut -> do
             let apiSucc = ApiSuccess {code, out, headerOut, cookieOut}
@@ -796,7 +845,8 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
                                                      }
         Left field -> pure $ Left (InputNotSetError field)
     MkWebApiAction (ErrorCall creq' expected _model f) -> ReaderT $ \_ -> do
-      case resolveRequest lkp creq' of
+      fr <- stepFresh (requestFreshLabels creq')
+      case resolveRequest fr lkp creq' of
         Right creq -> testClients creq >>= \case
           Failure (Left apiErr@(ApiError code _err hd _))
             | matchesFailure expected code -> pure $ either (Left . ResultError) Right $ f apiErr
@@ -829,21 +879,25 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     MkWebApiAction (SetContext c) -> Right <$> (liftIO $ setContext $ hashed c)
     MkWebApiAction (ClearContext pc) -> Right <$> (liftIO $ clearContext pc)
     MkWebApiAction (ModelOnly {}) -> pure (Right ())
+    MkWebApiAction (FreshValue l) -> ReaderT $ \_ -> Right <$> freshToken ("fresh:" <> l)
     MkWebApiAction (XAction xact) -> ReaderT $ \_ -> do
       res <- liftIO $ perform xActionState xact lkp
       pure $ first (XActionError . AnyXActionError) res
 
   postcondition ss (MkWebApiAction act) lkp res = case act of
-    SuccessCall _ model _ _ -> check model res
-    ErrorCall _ _ model _ -> check model res
+    SuccessCall creq model _ _ -> check creq model res
+    ErrorCall creq _ model _ -> check creq model res
     _ -> pure True
     where
-      check :: forall meth r x m. Monad m => SuccessApiModel s c xstate apps meth r x -> x -> PostconditionM m Bool
-      check SuccessApiModel {apiPostcondition} x = case apiPostcondition ss lkp x of
-        Right () -> pure True
-        Left why -> do
-          counterexamplePost ("  postcondition failed: " ++ T.unpack why)
-          pure False
+      -- the request as it went out: the step's fresh tokens are still those
+      check :: forall meth r x. SingMethod meth => ClientRequestVal meth r -> SuccessApiModel s c xstate apps meth r x -> x -> PostconditionM (ReaderT WebApiSessionsCxt (WebApiSessions apps)) Bool
+      check creq SuccessApiModel {apiPostcondition} x = do
+        toks <- lift (lift freshTokens)
+        case resolveRequest (freshLookup toks) lkp creq >>= \req -> apiPostcondition ss lkp req x of
+          Right () -> pure True
+          Left why -> do
+            counterexamplePost ("  postcondition failed: " ++ T.unpack why)
+            pure False
 
   postconditionOnFailure ss (MkWebApiAction act) lkp res = pure $ case act of
     SuccessCall _ SuccessApiModel {apiPostconditionOnFailure} _ _ -> apiPostconditionOnFailure ss lkp res
@@ -853,6 +907,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
   monitoring _ (MkWebApiAction act) lkp res = QC.counterexample $ case act of
     SuccessCall creq _ _ _ -> stepReport (show act) (requestReport lkp creq) (outcome res)
     ErrorCall creq _ _ _ -> stepReport (show act) (requestReport lkp creq) (outcome res)
+    FreshValue {} -> stepReport (show act) [] (outcome res)
     _ -> show act
     where
       outcome :: Show x => Either ErrorState x -> String
@@ -881,7 +936,7 @@ requestReport :: forall meth r.
   , MkPathFormatString r
   , SingMethod meth
   ) => LookUp -> ClientRequestVal meth r -> [String]
-requestReport lkp creq = case resolveRequest lkp creq of
+requestReport lkp creq = case resolveRequest freshPlaceholder lkp creq of
   Left field -> ["request: <" ++ T.unpack field ++ " is not set>"]
   Right resolved ->
     let
@@ -951,7 +1006,7 @@ expectingFailure expected pre (MkWebApiAction act) = case act of
       , apiPrecondition = Just pre
       , apiValidFailingAction = Nothing
       , apiShrinkAction = Nothing
-      , apiPostcondition = \_ _ _ -> Right ()
+      , apiPostcondition = \_ _ _ _ -> Right ()
       , apiPostconditionOnFailure = \_ _ _ -> True
       , label
       , apiVariables
@@ -960,16 +1015,83 @@ expectingFailure expected pre (MkWebApiAction act) = case act of
   _ -> Nothing
 
 
--- newtype ApiGen apps a = ApiGen (ReaderT
-data ActionConfig s c xstate apps meth route a = ActionConfig
-  { requestMod :: ClientRequestVal meth route -> ClientRequestVal meth route
+-- | What whoever runs an action adds to it: request overrides (a script's),
+-- model additions (what to record, what to require, what to assert).
+data ActionConfig m s c xstate apps meth route a = ActionConfig
+  { requestMod :: ClientRequestVal meth route -> m (ClientRequestVal meth route)
   , modelMod :: SuccessApiModel s c xstate apps meth route a -> SuccessApiModel s c xstate apps meth route a
   }
 
-defaultActionConfig :: ActionConfig s c xstate apps meth route a
+defaultActionConfig :: Applicative m => ActionConfig m s c xstate apps meth route a
 defaultActionConfig = ActionConfig
-  { requestMod = id
+  { requestMod = pure
   , modelMod = id
+  }
+
+-- | An action a model exports: how it builds its step from a
+-- configuration, and the fillers for the request fields it leaves
+-- 'Unset' ('fills') — applied after the configuration's overrides, so a
+-- script's value wins and a generated step gets the filler's.
+data ApiAction c xstate apps meth route a = ApiAction
+  { buildAction :: forall s m. HasApiStateM m s c xstate apps => ActionConfig m s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a)
+  , requestFillers :: [RequestFiller c xstate apps meth route]
+  }
+
+newtype RequestFiller c xstate apps meth route = RequestFiller (forall s m. HasApiStateM m s c xstate apps => ClientRequestVal meth route -> m (ClientRequestVal meth route))
+
+mkApiAction :: (forall s m. HasApiStateM m s c xstate apps => ActionConfig m s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a)) -> ApiAction c xstate apps meth route a
+mkApiAction f = ApiAction { buildAction = f, requestFillers = [] }
+
+-- | The action's step: the configuration's overrides, then the fillers.
+runApiAction :: HasApiStateM m s c xstate apps => ApiAction c xstate apps meth route a -> ActionConfig m s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a)
+runApiAction ApiAction {buildAction, requestFillers} ActionConfig {requestMod, modelMod} =
+  buildAction ActionConfig
+    { requestMod = \creq -> requestMod creq >>= \creq' -> foldM (\r (RequestFiller fill) -> fill r) creq' requestFillers
+    , modelMod
+    }
+
+-- | How a field nobody supplied gets its value.
+newtype Filler c xstate apps x = Filler (forall s m. HasApiStateM m s c xstate apps => m (Val x))
+
+-- | A fresh token (see 'freshM'), and what to make of it.
+freshFiller :: Text -> (Text -> x) -> Filler c xstate apps x
+freshFiller l f = Filler (fmap f <$> freshM l)
+
+constFiller :: x -> Filler c xstate apps x
+constFiller x = Filler (pure (Const x))
+
+-- | One of the entities recorded under the class, by position (shrinking
+-- toward the earliest); 'Unset' when there is none.
+entityFiller :: forall x c xstate apps. Typeable x => RefinementId -> Filler c xstate apps x
+entityFiller rid@(RefinementId klass) = Filler $ do
+  st <- getApiStateM
+  case getNamedEntities @x rid st of
+    [] -> pure (Unset ("an entity of class " <> klass))
+    vs -> elementsM vs
+
+-- | A part of a request, to name the field a filler fills.
+data Part meth route t where
+  QueryP :: Part meth route (QueryParam meth route)
+  FormP :: Part meth route (FormParam meth route)
+  HeaderP :: Part meth route (HeaderIn meth route)
+  PathP :: Part meth route (PathParam meth route)
+  BodyP :: Part meth route (HListToTuple (StripContents (RequestBody meth route)))
+
+overPart :: Functor f => Part meth route t -> (Val t -> f (Val t)) -> ClientRequestVal meth route -> f (ClientRequestVal meth route)
+overPart part f ClientRequestVal {..} = case part of
+  QueryP -> (\v -> ClientRequestVal {query = v, ..}) <$> f query
+  FormP -> (\v -> ClientRequestVal {form = v, ..}) <$> f form
+  HeaderP -> (\v -> ClientRequestVal {header = v, ..}) <$> f header
+  PathP -> (\v -> ClientRequestVal {path = v, ..}) <$> f path
+  BodyP -> (\v -> ClientRequestVal {body = v, ..}) <$> f body
+
+-- | Declare a filler for a field of a request part: what the field gets
+-- when neither the action's default nor a script supplied it.
+fills :: forall name x t c xstate apps meth route a. (Generic t, GValRep (Rep t), GGetField name x (Rep t), GSetField name x (Rep t))
+  => Part meth route t -> Filler c xstate apps x -> ApiAction c xstate apps meth route a -> ApiAction c xstate apps meth route a
+fills part (Filler make) ApiAction {buildAction, requestFillers} = ApiAction
+  { buildAction
+  , requestFillers = requestFillers ++ [RequestFiller (overPart part (fillField @name make))]
   }
 
 data ActionConfigWith outcome s c xstate apps meth route a = ActionConfigWith
@@ -977,8 +1099,6 @@ data ActionConfigWith outcome s c xstate apps meth route a = ActionConfigWith
   , apiModel :: Maybe (SuccessApiModel s c xstate apps meth route a)
   , resultMod :: outcome meth route -> Either ResultError a
   }
-
-newtype ApiAction c xstate apps meth route a = ApiAction (forall s m. (HasApiStateM m s c xstate apps) => ActionConfig s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a))
 
 newtype ApiActionWith out c xstate apps meth route a = ApiActionWith (forall s m. (HasApiStateM m s c xstate apps) => ActionConfigWith out s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a))
 
@@ -994,16 +1114,23 @@ class Monad m => HasApiStateM m s c xstate apps | m -> s c xstate apps where
   -- state-dependent candidates replays as a *position* when the program
   -- around it is shrunk, instead of as a value that may no longer exist.
   genIndexM :: Int -> m Int
+  -- | A fresh value: as a DL step, a 'FreshValue' whose result is the token
+  -- (a variable — usable in requests and assertions alike, remade on every
+  -- execution); when the action itself is being generated, a 'Fresh' leaf
+  -- made when the step runs (there is no script to assert on it).
+  freshM :: Text -> m (Val Text)
 
-instance HasApiStateM (DL (ApiState s c xstate apps)) s c xstate apps where
+instance (StateModel xstate, Eq (Action xstate Text)) => HasApiStateM (DL (ApiState s c xstate apps)) s c xstate apps where
   getApiStateM = getModelStateDL
   genValM gen shr = forAllNonVariableQ (withGenQ gen (const True) shr)
   genIndexM n = forAllNonVariableQ (withGenQ (QC.choose (0, n - 1)) (\i -> i >= 0 && i < n) (\i -> [0 .. i - 1]))
+  freshM l = Var id <$> action (mkWebApiAction (FreshValue l))
 
 instance HasApiStateM (ApiGenM s c xstate apps) s c xstate apps where
   getApiStateM = ask
   genValM gen _ = ApiGenM (lift gen)
   genIndexM n = ApiGenM (lift (QC.choose (0, n - 1)))
+  freshM l = pure (fresh l)
 
 -- | One of the candidates — a quantified choice when the action is a DL
 -- step, a draw when it is being generated — by position, shrinking toward
@@ -1023,17 +1150,19 @@ apiAction :: forall s a c xstate meth route apps.
   ( Typeable a
   , StateModel xstate
   , Eq (Action xstate a)
-  ) => ActionConfig s c xstate apps meth route a
+  , Eq (Action xstate Text)
+  ) => ActionConfig (DL (ApiState s c xstate apps)) s c xstate apps meth route a
   -> ApiAction c xstate apps meth route a
   -> DL (ApiState s c xstate apps) (Val a)
-apiAction cfg (ApiAction actF) = do
-  res <- action =<< actF cfg
+apiAction cfg apiAct = do
+  res <- action =<< runApiAction apiAct cfg
   pure $ Var id res
 
 apiAction_ :: forall s a c xstate meth route apps.
   ( Typeable a
   , StateModel xstate
   , Eq (Action xstate a)
+  , Eq (Action xstate Text)
   ) => ApiAction c xstate apps meth route a
   -> DL (ApiState s c xstate apps) (Val a)
 apiAction_ act = apiAction defaultActionConfig act
@@ -1062,6 +1191,7 @@ webApiPrecondition s@ApiState{xActionState} = \case
   SetContext {} -> True
   ClearContext {} -> True
   ModelOnly {} -> True
+  FreshValue {} -> True
   XAction xact -> precondition xActionState xact
 
 -- | Run another next-state transition after the model's own.
@@ -1115,6 +1245,7 @@ instance Show (NamedVal t) where
     Map _ _ -> "<map>"
     Fields _ -> "<fields>"
     Unset n -> "<unset " ++ T.unpack n ++ ">"
+    Fresh l _ -> "<fresh " ++ T.unpack l ++ ">"
 
 showAnyNamedVal :: Any NamedVal -> String
 showAnyNamedVal (Some nv) = show nv
