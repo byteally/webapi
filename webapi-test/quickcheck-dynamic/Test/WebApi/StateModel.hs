@@ -16,7 +16,7 @@ module Test.WebApi.StateModel
   , HasApiState (..)
   , HasApiStateM (..)
   , DSum (..)
-  , Val (..)
+  , module Test.WebApi.Val
   , ClientRequestVal (..)
   , WebApiGlobalStateModel (..)
   , NER (..)
@@ -39,6 +39,7 @@ module Test.WebApi.StateModel
   -- , mkApiAction
   , defaultActionConfig
   , mkWebApiAction
+  , unWebApiAction
   , getOpIdFromRequest
   , getSuccessOut
   , getSuccessCode
@@ -66,9 +67,14 @@ module Test.WebApi.StateModel
   , notInClass
   , inClassKeyed
   , notInClassKeyed
-  , fromVar
-  , recToVal
-  , hkToVal
+  , removeNamedEntity
+  , hasNamedEntity
+  , webApiPrecondition
+  , addNextState
+  , andPrecondition
+  , shrinkRequest
+  , modelOnlyDL
+  , setGenerateFromDL
   , resolveNamedEntities
   , startSession
   , endSession
@@ -86,7 +92,8 @@ module Test.WebApi.StateModel
 
 import Test.WebApi
 import Test.QuickCheck.StateModel
-import Test.QuickCheck.DynamicLogic (DynLogicModel (..), DL, getModelStateDL, action)
+import Test.QuickCheck.DynamicLogic (DynLogicModel (..), DL, getModelStateDL, action, forAllNonVariableQ, withGenQ)
+import Test.WebApi.Val
 -- import Test.QuickCheck.StateModel.Variables (Any (..))
 import qualified Test.QuickCheck as QC
 import WebApi.Contract
@@ -110,7 +117,6 @@ import Data.Dependent.Sum (DSum (..))
 import System.IO.Unsafe
 import qualified Unsafe.Coerce as Unsafe
 import qualified GHC.Base as Unsafe (Any)
-import qualified Record
 import Data.Reflection
 import Data.Maybe
 import Data.Hashable
@@ -163,61 +169,6 @@ getSuccessHeaders (ApiSuccess {headerOut}) = headerOut
 getSuccessCookies :: ApiSuccess m r -> CookieOut m r
 getSuccessCookies (ApiSuccess {cookieOut}) = cookieOut
 
-data Val a where
-  Const :: a -> Val a
-  Var :: Typeable x => (x -> a) -> Var x -> Val a
-  HKVal :: (Typeable x, Record.FromHK x) => (x -> a) -> Record.HK Val x -> Val a -- TODO: Avoid FromHK dep
-  Pair :: (Typeable x1, Typeable x2) => ((x1, x2) -> a) -> (Val x1, Val x2) -> Val a
-  Opt :: Val a
-
-deriving instance Functor Val
-
-instance Applicative Val where
-  pure = Const
-  f' <*> a' = case f' of
-    Const f -> case a' of
-      Const a -> Const (f a)
-      Var fn v -> Var (f . fn) v
-      HKVal fn hkv -> HKVal (f . fn) hkv
-      Pair fn vs -> Pair (f . fn) vs
-      Opt -> Opt
-    Var fn v -> case a' of
-      Const a -> Var (flip fn a) v
-      Var fn1 v1 -> Pair (\(x, x1) -> fn x (fn1 x1)) (Var id v, Var id v1)
-      HKVal fn1 hkv1 -> Pair (\(x, x1) -> fn x (fn1 x1)) (Var id v, HKVal id hkv1)
-      Pair fn1 vs -> Pair (\(x, x1) -> fn x (fn1 x1)) (Var id v, Pair id vs)
-      Opt -> Opt
-    HKVal fn v -> case a' of
-      Const a -> HKVal (flip fn a) v
-      Var fn1 v1 -> Pair (\(x, x1) -> fn x (fn1 x1)) (HKVal id v, Var id v1)
-      HKVal fn1 hkv1 -> Pair (\(x, x1) -> fn x (fn1 x1)) (HKVal id v, HKVal id hkv1)
-      Pair fn1 vs -> Pair (\(x, x1) -> fn x (fn1 x1)) (HKVal id v, Pair id vs)
-      Opt -> Opt
-    Pair fn vs -> case a' of
-      Const a -> Pair ((\f -> f a) . fn) vs
-      Var fn1 v -> Pair (\(x1x2, x) -> fn x1x2 (fn1 x)) (Pair id vs, Var id v)
-      HKVal fn1 hkv1 -> Pair (\(x1x2, x) -> fn x1x2 (fn1 x)) (Pair id vs, HKVal id hkv1)
-      Pair fn1 vs1 -> Pair (\(x1x2, x4x5) -> fn x1x2 (fn1 x4x5)) (Pair id vs, Pair id vs1)
-      Opt -> Opt
-    Opt -> Opt
-
-
-resolveVal :: LookUp -> Val a -> a
-resolveVal lkp = \case
-  Const v -> v
-  Var f var -> f (lkp var)
-  HKVal f hk -> f $ runIdentity $ Record.fromHK $ Record.hoistHK (Identity . resolveVal lkp) hk
-  Pair f (v1, v2) -> f (resolveVal lkp v1, resolveVal lkp v2)
-  Opt -> error "TODO"
-
-instance HasVariables (Val a) where
-  getAllVariables = \case
-    Const {} -> Set.empty
-    Var _ var -> getAllVariables var
-    HKVal _ hk -> Set.unions $ Record.hkToListWith getAllVariables hk
-    Pair _ (v1, v2) -> getAllVariables v1 <> getAllVariables v2
-    Opt -> mempty
-
 data ClientRequestVal meth r = ClientRequestVal
   { query :: Val (QueryParam meth r)
   , form :: Val (FormParam meth r)
@@ -236,23 +187,34 @@ instance HasVariables (ClientRequestVal meth r) where
     <> getAllVariables file
     <> getAllVariables body
 
+-- | 'Left' names the request field nobody supplied.
 resolveRequest ::
   ( SingMethod meth
   ) => LookUp
   -> ClientRequestVal meth r
-  -> Maybe (ClientRequest meth r)
+  -> Either Text (ClientRequest meth r)
 resolveRequest lkp ClientRequestVal {query, form, header, path, file, body} =
   do
-    query' <- Just $ resolveVal lkp query
-    form' <- Just $ resolveVal lkp form
-    header' <- Just $ resolveVal lkp header
-    path' <- Just $ resolveVal lkp path
-    file' <- Just $ resolveVal lkp file
-    body' <- Just $ resolveVal lkp body
-    Just $ ClientRequest {query = query', form = form', header = header', path = path', file = file', body = body'}
+    query' <- resolveVal lkp query
+    form' <- resolveVal lkp form
+    header' <- resolveVal lkp header
+    path' <- resolveVal lkp path
+    file' <- resolveVal lkp file
+    body' <- resolveVal lkp body
+    Right $ ClientRequest {query = query', form = form', header = header', path = path', file = file', body = body'}
+
+-- | Every request with one leaf shrunk (see 'shrinkVal').
+shrinkRequest :: VarContext -> ClientRequestVal meth r -> [ClientRequestVal meth r]
+shrinkRequest vctx ClientRequestVal {..} =
+  [ClientRequestVal {query = v, ..} | v <- shrinkVal vctx query]
+  ++ [ClientRequestVal {form = v, ..} | v <- shrinkVal vctx form]
+  ++ [ClientRequestVal {header = v, ..} | v <- shrinkVal vctx header]
+  ++ [ClientRequestVal {path = v, ..} | v <- shrinkVal vctx path]
+  ++ [ClientRequestVal {file = v, ..} | v <- shrinkVal vctx file]
+  ++ [ClientRequestVal {body = v, ..} | v <- shrinkVal vctx body]
 
 data WebApiAction s (c :: Type) (xstate :: Type) (apps :: [Type]) (a :: Type) where
-  SuccessCall :: WebApiActionCxt apps meth app r
+  SuccessCall :: (WebApiActionCxt apps meth app r, Typeable res, Eq (Action xstate res))
     => ClientRequestVal meth (app :// r)
     -> SuccessApiModel s c xstate apps meth (app :// r) res
     -> Maybe (ApiSuccess meth (app :// r) -> ModifyClientCookies app)
@@ -266,6 +228,9 @@ data WebApiAction s (c :: Type) (xstate :: Type) (apps :: [Type]) (a :: Type) wh
     -> WebApiAction s c xstate apps (SomeException)
   SetContext :: (ContextSwitch c) => c -> WebApiAction s c xstate apps ()
   ClearContext :: (ContextSwitch c) => Proxy c -> WebApiAction s c xstate apps ()
+  -- | A named step that only moves the model (nothing is performed):
+  -- seeding knowledge, scoping generation ('setGenerateFromDL'), …
+  ModelOnly :: String -> (ApiState s c xstate apps -> ApiState s c xstate apps) -> WebApiAction s c xstate apps ()
   XAction :: Action xstate a -> WebApiAction s c xstate apps a
 
 class (Hashable c, Show c, Eq c, Typeable c) => ContextSwitch c where
@@ -283,6 +248,7 @@ instance StateModel xstate => Show (WebApiAction s c xstate apps a) where
     SomeExceptionCall creq -> show . unsafePerformIO . toWaiRequest . fromClientRequest $ creq
     SetContext c -> "Set-Context: " ++ show c
     ClearContext pc -> "Clear-Context: " ++ show (typeRep pc)
+    ModelOnly n _ -> "Model: " ++ n
     XAction xact -> show xact
 
 -- TODO: Revisit
@@ -302,6 +268,9 @@ instance Eq (Action xstate a) => Eq (WebApiAction s c xstate apps a) where
   (==) ClearContext {} = \case
     ClearContext {} -> True
     _ -> False
+  (==) (ModelOnly n1 _) = \case
+    ModelOnly n2 _ -> n1 == n2
+    _ -> False
   (==) (XAction xact1) = \case
     XAction xact2 -> xact1 == xact2
     _ -> False
@@ -313,6 +282,7 @@ instance StateModel xstate => HasVariables (WebApiAction s c xstate apps a) wher
     SomeExceptionCall _creq -> error "TODO:"
     SetContext {} -> mempty
     ClearContext {} -> mempty
+    ModelOnly {} -> mempty
     XAction xact -> getAllVariables xact
 
 newtype RefinementId = RefinementId Text
@@ -469,6 +439,9 @@ data ApiState (s :: Type) (c :: Type) (xstate :: Type) (apps :: [Type]) = ApiSta
   , defaultContext :: Maybe c
   , currentContext :: Maybe c
   , xActionState :: xstate
+  , generateFrom :: Maybe (Set.Set Text)
+    -- ^ the actions (by the name the generator knows them under) generation
+    -- draws from; 'Nothing' = every registered action
 --  , sessionState :: M.Map SessionKey NamedEntityTyped
   }
 
@@ -507,6 +480,7 @@ initApiState f xstate = ApiState
   , defaultContext = Nothing
   , currentContext = Nothing
   , xActionState = xstate
+  , generateFrom = Nothing
   }
 
 initApiState_ :: forall c apps stTag s. HasApiState apps stTag apps =>
@@ -583,10 +557,13 @@ defFailureApiModel = FailureApiModel
 mkWebApiAction :: WebApiAction s c xstate apps a -> Action (ApiState s c xstate apps) a
 mkWebApiAction = coerce
 
+unWebApiAction :: Action (ApiState s c xstate apps) a -> WebApiAction s c xstate apps a
+unWebApiAction (MkWebApiAction a) = a
+
 -- newtype ApiInitState apps = ApiInitState (M.Map TypeRep Unsafe.Any)
 
 data WebApiGlobalStateModel c xstate apps = WebApiGlobalStateModel
-  { appAribitaryAction :: forall (s :: Type). VarContext -> ApiState s c xstate apps -> Any (Action (ApiState s c xstate apps))
+  { appAribitaryAction :: forall (s :: Type). VarContext -> ApiState s c xstate apps -> QC.Gen (Any (Action (ApiState s c xstate apps)))
   , appInitState :: forall (s :: Type). ApiState s c xstate apps
   }
 
@@ -605,10 +582,11 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     MkWebApiAction (SomeExceptionCall creq) -> getOpIdFromRequest creq
     MkWebApiAction a@(SetContext {}) -> show a
     MkWebApiAction a@(ClearContext {}) -> show a
+    MkWebApiAction a@(ModelOnly {}) -> show a
     MkWebApiAction (XAction xact) -> actionName xact
 
   arbitraryAction varCxt s = case reflect (Proxy @s) of
-    WebApiGlobalStateModel {appAribitaryAction} -> pure $ appAribitaryAction @s varCxt s
+    WebApiGlobalStateModel {appAribitaryAction} -> appAribitaryAction @s varCxt s
 
   initialState =
     let WebApiGlobalStateModel {appInitState} = reflect (Proxy @s)
@@ -618,8 +596,9 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     SuccessCall _creq SuccessApiModel {apiNextState=nsMay} _ _ -> maybe s (\ns -> ns var s) nsMay
     ErrorCall {} -> error "TODO:"
     SomeExceptionCall {} -> error "TODO:"
-    SetContext {} -> s
-    ClearContext {} -> s
+    SetContext c -> ApiState {xActionState, currentContext = Just c, ..}
+    ClearContext {} -> ApiState {xActionState, currentContext = Nothing, ..}
+    ModelOnly _ f -> f s
     XAction xact -> ApiState {xActionState = nextState xActionState xact var, ..}
 
   failureNextState s@ApiState{xActionState, ..} (MkWebApiAction act) = case act of
@@ -628,15 +607,10 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     SomeExceptionCall {} -> error "TODO:"
     SetContext {} -> s
     ClearContext {} -> s
+    ModelOnly {} -> s
     XAction xact -> ApiState {xActionState = failureNextState xActionState xact, ..}
 
-  precondition s@ApiState{xActionState} (MkWebApiAction act) = case act of
-    SuccessCall _creq SuccessApiModel {apiPrecondition=pcMay} _ _ -> maybe True (\pc -> pc s) pcMay
-    ErrorCall {} -> error "TODO:"
-    SomeExceptionCall {} -> error "TODO:"
-    SetContext {} -> True
-    ClearContext {} -> True
-    XAction xact -> precondition xActionState xact
+  precondition s (MkWebApiAction act) = webApiPrecondition s act
 
   validFailingAction s@ApiState{xActionState} (MkWebApiAction act) = case act of
     SuccessCall _creq SuccessApiModel {apiValidFailingAction=vfaMay} _ _ -> maybe False (\vfa -> vfa s) vfaMay
@@ -644,14 +618,20 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     SomeExceptionCall {} -> error "TODO:"
     SetContext {} -> False
     ClearContext {} -> False
+    ModelOnly {} -> False
     XAction xact -> validFailingAction xActionState xact
 
   shrinkAction varCxt s@ApiState{xActionState} (MkWebApiAction act) = case act of
-    SuccessCall _creq SuccessApiModel {apiShrinkAction=saMay} _ _ -> maybe [] (\sa -> sa varCxt s) saMay
+    -- by default a request shrinks one leaf at a time (a variable to an
+    -- earlier one of its type); the model may say otherwise
+    SuccessCall creq model@SuccessApiModel {apiShrinkAction=saMay} cookMod f -> case saMay of
+      Just sa -> sa varCxt s
+      Nothing -> [Some (MkWebApiAction (SuccessCall creq' model cookMod f)) | creq' <- shrinkRequest varCxt creq]
     ErrorCall {} -> error "TODO:"
     SomeExceptionCall {} -> error "TODO:"
     SetContext {} -> []
     ClearContext {} -> []
+    ModelOnly {} -> []
     XAction xact -> fmap (\(Some xact') -> Some $ MkWebApiAction $ XAction xact') $ shrinkAction varCxt xActionState xact
 
 
@@ -677,7 +657,7 @@ data ErrorState =
   , headerOut :: [H.Header]
 --  , cookieOut :: [(ByteString, H.Cookie)]
   }
-  | InputNotSetError -- TODO: Add missing field details
+  | InputNotSetError Text -- ^ the request field nobody supplied
   | ResultError ResultError
   | XActionError AnyXActionError
   deriving (Show)
@@ -722,7 +702,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
   perform (ApiState {xActionState}) act lkp = case act of
     MkWebApiAction (SuccessCall creq' _model cookModMay f) -> ReaderT $ \_ -> do
       case resolveRequest lkp creq' of
-        Just creq -> testClients creq >>= \case
+        Right creq -> testClients creq >>= \case
           Success code out headerOut cookieOut -> do
             let apiSucc = ApiSuccess {code, out, headerOut, cookieOut}
             case cookModMay of
@@ -741,7 +721,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
                                                      { status = code
                                                      , headerOut = maybe [] toHeader hd
                                                      }
-        Nothing -> pure $ Left InputNotSetError
+        Left field -> pure $ Left (InputNotSetError field)
     MkWebApiAction (ErrorCall creq) -> ReaderT $ \_ -> do
       testClients creq >>= \case
         Failure (Left (ApiError _ err _ _)) -> pure $ Right err
@@ -767,6 +747,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
                                                 }
     MkWebApiAction (SetContext c) -> Right <$> (liftIO $ setContext $ hashed c)
     MkWebApiAction (ClearContext pc) -> Right <$> (liftIO $ clearContext pc)
+    MkWebApiAction (ModelOnly {}) -> pure (Right ())
     MkWebApiAction (XAction xact) -> ReaderT $ \_ -> do
       res <- liftIO $ perform xActionState xact lkp
       pure $ first (XActionError . AnyXActionError) res
@@ -787,12 +768,12 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
          ) => DynLogicModel (ApiState s c xstate apps) where
   restricted _ = False
 
-successCall :: forall meth r app c xstate apps s. WebApiActionCxt apps meth app r =>
+successCall :: forall meth r app c xstate apps s. (WebApiActionCxt apps meth app r, Eq (Action xstate (ApiOut meth (app :// r)))) =>
   ClientRequestVal meth (app :// r)
   -> Action (ApiState s c xstate apps) (ApiOut meth (app :// r))
 successCall creq = mkWebApiAction $ SuccessCall creq defSuccessApiModel Nothing (Right . getSuccessOut)
 
-successCallWith :: forall meth r app res c xstate apps s. (Typeable res, WebApiActionCxt apps meth app r) =>
+successCallWith :: forall meth r app res c xstate apps s. (Typeable res, Eq (Action xstate res), WebApiActionCxt apps meth app r) =>
   ClientRequestVal meth (app :// r)
   -> SuccessApiModel s c xstate apps meth (app :// r) res
   -> Maybe (ApiSuccess meth (app :// r) -> ModifyClientCookies app)
@@ -827,12 +808,17 @@ newtype ApiActionWith out c xstate apps meth route a = ApiActionWith (forall s m
 -- ApiGenM), so actions can read the state without naming its indices.
 class Monad m => HasApiStateM m s c xstate apps | m -> s c xstate apps where
   getApiStateM :: m (ApiState s c xstate apps)
+  -- | A generated value (with its shrinks): a quantified variable of the DL
+  -- program, or a draw when the action itself is being generated.
+  genValM :: (Typeable a, Show a, Eq a) => QC.Gen a -> (a -> [a]) -> m a
 
 instance HasApiStateM (DL (ApiState s c xstate apps)) s c xstate apps where
   getApiStateM = getModelStateDL
+  genValM gen shr = forAllNonVariableQ (withGenQ gen (const True) shr)
 
 instance HasApiStateM (ApiGenM s c xstate apps) s c xstate apps where
-  getApiStateM = ask  
+  getApiStateM = ask
+  genValM gen _ = ApiGenM (lift gen)
 
 newtype ApiGenM s c xstate apps a = ApiGenM (ReaderT (ApiState s c xstate apps) QC.Gen a)
   deriving newtype (Functor, Applicative, Monad, MonadReader (ApiState s c xstate apps))
@@ -864,6 +850,34 @@ setContextDL c = () <$ action (MkWebApiAction $ SetContext c)
 
 clearContextDL :: forall c xstate apps s. (StateModel xstate, Eq (Action xstate ()), ContextSwitch c) => DL (ApiState s c xstate apps) ()
 clearContextDL = () <$ action (MkWebApiAction $ ClearContext (Proxy @c))
+
+modelOnlyDL :: (StateModel xstate, Eq (Action xstate ())) => String -> (ApiState s c xstate apps -> ApiState s c xstate apps) -> DL (ApiState s c xstate apps) ()
+modelOnlyDL n f = () <$ action (MkWebApiAction $ ModelOnly n f)
+
+-- | Scope generation ('anyAction', 'anyActions') to the named actions;
+-- 'Nothing' lifts the scope.
+setGenerateFromDL :: (StateModel xstate, Eq (Action xstate ())) => Maybe (Set.Set Text) -> DL (ApiState s c xstate apps) ()
+setGenerateFromDL names = modelOnlyDL ("generate from " ++ maybe "*" (show . Set.toList) names) $ \ApiState {..} -> ApiState {generateFrom = names, ..}
+
+-- | The model's precondition of an action (what 'precondition' answers),
+-- available without the reflected model.
+webApiPrecondition :: StateModel xstate => ApiState s c xstate apps -> WebApiAction s c xstate apps a -> Bool
+webApiPrecondition s@ApiState{xActionState} = \case
+  SuccessCall _creq SuccessApiModel {apiPrecondition=pcMay} _ _ -> maybe True (\pc -> pc s) pcMay
+  ErrorCall {} -> error "TODO:"
+  SomeExceptionCall {} -> error "TODO:"
+  SetContext {} -> True
+  ClearContext {} -> True
+  ModelOnly {} -> True
+  XAction xact -> precondition xActionState xact
+
+-- | Run another next-state transition after the model's own.
+addNextState :: (Var a -> ApiState s c xstate apps -> ApiState s c xstate apps) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+addNextState f SuccessApiModel {apiNextState, ..} = SuccessApiModel {apiNextState = Just $ \var st -> f var (maybe st (\ns -> ns var st) apiNextState), ..}
+
+-- | Require another condition besides the model's own.
+andPrecondition :: (ApiState s c xstate apps -> Bool) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+andPrecondition p SuccessApiModel {apiPrecondition, ..} = SuccessApiModel {apiPrecondition = Just $ \st -> p st && maybe True ($ st) apiPrecondition, ..}
   
 type EntityName = Text
 data NER pred desc = NER
@@ -904,21 +918,13 @@ instance Show (NamedVal t) where
   show NamedVal {name, val} = show name ++ case val of
     Const v -> show v
     Var _ v -> show v
-    HKVal _ _ -> error "TODO:"
-    Pair _ _ -> error "TODO:"
-    Opt -> "NULL"
+    Pair _ _ -> "<pair>"
+    Map _ _ -> "<map>"
+    Fields _ -> "<fields>"
+    Unset n -> "<unset " ++ T.unpack n ++ ">"
 
 showAnyNamedVal :: Any NamedVal -> String
 showAnyNamedVal (Some nv) = show nv
-
-fromVar :: Typeable a => Var a -> Val a
-fromVar = Var id
-
-hkToVal :: forall t. (Typeable t, Record.FromHK t) => Record.HK Val t -> Val t
-hkToVal = HKVal id
-
-recToVal :: forall t xs. (Typeable t, Record.FromHK t, Record.ValidateRecToType xs t) => Record.HRec Val xs -> Val t
-recToVal = HKVal id . Record.fromHRec
 
 -- hkToDict :: Record.HK f x -> Record.HK (Dict c) x
 -- hkToDict = undefined
@@ -931,9 +937,7 @@ instance Eq (NamedVal t) where
     | n1 == n2 = case (v1, v2) of
         (Const c1, Const c2) -> c1 == c2
         (Var _ var1, Var _ var2') -> maybe False (var1 ==) $ gcast var2'
-        (HKVal _ _hk1, HKVal _ _hk2') -> error "TODO:" -- maybe False (hk1 ==) $ gcast hk2'
-        (Pair _ _, Pair _ _) -> error "TODO:"
-        (Opt, Opt) -> True
+        (Unset l1, Unset l2) -> l1 == l2
         _ -> False
     | otherwise = False
 
@@ -968,6 +972,20 @@ getTypedEntities ApiState {namedEntityTyped = NamedEntityTyped NamedEntity {name
 getNamedEntities :: forall t c xstate apps s. Typeable t => RefinementId -> ApiState s c xstate apps -> [Val t]
 getNamedEntities rid ApiState {namedEntityTyped = NamedEntityTyped NamedEntity {namedEntity}} =
   [ v | Some (NamedVal {name, val = v'}) <- M.findWithDefault [] (typeRep (Proxy @t)) namedEntity, name == rid, Just v <- [gcast v'] ]
+
+-- | Whether any entity (of any type) is recorded under the name.
+hasNamedEntity :: RefinementId -> ApiState s c xstate apps -> Bool
+hasNamedEntity rid ApiState {namedEntityTyped = NamedEntityTyped NamedEntity {namedEntity}} =
+  or [ name == rid | vs <- M.elems namedEntity, Some (NamedVal {name}) <- vs ]
+
+-- | Forget the entities recorded under the name that equal the value
+-- (a variable is equal to itself; constants by 'Eq').
+removeNamedEntity :: forall t c xstate apps s. (Typeable t, Show t, Eq t) => RefinementId -> Val t -> ApiState s c xstate apps -> ApiState s c xstate apps
+removeNamedEntity rid val ApiState {namedEntityTyped = NamedEntityTyped ne@NamedEntity {namedEntity}, ..} =
+  let
+    gone = NamedVal {name = rid, val}
+    keep (Some nv) = maybe True (/= gone) (gcast nv)
+  in ApiState {namedEntityTyped = NamedEntityTyped ne {namedEntity = M.adjust (filter keep) (typeRep (Proxy @t)) namedEntity}, ..}
 
 getOpIdFromRequest :: forall meth app r req. (KnownSymbol (GetOpIdName (OperationId meth (app://r))), Typeable app, Typeable r) => req meth (app://r) -> String
 getOpIdFromRequest _ =

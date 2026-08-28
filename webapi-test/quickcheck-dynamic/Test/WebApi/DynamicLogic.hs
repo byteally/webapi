@@ -6,7 +6,6 @@ module Test.WebApi.DynamicLogic
   , apiForAllVar
   , getCtxAtTypeDL
   , arbitraryVal
-  , shrinkVal
   , module Test.WebApi.StateModel
   , Reifies
   , reify 
@@ -23,7 +22,6 @@ import Test.QuickCheck.Monadic
 import Test.QuickCheck.Monadic qualified as QC
 import Data.Reflection
 import Data.IORef
-import qualified Record
 -- import Control.Monad.IO.Class
 import Control.Monad.Reader
 
@@ -86,11 +84,3 @@ getCtxAtTypeDL = (fmap (Var id) . ctxAtType @a) <$> getVarContextDL
 
 arbitraryVal :: Typeable a => VarContext -> Gen (Val a)
 arbitraryVal = fmap (Var id) . arbitraryVar
-
-shrinkVal :: forall a. Typeable a => VarContext -> Val a -> [Val a]
-shrinkVal vctx = \case
-  v@Const {} -> [v]
-  Var f v -> fmap (Var f) $ shrinkVar vctx v
-  v@Opt {} -> [v]
-  HKVal f hk -> fmap (HKVal f) $ Record.hoistWithKeyHKA (shrinkVal vctx) hk
-  Pair f (v1, v2) -> fmap (Pair f) $ (,) <$> (shrinkVal vctx v1) <*> (shrinkVal vctx v2)
