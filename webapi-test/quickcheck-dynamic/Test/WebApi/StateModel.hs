@@ -82,10 +82,6 @@ module Test.WebApi.StateModel
   , getTypedEntities
   , getNamedEntities
   , getNamedEntitiesAny
-  , inClass
-  , notInClass
-  , inClassKeyed
-  , notInClassKeyed
   , removeNamedEntity
   , hasNamedEntity
   , webApiPrecondition
@@ -95,7 +91,6 @@ module Test.WebApi.StateModel
   , shrinkRequest
   , modelOnlyDL
   , setGenerateFromDL
-  , resolveNamedEntities
   , startSession
   , endSession
   , setContextDL
@@ -143,7 +138,6 @@ import System.IO.Unsafe
 import qualified Unsafe.Coerce as Unsafe
 import qualified GHC.Base as Unsafe (Any)
 import Data.Reflection
-import Data.Maybe
 import Data.Hashable
 import GHC.Generics (Rep)
 import Data.Bifunctor
@@ -374,113 +368,30 @@ newtype RefinementId = RefinementId Text
 data AnyVal where
   SomeVal :: Typeable x => Val x -> AnyVal
 
--- inClassAny :: ApiState s c xstate apps -> RefinementId -> AnyVal -> Bool
--- inClassAny ApiState { namedEntityTyped = NamedEntityTyped NamedEntity
---                                       { namedEntity
---                                       , entityRefinement
---                                       , entityToRefinements
---                                       }
---                  } rid = \val -> undefined
-
--- notInClassAny :: ApiState s c xstate apps -> RefinementId -> AnyVal -> Bool
--- notInClassAny st rid = \somev -> not $ inClassAny st rid somev
-
-inClass :: forall t c xstate apps s. Typeable t => RefinementId -> ApiState s c xstate apps -> Val t -> Bool
-inClass rid ApiState { namedEntityTyped = NamedEntityTyped ne} = inClass' (typeRep (Proxy @t)) ne rid
-
-notInClass :: forall t c xstate apps s. Typeable t => RefinementId -> ApiState s c xstate apps -> Val t -> Bool
-notInClass rid st = \somev -> not $ inClass rid st somev
-
-inClassKeyed :: forall t c xstate apps s. Typeable t => KeyedEntityId -> RefinementId -> ApiState s c xstate apps -> Val t -> Bool
-inClassKeyed eid rid ApiState
-  { namedEntityKeyed = NamedEntityKeyed {typeOfEntities, namedEntityKeyed}
-  } = case M.lookup eid typeOfEntities of
-        Nothing -> const False
-        Just trep
-          | typeRep (Proxy @t) == trep -> inClass' eid namedEntityKeyed rid
-          | otherwise -> const False
-
-notInClassKeyed :: forall t c xstate apps s. Typeable t => KeyedEntityId -> RefinementId -> ApiState s c xstate apps -> Val t -> Bool
-notInClassKeyed eid rid st = \somev -> not $ inClassKeyed eid rid st somev
-
-inClass' :: forall t k. (Typeable t, Ord k) => k -> NamedEntity k -> RefinementId -> Val t -> Bool
-inClass' k (NamedEntity {entityRefinement, entityToRefinements}) rid =
-  \val -> case M.lookup k entityToRefinements of
-            Nothing -> False
-            Just rids -> if Set.member rid rids
-                         then fromMaybe (error $ "Panic: Refinement predicate lookup failed for: "
-                                          ++ (show rid)
-                                        ) (M.lookup rid entityRefinement) $ SomeVal val
-                         else False
-
-data NamedEntity k = NamedEntity
+-- | The entities the model knows, by type: each carries the class
+-- ('RefinementId') it was recorded under. A class is a *name* the model
+-- (or a script) gives a value at a position — never a property of the
+-- value: values are symbolic here ('Var'), so nothing can be decided from
+-- their content until the step runs (that is a postcondition's job; see
+-- the refinements of "Test.WebApi.Dhall").
+newtype NamedEntity k = NamedEntity
   { namedEntity :: M.Map k [Any NamedVal]
-  , entityRefinement :: M.Map RefinementId (AnyVal -> Bool)
-  , entityToRefinements :: M.Map k (Set.Set RefinementId)
   }
 
 instance Show k => Show (NamedEntity k) where
-  show NamedEntity {namedEntity = ne, entityRefinement = er, entityToRefinements = e2r} =
-    "Entities: " ++ show ((fmap . fmap) showAnyNamedVal ne) ++ ", Refinements: " ++ (show $ M.keys er) ++ ", EntityRefinements: " ++ show e2r
+  show NamedEntity {namedEntity = ne} = "Entities: " ++ show ((fmap . fmap) showAnyNamedVal ne)
 
 instance Eq k => Eq (NamedEntity k) where
-  NamedEntity {namedEntity = ne1, entityRefinement = er1, entityToRefinements = e2r1} ==
-    NamedEntity {namedEntity = ne2, entityRefinement = er2, entityToRefinements = e2r2} =
-    M.keys ne1 == M.keys ne2 && (M.keys er1) == (M.keys er2) && e2r1 == e2r2
+  NamedEntity {namedEntity = ne1} == NamedEntity {namedEntity = ne2} = M.keys ne1 == M.keys ne2
 
 instance Ord k => Semigroup (NamedEntity k) where
-  NamedEntity {namedEntity = ne1, entityRefinement = er1, entityToRefinements = e2r1} <>
-    NamedEntity {namedEntity = ne2, entityRefinement = er2, entityToRefinements = e2r2} =
-    NamedEntity { namedEntity = M.unionWith (<>) ne1 ne2
-                , entityRefinement = M.unionWith (\p1 p2 -> \v -> p1 v && p2 v) er1 er2
-                , entityToRefinements = M.unionWith (<>) e2r1 e2r2
-                }
+  NamedEntity {namedEntity = ne1} <> NamedEntity {namedEntity = ne2} = NamedEntity { namedEntity = M.unionWith (<>) ne1 ne2 }
 
 instance Ord k => Monoid (NamedEntity k) where
-  mempty = NamedEntity
-    { namedEntity = mempty
-    , entityRefinement = mempty
-    , entityToRefinements = mempty
-    }
-
-resolveNamedEntities :: Env -> ApiState s c xstate apps -> ApiState s c xstate apps
-resolveNamedEntities env ApiState {namedEntityTyped, namedEntityKeyed = NamedEntityKeyed {namedEntityKeyed, ..}, ..} =
-  ApiState { namedEntityTyped = coerce $ resolveNamedEntity (coerce namedEntityTyped)
-           , namedEntityKeyed = NamedEntityKeyed {namedEntityKeyed = resolveNamedEntity namedEntityKeyed, ..}
-           , ..}
-  where
-    resolveNamedEntity :: NamedEntity k -> NamedEntity k 
-    resolveNamedEntity NamedEntity {namedEntity, ..} =
-      NamedEntity {namedEntity = M.map (fmap (\(Some (NamedVal {val, ..})) -> Some (NamedVal {val = Const $ resolveVal (lookUpVar env) val, ..}))) namedEntity, ..}
+  mempty = NamedEntity { namedEntity = mempty }
 
 newtype NamedEntityTyped = NamedEntityTyped (NamedEntity TypeRep)
   deriving newtype (Semigroup, Monoid, Show, Eq)
-
-newtype KeyedEntityId = KeyedEntityId RefinementId
-  deriving newtype (Show, Eq, Ord, Read)
-
-data NamedEntityKeyed = NamedEntityKeyed
-  { keyToName :: M.Map Trail KeyedEntityId
-  , typeOfEntities :: M.Map KeyedEntityId TypeRep
-  , namedEntityKeyed :: NamedEntity KeyedEntityId
-  } deriving (Show, Eq)
-
-instance Semigroup NamedEntityKeyed where
-  NamedEntityKeyed {keyToName = k2n1, typeOfEntities = tys1, namedEntityKeyed = ne1} <>
-    NamedEntityKeyed {keyToName = k2n2, typeOfEntities = tys2, namedEntityKeyed = ne2} =
-    NamedEntityKeyed { keyToName = M.unionWithKey (\k l r -> if l == r then l else error $ "Encountered duplicate trail: " ++ show k ++ "! Pointing to conflicting entities: " ++ show (l, r)) k2n1 k2n2
-                     , typeOfEntities = M.unionWithKey (\k l r -> if l == r then l else error $ "Encountered duplicate entity: " ++ show k ++ "! with conflicting type: " ++ show (l, r)) tys1 tys2
-                     , namedEntityKeyed = ne1 <> ne2
-                     }
-
-instance Monoid NamedEntityKeyed where
-  mempty = NamedEntityKeyed { keyToName = mempty
-                            , typeOfEntities = mempty
-                            , namedEntityKeyed = mempty
-                            }
-
-newtype Trail = Trail [Text]
-  deriving newtype (Show, Eq, Ord, Read)
 
 newtype SessionKey k = SessionKey k
   deriving newtype (Show, Eq, Hashable)
@@ -518,7 +429,6 @@ do
 data ApiState (s :: Type) (c :: Type) (xstate :: Type) (apps :: [Type]) = ApiState
   { apiState :: M.Map TypeRep Unsafe.Any
   , namedEntityTyped :: NamedEntityTyped
-  , namedEntityKeyed :: NamedEntityKeyed
   , defaultContext :: Maybe c
   , currentContext :: Maybe c
   , xActionState :: xstate
@@ -529,12 +439,11 @@ data ApiState (s :: Type) (c :: Type) (xstate :: Type) (apps :: [Type]) = ApiSta
   }
 
 instance Show (ApiState s c xstate apps) where
-  show (ApiState {apiState, namedEntityTyped, namedEntityKeyed}) =
-    "ApiState: " ++ show (M.keys apiState) ++ ", Entites (Typed): " ++ show namedEntityTyped ++ ", Entites (Keyed): "++ show namedEntityKeyed
+  show (ApiState {apiState, namedEntityTyped}) =
+    "ApiState: " ++ show (M.keys apiState) ++ ", " ++ show namedEntityTyped
 
 instance Eq (ApiState s c xstate apps) where
-  ApiState {namedEntityTyped = net1, namedEntityKeyed = nek1} ==
-    ApiState {namedEntityTyped = net2, namedEntityKeyed = nek2} = net1 == net2 && nek1 == nek2
+  ApiState {namedEntityTyped = net1} == ApiState {namedEntityTyped = net2} = net1 == net2
 
 modifyApiState :: forall app apps stTag c xstate s. (Typeable app, AppIsElem app apps) => DSum (stTag apps app) Proxy -> (DSum (stTag apps app) Identity -> DSum (stTag apps app) Identity) -> ApiState s c xstate apps -> ApiState s c xstate apps
 modifyApiState ctor@(tag :=> _) f (ApiState {apiState = stMap, ..}) = case M.lookup (typeRep (getAppProxy' ctor)) stMap of
@@ -559,7 +468,6 @@ initApiState f xstate = ApiState
   { apiState = M.fromList $ apiStateUniv (Proxy @apps) $ \ctor -> case f ctor of
       _ :=> (Identity v) -> (typeRep (getAppProxy' ctor), Unsafe.unsafeCoerce v :: Unsafe.Any)
   , namedEntityTyped = mempty
-  , namedEntityKeyed = mempty
   , defaultContext = Nothing
   , currentContext = Nothing
   , xActionState = xstate
@@ -1203,36 +1111,13 @@ andPrecondition :: (ApiState s c xstate apps -> Bool) -> SuccessApiModel s c xst
 andPrecondition p SuccessApiModel {apiPrecondition, ..} = SuccessApiModel {apiPrecondition = Just $ \st -> p st && maybe True ($ st) apiPrecondition, ..}
   
 type EntityName = Text
-data NER pred desc = NER
+
+-- | A class an entity is recorded under: its name, and what it means.
+data NER = NER
   { refinementId :: RefinementId
   , entityName :: EntityName
-  , refinement :: Maybe pred
-  , desc :: Maybe desc
+  , desc :: Maybe Text
   }
-
-{-
-
-{ id = 123
-, name = "PartnerId"
-, desc = "Unique reference to the active Trading Partners"
-, super = [100]
-}
-
-{ id = 124
-, name = "DeletedPartnerId"
-, desc = "Unique reference to the deleted Trading Partners"
-, refinement = \(id : Integer) -> True
-}
-
-{ id = 125
-, name = "TenantPartnerId"
-, desc = "Unique reference to the Trading Partners who is the current tenant"
-, refinement = \(partner : {isTenant : Bool}) -> isTenant
-}
-
--}
-
--- refine :: Val t -> NamedVal t
 
 data NamedVal t where
   NamedVal :: (Show t, Eq t) => {name :: RefinementId, val :: Val t} -> NamedVal t
@@ -1270,21 +1155,12 @@ addTypedEntity :: forall t c xstate apps s.
   , Show t
   , Eq t
   ) => Val t
-  -> NER (Val t -> Bool) Text
+  -> NER
   -> ApiState s c xstate apps
   -> ApiState s c xstate apps
-addTypedEntity val NER {refinementId, refinement} ApiState {namedEntityTyped, ..} =
+addTypedEntity val NER {refinementId} ApiState {namedEntityTyped, ..} =
   let
-    ty = typeRep (Proxy @t)
-    nval = NamedVal {name = refinementId, val = val}
-    -- the refinement predicate, lifted to the type-erased entity store
-    predAny :: (Val t -> Bool) -> AnyVal -> Bool
-    predAny p (SomeVal v) = maybe False p (gcast v)
-    newNET = NamedEntityTyped NamedEntity
-      { namedEntity = M.singleton ty [Some nval]
-      , entityRefinement = maybe mempty (M.singleton refinementId . predAny) refinement
-      , entityToRefinements = maybe mempty (const $ M.singleton ty (Set.singleton refinementId)) refinement
-      }
+    newNET = NamedEntityTyped NamedEntity { namedEntity = M.singleton (typeRep (Proxy @t)) [Some NamedVal {name = refinementId, val}] }
   in ApiState {namedEntityTyped = namedEntityTyped <> newNET, ..}
 
 -- | Every entity of type @t@ the model has recorded, newest last.
