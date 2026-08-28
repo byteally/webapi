@@ -34,6 +34,17 @@ module Test.WebApi.StateModel
   , ensuresRefinement
   , refutesRefinement
   , withRefutation
+  , classAt
+  , classAtPart
+  , fillsPart
+  , classOf
+  , FieldClass (..)
+  , ResultClass (..)
+  , partName
+  , requestUnset
+  , andNextState
+  , recordClasses
+  , eventually
   , recordsAs
   , declares
   , withContract
@@ -123,7 +134,6 @@ import Test.QuickCheck.StateModel
 import Test.QuickCheck.DynamicLogic (DynLogicModel (..), DL, getModelStateDL, action, forAllNonVariableQ, withGenQ)
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString as SB
-import qualified Data.Text.Encoding as T
 import System.Directory (getTemporaryDirectory)
 import System.IO (openBinaryTempFile, hClose)
 import Control.Monad (forM)
@@ -146,6 +156,7 @@ import Data.Kind
 import Data.Typeable
 import Data.Coerce
 import GHC.TypeLits
+import Data.String (fromString)
 import qualified Network.HTTP.Types as H
 import Data.Functor.Identity
 import qualified Data.Text as T
@@ -161,6 +172,7 @@ import Data.Maybe (fromMaybe)
 import GHC.Generics (Rep)
 import Data.Bifunctor
 import Control.Monad.IO.Class
+import Control.Concurrent (threadDelay)
 import Control.Monad.Reader
 import Control.Monad (foldM)
 
@@ -195,6 +207,9 @@ data ApiSuccess (m :: Type) (r :: Type) = ApiSuccess
   , out       :: ApiOut m r
   , headerOut :: HeaderOut m r
   , cookieOut :: CookieOut m r
+  , sent      :: ClientRequest m r
+    -- ^ the request as it went out, so a result can carry what was sent
+    -- (a file's name, say) when the response does not
   }
 
 getSuccessOut :: ApiSuccess m r -> ApiOut m r
@@ -251,20 +266,29 @@ requestFreshLabels ClientRequestVal {query, form, header, path, file, body} =
   freshLabels query <> freshLabels form <> freshLabels header <> freshLabels path <> freshLabels file <> freshLabels body
 
 -- | The files the request carries, by name.
-requestTempFiles :: ClientRequestVal meth r -> [(Text, ByteString)]
+requestTempFiles :: ClientRequestVal meth r -> [(Text, Val ByteString)]
 requestTempFiles ClientRequestVal {query, form, header, path, file, body} =
   tempFiles query ++ tempFiles form ++ tempFiles header ++ tempFiles path ++ tempFiles file ++ tempFiles body
 
+-- | What nobody supplied in the request (see 'unsetLeaves').
+requestUnset :: ClientRequestVal meth r -> [Text]
+requestUnset ClientRequestVal {query, form, header, path, file, body} =
+  unsetLeaves query ++ unsetLeaves form ++ unsetLeaves header ++ unsetLeaves path ++ unsetLeaves file ++ unsetLeaves body
+
 -- | Start a step: make its fresh tokens, write its files.
-stepSuppliers :: ClientRequestVal meth r -> WebApiSessions apps Suppliers
-stepSuppliers creq = do
+stepSuppliers :: LookUp -> ClientRequestVal meth r -> WebApiSessions apps Suppliers
+stepSuppliers lkp creq = do
   beginStep
   mapM_ freshToken (Set.toList (requestFreshLabels creq))
   toks <- freshTokens
-  paths <- liftIO $ forM (requestTempFiles creq) $ \(n, c) -> do
+  let
+    -- a file's content may itself use the step's tokens and earlier results
+    contentOf n cv = either (\why -> error $ T.unpack $ "file " <> n <> ": " <> why) id $
+      resolveValWith Suppliers {freshOf = freshLookup toks, fileOf = \m -> Left ("file " <> m <> " inside a file")} lkp cv
+  paths <- liftIO $ forM (requestTempFiles creq) $ \(n, cv) -> do
     dir <- getTemporaryDirectory
     (p, h) <- openBinaryTempFile dir (T.unpack (T.map (\ch -> if ch == '/' then '_' else ch) n))
-    SB.hPut h c
+    SB.hPut h (contentOf n cv)
     hClose h
     pure (n, p)
   pure Suppliers
@@ -560,6 +584,10 @@ data SuccessApiModel s c xstate apps meth r a = SuccessApiModel
     -- ^ the refinements the step's value is checked to be outside of ('refutesRefinement')
   , apiRecords :: Set.Set RefinementId
     -- ^ the classes the step records its value under ('recordsAs')
+  , apiRetry :: Maybe (Int, Int)
+    -- ^ (attempts, milliseconds between): the call is repeated while it
+    -- fails or its result is refused, for what the platform does
+    -- asynchronously ('eventually')
   }
 
 defSuccessApiModel :: SuccessApiModel s c xstate apps meth r a
@@ -576,7 +604,14 @@ defSuccessApiModel = SuccessApiModel
   , apiEnsures = mempty
   , apiRefutes = mempty
   , apiRecords = mempty
+  , apiRetry = Nothing
   }
+
+-- | Repeat the call up to the given attempts, that many milliseconds
+-- apart, while it fails or its result mapping refuses the response —
+-- for what the platform only eventually shows (a file a poller picks up).
+eventually :: Int -> Int -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+eventually attempts ms SuccessApiModel {..} = SuccessApiModel {apiRetry = Just (attempts, ms), ..}
 
 labelSuffix :: SuccessApiModel s c xstate apps meth r a -> String
 labelSuffix SuccessApiModel {label} = maybe "" (\l -> " -- " ++ T.unpack l) label
@@ -789,31 +824,38 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
          ) => RunModel (ApiState s c xstate apps) (ReaderT WebApiSessionsCxt (WebApiSessions apps)) where
   type Error (ApiState s c xstate apps) (ReaderT WebApiSessionsCxt (WebApiSessions apps)) = ErrorState
   perform (ApiState {xActionState}) act lkp = case act of
-    MkWebApiAction (SuccessCall creq' _model cookModMay f) -> ReaderT $ \_ -> do
-      sup <- stepSuppliers creq'
+    MkWebApiAction (SuccessCall creq' SuccessApiModel {apiRetry} cookModMay f) -> ReaderT $ \_ -> do
+      sup <- stepSuppliers lkp creq'
       case resolveRequest sup lkp creq' of
-        Right creq -> testClients creq >>= \case
-          Success code out headerOut cookieOut -> do
-            let apiSucc = ApiSuccess {code, out, headerOut, cookieOut}
-            case cookModMay of
-              Nothing -> pure ()
-              Just cookMod -> case cookMod apiSucc of
-                modCk@(SetClientCookies setcooks) -> mapM_ (setClientCookie modCk) setcooks
-                modCk@(ModifyClientCookies modcooks) -> modifyClientCookies modCk modcooks
-                modCk@(DeleteClientCookies delcooks) -> mapM_ (deleteClientCookie modCk) delcooks
-            pure $ either (Left . ResultError) Right $ f apiSucc
-          Failure (Right oerr) -> pure $ Left UnExpectedApiCrash
-                                  { status = H.status500 -- TODO: Fix this
-                                  , headerOut = [] -- TODO: Fix this
-                                  , someError = oerr
-                                  }
-          Failure (Left (ApiError code _err hd _)) -> pure $ Left UnExpectedApiError
-                                                     { status = code
-                                                     , headerOut = maybe [] toHeader hd
-                                                     }
+        Right creq -> do
+          let
+            once = testClients creq >>= \case
+              Success code out headerOut cookieOut -> do
+                let apiSucc = ApiSuccess {code, out, headerOut, cookieOut, sent = creq}
+                case cookModMay of
+                  Nothing -> pure ()
+                  Just cookMod -> case cookMod apiSucc of
+                    modCk@(SetClientCookies setcooks) -> mapM_ (setClientCookie modCk) setcooks
+                    modCk@(ModifyClientCookies modcooks) -> modifyClientCookies modCk modcooks
+                    modCk@(DeleteClientCookies delcooks) -> mapM_ (deleteClientCookie modCk) delcooks
+                pure $ either (Left . ResultError) Right $ f apiSucc
+              Failure (Right oerr) -> pure $ Left UnExpectedApiCrash
+                                      { status = H.status500 -- TODO: Fix this
+                                      , headerOut = [] -- TODO: Fix this
+                                      , someError = oerr
+                                      }
+              Failure (Left (ApiError code _err hd _)) -> pure $ Left UnExpectedApiError
+                                                         { status = code
+                                                         , headerOut = maybe [] toHeader hd
+                                                         }
+            -- what the platform does asynchronously shows up eventually
+            attempt n = once >>= \case
+              Left _ | n > 1 -> liftIO (threadDelay (1000 * maybe 0 snd apiRetry)) >> attempt (n - 1)
+              r -> pure r
+          attempt (maybe 1 fst apiRetry)
         Left field -> pure $ Left (InputNotSetError field)
     MkWebApiAction (ErrorCall creq' expected _model f) -> ReaderT $ \_ -> do
-      sup <- stepSuppliers creq'
+      sup <- stepSuppliers lkp creq'
       case resolveRequest sup lkp creq' of
         Right creq -> testClients creq >>= \case
           Failure (Left apiErr@(ApiError code _err hd _))
@@ -913,8 +955,8 @@ requestReport lkp creq = case resolveRequest placeholders lkp creq of
       requestLine = "request: " ++ BC.unpack meth ++ " " ++ BC.unpack uriPath ++ BC.unpack (H.renderQuery True qitms)
       headerLines = [ "header: " ++ BC.unpack (CI.original k) ++ ": " ++ masked (CI.original k) (BC.unpack v) | (k, v) <- hdrs, k /= H.hAccept ]
       formLines = [ "form: " ++ intercalate "&" [ BC.unpack k ++ "=" ++ masked k (BC.unpack v) | (k, v) <- formPar ] | not (null formPar) ]
-      fileLines = [ "file " ++ BC.unpack k ++ ": " ++ BC.unpack fileName ++ " (" ++ BC.unpack fileContentType ++ ", " ++ show (SB.length content) ++ " bytes)"
-                  | (k, FileInfo {fileName, fileContentType}) <- filePar, let content = fromMaybe SB.empty (lookup (T.decodeUtf8 fileName) (requestTempFiles creq)) ]
+      fileLines = [ "file " ++ BC.unpack k ++ ": " ++ BC.unpack fileName ++ " (" ++ BC.unpack fileContentType ++ ")"
+                  | (k, FileInfo {fileName, fileContentType}) <- filePar ]
       bodyLines = [ "body (" ++ BC.unpack ct ++ "): " ++ clip (LBC.unpack body) | Just (ct, body) <- [bodyPart] ]
     in requestLine : headerLines ++ formLines ++ fileLines ++ bodyLines
   where
@@ -984,6 +1026,7 @@ expectingFailure expected pre (MkWebApiAction act) = case act of
       , apiEnsures = mempty
       , apiRefutes = mempty
       , apiRecords = mempty
+      , apiRetry = Nothing
       }
     (const (Right ()))
   _ -> Nothing
@@ -1015,12 +1058,77 @@ data ApiAction c xstate apps meth route a = ApiAction
   , contracts :: [RefinementId]
   , refutations :: [RefinementId]
     -- ^ declared refinements every run's value must be outside of
+  , requestClasses :: [FieldClass]
+    -- ^ request fields that name an entity of a class (see 'classAt')
+  , resultClasses :: [ResultClass c xstate apps a]
+    -- ^ result fields recorded under a class on every success (see 'classOf')
+  }
+
+-- | A request field that names an entity of a class.
+data FieldClass = FieldClass
+  { fcPart :: Text
+  , fcField :: Text
+  , fcClass :: RefinementId
+  }
+
+-- | A result field recorded under a class, with how (the typed access is
+-- captured where the field is named).
+data ResultClass c xstate apps a = ResultClass
+  { rcField :: Text
+  , rcClass :: RefinementId
+  , rcRecord :: forall s. Var a -> ApiState s c xstate apps -> ApiState s c xstate apps
+  }
+
+partName :: Part meth route t -> Text
+partName = \case
+  QueryP -> "query"
+  FormP -> "form"
+  HeaderP -> "header"
+  PathP -> "path"
+  BodyP -> "body"
+  FileP -> "file"
+
+-- | The request field names an entity of the class: when nobody supplies
+-- it, one recorded under the class is drawn (by position), and the step
+-- is enabled only while there is one; what a script supplies is checked
+-- against the class where the script is checked.
+classAt :: forall name x t c xstate apps meth route a. (KnownSymbol name, Typeable x, Generic t, GValRep (Rep t), GGetField name x (Rep t), GSetField name x (Rep t))
+  => Part meth route t -> RefinementId -> ApiAction c xstate apps meth route a -> ApiAction c xstate apps meth route a
+classAt part rid act = case fills @name part (entityFiller rid) act of
+  ApiAction {requestClasses, ..} -> ApiAction {requestClasses = FieldClass (partName part) (T.pack (symbolVal (Proxy @name))) rid : requestClasses, ..}
+
+-- | A whole part of the request (a bare path parameter, say) names an
+-- entity of the class; as 'classAt' otherwise.
+classAtPart :: forall t c xstate apps meth route a. Typeable t
+  => Part meth route t -> RefinementId -> ApiAction c xstate apps meth route a -> ApiAction c xstate apps meth route a
+classAtPart part rid act = case fillsPart part (entityFiller rid) act of
+  ApiAction {requestClasses, ..} -> ApiAction {requestClasses = FieldClass (partName part) "" rid : requestClasses, ..}
+
+-- | Fill a whole part when nobody supplied it ('Unset'); a supplied one stays.
+fillsPart :: forall t c xstate apps meth route a. Part meth route t -> Filler c xstate apps t -> ApiAction c xstate apps meth route a -> ApiAction c xstate apps meth route a
+fillsPart part (Filler make) ApiAction {requestFillers, ..} = ApiAction
+  { requestFillers = requestFillers ++ [RequestFiller (overPart part (\v -> case v of Unset _ -> make; _ -> pure v))]
+  , ..
+  }
+
+-- | The result field is an entity of the class: every success records it
+-- (a declared refinement still has to be ensured for the record to be
+-- sound — 'runApiAction' refuses it otherwise).
+classOf :: forall name x c xstate apps meth route a. (KnownSymbol name, Typeable x, Show x, Eq x, Typeable a, Generic a, GValRep (Rep a), GGetField name x (Rep a))
+  => RefinementId -> ApiAction c xstate apps meth route a -> ApiAction c xstate apps meth route a
+classOf rid@(RefinementId klass) ApiAction {resultClasses, ..} = ApiAction
+  { resultClasses = ResultClass
+      { rcField = T.pack (symbolVal (Proxy @name))
+      , rcClass = rid
+      , rcRecord = \var -> addTypedEntity (getField @name (fromVar var)) NER {refinementId = rid, entityName = fromString (T.unpack klass), desc = Nothing}
+      } : resultClasses
+  , ..
   }
 
 newtype RequestFiller c xstate apps meth route = RequestFiller (forall s m. HasApiStateM m s c xstate apps => ClientRequestVal meth route -> m (ClientRequestVal meth route))
 
 mkApiAction :: (forall s m. HasApiStateM m s c xstate apps => ActionConfig m s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a)) -> ApiAction c xstate apps meth route a
-mkApiAction f = ApiAction { buildAction = f, requestFillers = [], actionRefinements = [], contracts = [], refutations = [] }
+mkApiAction f = ApiAction { buildAction = f, requestFillers = [], actionRefinements = [], contracts = [], refutations = [], requestClasses = [], resultClasses = [] }
 
 -- | A class of an action's values decided by a predicate — a named,
 -- stackable postcondition: a value is in it when the predicate holds and
@@ -1096,15 +1204,21 @@ lookupRefinement rid ApiAction {actionRefinements} = case [ r | r@Refinement {re
 -- the contracts on top of the configuration's model; and the rule that
 -- a declared refinement is recorded only when ensured.
 runApiAction :: HasApiStateM m s c xstate apps => ApiAction c xstate apps meth route a -> ActionConfig m s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a)
-runApiAction apiAct@ApiAction {buildAction, requestFillers, actionRefinements, contracts, refutations} ActionConfig {requestMod, modelMod} = do
-  act <- buildAction ActionConfig
+runApiAction apiAct@ApiAction {buildAction, requestFillers, actionRefinements, contracts, refutations, resultClasses} ActionConfig {requestMod, modelMod} = do
+  act0 <- buildAction ActionConfig
     { requestMod = \creq -> requestMod creq >>= \creq' -> foldM (\r (RequestFiller fill) -> fill r) creq' requestFillers
     , modelMod = \model ->
         foldr refutesRefinement
-          (foldr ensuresRefinement (modelMod model) [ r | rid <- contracts, Just r <- [lookupRefinement rid apiAct] ])
+          (foldr ensuresRefinement (recordClasses resultClasses (modelMod model)) [ r | rid <- contracts, Just r <- [lookupRefinement rid apiAct] ])
           [ r | rid <- refutations, Just r <- [lookupRefinement rid apiAct] ]
     }
   let
+    -- a request nobody completed (a class with no entity yet, a field
+    -- nothing fills) is not a step the model can take
+    act = case unWebApiAction act0 of
+      SuccessCall creq model cook f | not (null (requestUnset creq)) -> mkWebApiAction (SuccessCall creq (andPrecondition (const False) model) cook f)
+      ErrorCall creq ef model f | not (null (requestUnset creq)) -> mkWebApiAction (ErrorCall creq ef (andPrecondition (const False) model) f)
+      _ -> act0
     declared = Set.fromList (map (\Refinement {refinementName} -> refinementName) actionRefinements)
     unsound :: forall s' c' xstate' apps' meth' r' a'. SuccessApiModel s' c' xstate' apps' meth' r' a' -> [RefinementId]
     unsound SuccessApiModel {apiEnsures, apiRecords} = Set.toList ((apiRecords `Set.intersection` declared) `Set.difference` apiEnsures)
@@ -1112,6 +1226,14 @@ runApiAction apiAct@ApiAction {buildAction, requestFillers, actionRefinements, c
     SuccessCall _ model _ _ | rid : _ <- unsound model ->
       error $ "the step records its value as " ++ show rid ++ ", a refinement it does not ensure"
     _ -> pure act
+
+-- | Record the result fields 'classOf' named, on every success.
+recordClasses :: [ResultClass c xstate apps a] -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+recordClasses rcs model = foldr (\ResultClass {rcClass, rcRecord} -> recordsAs rcClass . andNextState rcRecord) model rcs
+
+-- | Move the model further on a success, after what it already does.
+andNextState :: (Var a -> ApiState s c xstate apps -> ApiState s c xstate apps) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+andNextState f SuccessApiModel {apiNextState, ..} = SuccessApiModel {apiNextState = Just (\var st -> f var (maybe st (\g -> g var st) apiNextState)), ..}
 
 -- | How a field nobody supplied gets its value.
 newtype Filler c xstate apps x = Filler (forall s m. HasApiStateM m s c xstate apps => m (Val x))

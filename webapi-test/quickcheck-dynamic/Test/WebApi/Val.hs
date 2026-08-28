@@ -22,6 +22,7 @@ module Test.WebApi.Val
   , noSuppliers
   , freshLabels
   , tempFiles
+  , unsetLeaves
   , shrinkVal
   , fromVar
   , fresh
@@ -64,7 +65,7 @@ data Val a where
   Fresh :: Text -> (Text -> a) -> Val a
   -- | A file the step sends: its name and contents live in the model, the
   -- path they are written to exists only while the step runs.
-  TempFile :: Text -> ByteString -> (FilePath -> a) -> Val a
+  TempFile :: Text -> Val ByteString -> (FilePath -> a) -> Val a
 
 instance Functor Val where
   fmap f = \case
@@ -122,7 +123,7 @@ resolveValWith sup@Suppliers {freshOf, fileOf} lkp = go
       TempFile n _ f -> f <$> fileOf n
 
 -- | The files the value carries, by name.
-tempFiles :: Val a -> [(Text, ByteString)]
+tempFiles :: Val a -> [(Text, Val ByteString)]
 tempFiles = \case
   Const {} -> []
   Var {} -> []
@@ -132,6 +133,18 @@ tempFiles = \case
   Unset {} -> []
   Fresh {} -> []
   TempFile n c _ -> [(n, c)]
+
+-- | The 'Unset' leaves, by what they name: what nobody supplied.
+unsetLeaves :: Val a -> [Text]
+unsetLeaves = \case
+  Const {} -> []
+  Var {} -> []
+  Pair _ (v1, v2) -> unsetLeaves v1 ++ unsetLeaves v2
+  Map _ v -> unsetLeaves v
+  Fields gv -> gUnsetLeaves gv
+  Unset n -> [n]
+  Fresh {} -> []
+  TempFile _ c _ -> unsetLeaves c
 
 -- | The labels of the fresh leaves.
 freshLabels :: Val a -> Set.Set Text
@@ -143,7 +156,7 @@ freshLabels = \case
   Fields gv -> gFreshLabels gv
   Unset {} -> mempty
   Fresh l _ -> Set.singleton l
-  TempFile {} -> mempty
+  TempFile _ c _ -> freshLabels c
 
 instance HasVariables (Val a) where
   getAllVariables = \case
@@ -154,7 +167,7 @@ instance HasVariables (Val a) where
     Fields gv -> gVars gv
     Unset {} -> mempty
     Fresh {} -> mempty
-    TempFile {} -> mempty
+    TempFile _ c _ -> getAllVariables c
 
 -- | Shrink one leaf at a time: a variable to an earlier one of its type
 -- (see 'shrinkVar'); constants and unset leaves do not shrink.
@@ -224,7 +237,8 @@ class GValRep f where
   gResolve :: Suppliers -> LookUp -> GVal f -> Either Text (f p)
   gVars :: GVal f -> Set.Set (Any Var)
   gFreshLabels :: GVal f -> Set.Set Text
-  gTempFiles :: GVal f -> [(Text, ByteString)]
+  gTempFiles :: GVal f -> [(Text, Val ByteString)]
+  gUnsetLeaves :: GVal f -> [Text]
   gShrink :: VarContext -> GVal f -> [GVal f]
 
 instance GValRep f => GValRep (M1 i c f) where
@@ -234,6 +248,7 @@ instance GValRep f => GValRep (M1 i c f) where
   gVars (GM1 g) = gVars g
   gFreshLabels (GM1 g) = gFreshLabels g
   gTempFiles (GM1 g) = gTempFiles g
+  gUnsetLeaves (GM1 g) = gUnsetLeaves g
   gShrink vc (GM1 g) = GM1 <$> gShrink vc g
 
 instance (GValRep f, GValRep g) => GValRep (f :*: g) where
@@ -243,6 +258,7 @@ instance (GValRep f, GValRep g) => GValRep (f :*: g) where
   gVars (GProd a b) = gVars a <> gVars b
   gFreshLabels (GProd a b) = gFreshLabels a <> gFreshLabels b
   gTempFiles (GProd a b) = gTempFiles a ++ gTempFiles b
+  gUnsetLeaves (GProd a b) = gUnsetLeaves a ++ gUnsetLeaves b
   gShrink vc (GProd a b) = [GProd a' b | a' <- gShrink vc a] ++ [GProd a b' | b' <- gShrink vc b]
 
 instance GValRep (K1 i a) where
@@ -252,6 +268,7 @@ instance GValRep (K1 i a) where
   gVars (GK1 v) = getAllVariables v
   gFreshLabels (GK1 v) = freshLabels v
   gTempFiles (GK1 v) = tempFiles v
+  gUnsetLeaves (GK1 v) = unsetLeaves v
   gShrink vc (GK1 v) = GK1 <$> shrinkVal vc v
 
 instance GValRep U1 where
@@ -261,6 +278,7 @@ instance GValRep U1 where
   gVars GU1 = mempty
   gFreshLabels GU1 = mempty
   gTempFiles GU1 = []
+  gUnsetLeaves GU1 = []
   gShrink _ GU1 = []
 
 -- | Get a field by selector name, from a 'GVal'.
