@@ -19,6 +19,8 @@ module Test.WebApi
   , WebApiSessionsConfig
   , WebApiSession
   , ClientRequest (ClientRequest, path, query, form, file, header, body)
+  , RequestParts (..)
+  , requestParts
   , ClientCookies
   , UnknownClientException (..)
   , AppIsElem

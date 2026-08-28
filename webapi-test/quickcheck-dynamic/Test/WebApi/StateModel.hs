@@ -36,6 +36,9 @@ module Test.WebApi.StateModel
   , initWebApiSessionsCxt
   , successCall
   , successCallWith
+  , failingCall
+  , failingCallWith
+  , ExpectedFailure (..)
   -- , mkApiAction
   , defaultActionConfig
   , mkWebApiAction
@@ -54,6 +57,8 @@ module Test.WebApi.StateModel
   , setShrinkAction
   , setPostcondition
   , setPostconditionOnFailure
+  , setLabel
+  , andPostcondition
   , initApiState
   , initApiState_
   , modifyApiState
@@ -71,6 +76,7 @@ module Test.WebApi.StateModel
   , hasNamedEntity
   , webApiPrecondition
   , addNextState
+  , elementsM
   , andPrecondition
   , shrinkRequest
   , modelOnlyDL
@@ -93,6 +99,11 @@ module Test.WebApi.StateModel
 import Test.WebApi
 import Test.QuickCheck.StateModel
 import Test.QuickCheck.DynamicLogic (DynLogicModel (..), DL, getModelStateDL, action, forAllNonVariableQ, withGenQ)
+import qualified Data.ByteString.Char8 as BC
+import qualified Data.ByteString.Lazy.Char8 as LBC
+import Data.Char (toLower)
+import Data.List (intercalate, isInfixOf)
+import qualified Data.CaseInsensitive as CI
 import Test.WebApi.Val
 -- import Test.QuickCheck.StateModel.Variables (Any (..))
 import qualified Test.QuickCheck as QC
@@ -214,15 +225,23 @@ shrinkRequest vctx ClientRequestVal {..} =
   ++ [ClientRequestVal {body = v, ..} | v <- shrinkVal vctx body]
 
 data WebApiAction s (c :: Type) (xstate :: Type) (apps :: [Type]) (a :: Type) where
-  SuccessCall :: (WebApiActionCxt apps meth app r, Typeable res, Eq (Action xstate res))
+  SuccessCall :: (WebApiActionCxt apps meth app r, Typeable res, Show res, Eq (Action xstate res))
     => ClientRequestVal meth (app :// r)
     -> SuccessApiModel s c xstate apps meth (app :// r) res
     -> Maybe (ApiSuccess meth (app :// r) -> ModifyClientCookies app)
     -> (ApiSuccess meth (app :// r) -> Either ResultError res)
     -> WebApiAction s c xstate apps res
-  ErrorCall :: WebApiActionCxt apps meth app r
-    => ClientRequest meth (app :// r)
-    -> WebApiAction s c xstate apps (ApiErr meth (app :// r))
+  -- | A call expected to fail (with a given status): the step succeeds
+  -- when it does, its result is what the caller makes of the decoded
+  -- error, bound like any other result. Everything else — model, request,
+  -- shrinking — is as for 'SuccessCall'; only which branch of the
+  -- response is the good one differs.
+  ErrorCall :: (WebApiActionCxt apps meth app r, Typeable res, Show res, Eq (Action xstate res))
+    => ClientRequestVal meth (app :// r)
+    -> ExpectedFailure
+    -> SuccessApiModel s c xstate apps meth (app :// r) res
+    -> (ApiError meth (app :// r) -> Either ResultError res)
+    -> WebApiAction s c xstate apps res
   SomeExceptionCall :: WebApiActionCxt apps meth app r
     => ClientRequest meth (app :// r)
     -> WebApiAction s c xstate apps (SomeException)
@@ -232,6 +251,23 @@ data WebApiAction s (c :: Type) (xstate :: Type) (apps :: [Type]) (a :: Type) wh
   -- seeding knowledge, scoping generation ('setGenerateFromDL'), …
   ModelOnly :: String -> (ApiState s c xstate apps -> ApiState s c xstate apps) -> WebApiAction s c xstate apps ()
   XAction :: Action xstate a -> WebApiAction s c xstate apps a
+
+-- | What an 'ErrorCall' expects of the response.
+data ExpectedFailure
+  = AnyFailure
+    -- ^ any error status
+  | FailureStatus Int
+    -- ^ this HTTP status
+  deriving (Show, Eq)
+
+matchesFailure :: ExpectedFailure -> H.Status -> Bool
+matchesFailure AnyFailure _ = True
+matchesFailure (FailureStatus n) st = H.statusCode st == n
+
+expectedFailureText :: ExpectedFailure -> String
+expectedFailureText = \case
+  AnyFailure -> "expect failure"
+  FailureStatus n -> "expect " ++ show n
 
 class (Hashable c, Show c, Eq c, Typeable c) => ContextSwitch c where
   setContext :: Hashed c -> IO ()
@@ -243,8 +279,8 @@ instance ContextSwitch () where
   
 instance StateModel xstate => Show (WebApiAction s c xstate apps a) where
   show = \case
-    SuccessCall creq _ _ _ -> show . getOpIdFromRequest $ creq
-    ErrorCall creq -> show . unsafePerformIO . toWaiRequest . fromClientRequest $ creq
+    SuccessCall creq model _ _ -> getOpIdFromRequest creq ++ labelSuffix model
+    ErrorCall creq expected model _ -> getOpIdFromRequest creq ++ " (" ++ expectedFailureText expected ++ ")" ++ labelSuffix model
     SomeExceptionCall creq -> show . unsafePerformIO . toWaiRequest . fromClientRequest $ creq
     SetContext c -> "Set-Context: " ++ show c
     ClearContext pc -> "Clear-Context: " ++ show (typeRep pc)
@@ -256,8 +292,8 @@ instance Eq (Action xstate a) => Eq (WebApiAction s c xstate apps a) where
   (==) (SuccessCall creq1 _ _ _) = \case
     SuccessCall creq2 _ _ _ -> (getOpIdFromRequest $ creq1) == (getOpIdFromRequest $ creq2)
     _ -> False
-  (==) (ErrorCall creq1) = \case
-    ErrorCall creq2 -> (show . unsafePerformIO . toWaiRequest . fromClientRequest $ creq1) == (show . unsafePerformIO . toWaiRequest . fromClientRequest $ creq2)
+  (==) (ErrorCall creq1 expected1 _ _) = \case
+    ErrorCall creq2 expected2 _ _ -> getOpIdFromRequest creq1 == getOpIdFromRequest creq2 && expected1 == expected2
     _ -> False
   (==) (SomeExceptionCall creq1) = \case
     SomeExceptionCall creq2 -> (show . unsafePerformIO . toWaiRequest . fromClientRequest $ creq1) == (show . unsafePerformIO . toWaiRequest . fromClientRequest $ creq2)
@@ -278,8 +314,8 @@ instance Eq (Action xstate a) => Eq (WebApiAction s c xstate apps a) where
 instance StateModel xstate => HasVariables (WebApiAction s c xstate apps a) where
   getAllVariables = \case
     SuccessCall creq _ _ _ -> getAllVariables creq
-    ErrorCall _creq -> error "TODO:"
-    SomeExceptionCall _creq -> error "TODO:"
+    ErrorCall creq _ _ _ -> getAllVariables creq
+    SomeExceptionCall {} -> mempty
     SetContext {} -> mempty
     ClearContext {} -> mempty
     ModelOnly {} -> mempty
@@ -501,8 +537,13 @@ data SuccessApiModel s c xstate apps meth r a = SuccessApiModel
   , apiPrecondition :: Maybe (ApiState s c xstate apps -> Bool)
   , apiValidFailingAction :: Maybe (ApiState s c xstate apps -> Bool)
   , apiShrinkAction :: Maybe (VarContext -> ApiState s c xstate apps -> [Any (Action (ApiState s c xstate apps))])
-  , apiPostcondition :: (ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> a -> Bool
+  , apiPostcondition :: (ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> a -> Either Text ()
+    -- ^ over the result of the performed call; 'Left' says why it does not
+    -- hold (the counterexample carries it, with the result)
   , apiPostconditionOnFailure :: (ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> Either ErrorState a -> Bool
+  , label :: Maybe Text
+    -- ^ the step's name where it was written (a script's rule), for the
+    -- counterexample; 'actionName' stays the operation id
   }
 
 defSuccessApiModel :: SuccessApiModel s c xstate apps meth r a
@@ -512,9 +553,13 @@ defSuccessApiModel = SuccessApiModel
   , apiPrecondition = Nothing
   , apiValidFailingAction = Nothing
   , apiShrinkAction = Nothing
-  , apiPostcondition = \_ _ _ -> True
+  , apiPostcondition = \_ _ _ -> Right ()
   , apiPostconditionOnFailure = \_ _ _ -> True
+  , label = Nothing
   }
+
+labelSuffix :: SuccessApiModel s c xstate apps meth r a -> String
+labelSuffix SuccessApiModel {label} = maybe "" (\l -> " -- " ++ T.unpack l) label
 
 setNextState :: (Var a -> ApiState s c xstate apps -> ApiState s c xstate apps) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setNextState f SuccessApiModel {..} = SuccessApiModel {apiNextState = Just f, ..}
@@ -531,8 +576,16 @@ setValidFailingAction f SuccessApiModel {..} = SuccessApiModel {apiValidFailingA
 setShrinkAction :: (VarContext -> ApiState s c xstate apps -> [Any (Action (ApiState s c xstate apps))]) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setShrinkAction f SuccessApiModel {..} = SuccessApiModel {apiShrinkAction = Just f, ..}
 
-setPostcondition :: ((ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> a -> Bool) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+setPostcondition :: ((ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> a -> Either Text ()) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setPostcondition f SuccessApiModel {..} = SuccessApiModel {apiPostcondition = f, ..}
+
+-- | Require another postcondition besides the model's own (the model's is
+-- checked first; the first failure is reported).
+andPostcondition :: ((ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> a -> Either Text ()) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+andPostcondition f SuccessApiModel {apiPostcondition, ..} = SuccessApiModel {apiPostcondition = \ss lkp a -> apiPostcondition ss lkp a >> f ss lkp a, ..}
+
+setLabel :: Text -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+setLabel l SuccessApiModel {..} = SuccessApiModel {label = Just l, ..}
 
 setPostconditionOnFailure :: ((ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> Either ErrorState a -> Bool) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setPostconditionOnFailure f SuccessApiModel {..} = SuccessApiModel {apiPostconditionOnFailure = f, ..}
@@ -578,7 +631,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
 
   actionName = \case
     MkWebApiAction (SuccessCall creq _ _ _) -> getOpIdFromRequest creq
-    MkWebApiAction (ErrorCall creq) -> getOpIdFromRequest creq
+    MkWebApiAction (ErrorCall creq _ _ _) -> getOpIdFromRequest creq
     MkWebApiAction (SomeExceptionCall creq) -> getOpIdFromRequest creq
     MkWebApiAction a@(SetContext {}) -> show a
     MkWebApiAction a@(ClearContext {}) -> show a
@@ -594,8 +647,8 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
 
   nextState s@ApiState{xActionState, ..} (MkWebApiAction act) var = case act of
     SuccessCall _creq SuccessApiModel {apiNextState=nsMay} _ _ -> maybe s (\ns -> ns var s) nsMay
-    ErrorCall {} -> error "TODO:"
-    SomeExceptionCall {} -> error "TODO:"
+    ErrorCall _creq _ SuccessApiModel {apiNextState=nsMay} _ -> maybe s (\ns -> ns var s) nsMay
+    SomeExceptionCall {} -> s
     SetContext c -> ApiState {xActionState, currentContext = Just c, ..}
     ClearContext {} -> ApiState {xActionState, currentContext = Nothing, ..}
     ModelOnly _ f -> f s
@@ -603,8 +656,8 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
 
   failureNextState s@ApiState{xActionState, ..} (MkWebApiAction act) = case act of
     SuccessCall _creq SuccessApiModel {apiFailureNextState=nsMay} _ _ -> maybe s (\ns -> ns s) nsMay
-    ErrorCall {} -> error "TODO:"
-    SomeExceptionCall {} -> error "TODO:"
+    ErrorCall _creq _ SuccessApiModel {apiFailureNextState=nsMay} _ -> maybe s (\ns -> ns s) nsMay
+    SomeExceptionCall {} -> s
     SetContext {} -> s
     ClearContext {} -> s
     ModelOnly {} -> s
@@ -614,8 +667,8 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
 
   validFailingAction s@ApiState{xActionState} (MkWebApiAction act) = case act of
     SuccessCall _creq SuccessApiModel {apiValidFailingAction=vfaMay} _ _ -> maybe False (\vfa -> vfa s) vfaMay
-    ErrorCall {} -> error "TODO:"
-    SomeExceptionCall {} -> error "TODO:"
+    ErrorCall _creq _ SuccessApiModel {apiValidFailingAction=vfaMay} _ -> maybe False (\vfa -> vfa s) vfaMay
+    SomeExceptionCall {} -> False
     SetContext {} -> False
     ClearContext {} -> False
     ModelOnly {} -> False
@@ -627,8 +680,10 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     SuccessCall creq model@SuccessApiModel {apiShrinkAction=saMay} cookMod f -> case saMay of
       Just sa -> sa varCxt s
       Nothing -> [Some (MkWebApiAction (SuccessCall creq' model cookMod f)) | creq' <- shrinkRequest varCxt creq]
-    ErrorCall {} -> error "TODO:"
-    SomeExceptionCall {} -> error "TODO:"
+    ErrorCall creq expected model@SuccessApiModel {apiShrinkAction=saMay} f -> case saMay of
+      Just sa -> sa varCxt s
+      Nothing -> [Some (MkWebApiAction (ErrorCall creq' expected model f)) | creq' <- shrinkRequest varCxt creq]
+    SomeExceptionCall {} -> []
     SetContext {} -> []
     ClearContext {} -> []
     ModelOnly {} -> []
@@ -656,6 +711,11 @@ data ErrorState =
   { status :: H.Status
   , headerOut :: [H.Header]
 --  , cookieOut :: [(ByteString, H.Cookie)]
+  }
+  | UnexpectedStatus -- ^ the call failed, but not as an 'ErrorCall' expected
+  { expected :: ExpectedFailure
+  , status :: H.Status
+  , headerOut :: [H.Header]
   }
   | InputNotSetError Text -- ^ the request field nobody supplied
   | ResultError ResultError
@@ -722,18 +782,26 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
                                                      , headerOut = maybe [] toHeader hd
                                                      }
         Left field -> pure $ Left (InputNotSetError field)
-    MkWebApiAction (ErrorCall creq) -> ReaderT $ \_ -> do
-      testClients creq >>= \case
-        Failure (Left (ApiError _ err _ _)) -> pure $ Right err
-        Failure (Right oerr) -> pure $ Left UnExpectedApiCrash
-                                { status = H.status500 -- TODO: Fix this
-                                , headerOut = [] -- TODO: Fix this
-                                , someError = oerr
-                                }
-        Success code _out headerOut _cookieOut -> pure $ Left $ UnExpectedApiSuccess
-                                                { status = code
-                                                , headerOut = toHeader headerOut
-                                                }
+    MkWebApiAction (ErrorCall creq' expected _model f) -> ReaderT $ \_ -> do
+      case resolveRequest lkp creq' of
+        Right creq -> testClients creq >>= \case
+          Failure (Left apiErr@(ApiError code _err hd _))
+            | matchesFailure expected code -> pure $ either (Left . ResultError) Right $ f apiErr
+            | otherwise -> pure $ Left UnexpectedStatus
+                                  { expected
+                                  , status = code
+                                  , headerOut = maybe [] toHeader hd
+                                  }
+          Failure (Right oerr) -> pure $ Left UnExpectedApiCrash
+                                  { status = H.status500 -- TODO: Fix this
+                                  , headerOut = [] -- TODO: Fix this
+                                  , someError = oerr
+                                  }
+          Success code _out headerOut _cookieOut -> pure $ Left $ UnExpectedApiSuccess
+                                                  { status = code
+                                                  , headerOut = toHeader headerOut
+                                                  }
+        Left field -> pure $ Left (InputNotSetError field)
     MkWebApiAction (SomeExceptionCall creq) -> ReaderT $ \_ -> do
       testClients creq >>= \case
         Failure (Right (OtherError e)) -> pure $ Right e
@@ -752,34 +820,105 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
       res <- liftIO $ perform xActionState xact lkp
       pure $ first (XActionError . AnyXActionError) res
 
-  postcondition _ _act _lkp _a = pure True
-  postconditionOnFailure _ _act _lkp _a = pure True
+  postcondition ss (MkWebApiAction act) lkp res = case act of
+    SuccessCall _ model _ _ -> check model res
+    ErrorCall _ _ model _ -> check model res
+    _ -> pure True
+    where
+      check :: forall meth r x m. Monad m => SuccessApiModel s c xstate apps meth r x -> x -> PostconditionM m Bool
+      check SuccessApiModel {apiPostcondition} x = case apiPostcondition ss lkp x of
+        Right () -> pure True
+        Left why -> do
+          counterexamplePost ("  postcondition failed: " ++ T.unpack why)
+          pure False
 
-  monitoring (_s, s') act _lkp _res =
-     QC.counterexample ("show res" ++ " <- " ++ actionName act ++ "\n  -- State: " ++ show s')
-      . QC.tabulate "Registry size" ["Val1", "Val2"]
+  postconditionOnFailure ss (MkWebApiAction act) lkp res = pure $ case act of
+    SuccessCall _ SuccessApiModel {apiPostconditionOnFailure} _ _ -> apiPostconditionOnFailure ss lkp res
+    ErrorCall _ _ SuccessApiModel {apiPostconditionOnFailure} _ -> apiPostconditionOnFailure ss lkp res
+    _ -> True
 
-  monitoringFailure s' act _lkp err =
-    QC.counterexample (show err ++ " <- " ++ actionName act ++ "\n  -- State: " ++ show s')
-      . QC.tabulate "Registry size" ["Val1", "Val2"]
+  monitoring _ (MkWebApiAction act) lkp res = QC.counterexample $ case act of
+    SuccessCall creq _ _ _ -> stepReport (show act) (requestReport lkp creq) (outcome res)
+    ErrorCall creq _ _ _ -> stepReport (show act) (requestReport lkp creq) (outcome res)
+    _ -> show act
+    where
+      outcome :: Show x => Either ErrorState x -> String
+      outcome = either (("error: " ++) . show) (("result: " ++) . show)
+
+  monitoringFailure _ (MkWebApiAction act) lkp err = QC.counterexample $ case act of
+    SuccessCall creq _ _ _ -> stepReport (show act) (requestReport lkp creq) ("error: " ++ show err)
+    ErrorCall creq _ _ _ -> stepReport (show act) (requestReport lkp creq) ("error: " ++ show err)
+    _ -> show act ++ "\n  error: " ++ show err
+
+-- | A step of the counterexample: the operation (and the rule it came
+-- from), the request as it went out, what came back.
+stepReport :: String -> [String] -> String -> String
+stepReport heading requestLines result = intercalate "\n" $ heading : map ("  " ++) (requestLines ++ [result])
+
+-- | The request as the client sends it (method, path, query, form, body),
+-- once its variables are looked up; or the field nobody supplied.
+requestReport :: forall meth r.
+  ( ToParam 'PathParam (PathParam meth r)
+  , ToParam 'QueryParam (QueryParam meth r)
+  , ToParam 'FormParam (FormParam meth r)
+  , ToParam 'FileParam (FileParam meth r)
+  , ToHeader (HeaderIn meth r)
+  , PartEncodings (RequestBody meth r)
+  , ToHListRecTuple (StripContents (RequestBody meth r))
+  , MkPathFormatString r
+  , SingMethod meth
+  ) => LookUp -> ClientRequestVal meth r -> [String]
+requestReport lkp creq = case resolveRequest lkp creq of
+  Left field -> ["request: <" ++ T.unpack field ++ " is not set>"]
+  Right resolved ->
+    let
+      RequestParts {uriPath, meth, qitms, hdrs, formPar, bodyPart} = requestParts BC.empty [] (fromClientRequest resolved)
+      requestLine = "request: " ++ BC.unpack meth ++ " " ++ BC.unpack uriPath ++ BC.unpack (H.renderQuery True qitms)
+      headerLines = [ "header: " ++ BC.unpack (CI.original k) ++ ": " ++ masked (CI.original k) (BC.unpack v) | (k, v) <- hdrs, k /= H.hAccept ]
+      formLines = [ "form: " ++ intercalate "&" [ BC.unpack k ++ "=" ++ masked k (BC.unpack v) | (k, v) <- formPar ] | not (null formPar) ]
+      bodyLines = [ "body (" ++ BC.unpack ct ++ "): " ++ clip (LBC.unpack body) | Just (ct, body) <- [bodyPart] ]
+    in requestLine : headerLines ++ formLines ++ bodyLines
+  where
+    -- credentials do not belong in a test report
+    masked k v
+      | any (`isInfixOf` map toLower (BC.unpack k)) ["password", "authorization", "cookie", "token"] = "<hidden>"
+      | otherwise = v
+    clip s = case splitAt 2000 s of
+      (pre, []) -> pre
+      (pre, _) -> pre ++ "…"
 
 instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
          , DynLogicModel xstate
          ) => DynLogicModel (ApiState s c xstate apps) where
   restricted _ = False
 
-successCall :: forall meth r app c xstate apps s. (WebApiActionCxt apps meth app r, Eq (Action xstate (ApiOut meth (app :// r)))) =>
+successCall :: forall meth r app c xstate apps s. (WebApiActionCxt apps meth app r, Show (ApiOut meth (app :// r)), Eq (Action xstate (ApiOut meth (app :// r)))) =>
   ClientRequestVal meth (app :// r)
   -> Action (ApiState s c xstate apps) (ApiOut meth (app :// r))
 successCall creq = mkWebApiAction $ SuccessCall creq defSuccessApiModel Nothing (Right . getSuccessOut)
 
-successCallWith :: forall meth r app res c xstate apps s. (Typeable res, Eq (Action xstate res), WebApiActionCxt apps meth app r) =>
+successCallWith :: forall meth r app res c xstate apps s. (Typeable res, Show res, Eq (Action xstate res), WebApiActionCxt apps meth app r) =>
   ClientRequestVal meth (app :// r)
   -> SuccessApiModel s c xstate apps meth (app :// r) res
   -> Maybe (ApiSuccess meth (app :// r) -> ModifyClientCookies app)
   -> (ApiSuccess meth (app :// r) -> Either ResultError res)
   -> Action (ApiState s c xstate apps) res
 successCallWith creq apiModel cookModMay f = mkWebApiAction (SuccessCall creq apiModel cookModMay f)
+
+-- | A call expected to fail; the result is the decoded error.
+failingCall :: forall meth r app c xstate apps s. (WebApiActionCxt apps meth app r, Show (ApiErr meth (app :// r)), Eq (Action xstate (ApiErr meth (app :// r)))) =>
+  ClientRequestVal meth (app :// r)
+  -> ExpectedFailure
+  -> Action (ApiState s c xstate apps) (ApiErr meth (app :// r))
+failingCall creq expected = mkWebApiAction $ ErrorCall creq expected defSuccessApiModel (\ApiError {err} -> Right err)
+
+failingCallWith :: forall meth r app res c xstate apps s. (Typeable res, Show res, Eq (Action xstate res), WebApiActionCxt apps meth app r) =>
+  ClientRequestVal meth (app :// r)
+  -> ExpectedFailure
+  -> SuccessApiModel s c xstate apps meth (app :// r) res
+  -> (ApiError meth (app :// r) -> Either ResultError res)
+  -> Action (ApiState s c xstate apps) res
+failingCallWith creq expected apiModel f = mkWebApiAction (ErrorCall creq expected apiModel f)
 
 
 -- newtype ApiGen apps a = ApiGen (ReaderT
@@ -819,6 +958,13 @@ instance HasApiStateM (DL (ApiState s c xstate apps)) s c xstate apps where
 instance HasApiStateM (ApiGenM s c xstate apps) s c xstate apps where
   getApiStateM = ask
   genValM gen _ = ApiGenM (lift gen)
+
+-- | One of the candidates — a quantified choice when the action is a DL
+-- step, a draw when it is being generated — shrinking toward the earlier
+-- ones (a model listing its candidates oldest-first shrinks to the oldest).
+elementsM :: (HasApiStateM m s c xstate apps, Typeable a, Show a, Eq a) => [a] -> m a
+elementsM [] = error "elementsM: nothing to choose from"
+elementsM xs = genValM (QC.elements xs) (\x -> takeWhile (/= x) xs)
 
 newtype ApiGenM s c xstate apps a = ApiGenM (ReaderT (ApiState s c xstate apps) QC.Gen a)
   deriving newtype (Functor, Applicative, Monad, MonadReader (ApiState s c xstate apps))
@@ -864,8 +1010,8 @@ setGenerateFromDL names = modelOnlyDL ("generate from " ++ maybe "*" (show . Set
 webApiPrecondition :: StateModel xstate => ApiState s c xstate apps -> WebApiAction s c xstate apps a -> Bool
 webApiPrecondition s@ApiState{xActionState} = \case
   SuccessCall _creq SuccessApiModel {apiPrecondition=pcMay} _ _ -> maybe True (\pc -> pc s) pcMay
-  ErrorCall {} -> error "TODO:"
-  SomeExceptionCall {} -> error "TODO:"
+  ErrorCall _creq _ SuccessApiModel {apiPrecondition=pcMay} _ -> maybe True (\pc -> pc s) pcMay
+  SomeExceptionCall {} -> True
   SetContext {} -> True
   ClearContext {} -> True
   ModelOnly {} -> True
