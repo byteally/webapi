@@ -346,6 +346,16 @@ data WebApiAction s (c :: Type) (xstate :: Type) (apps :: [Type]) (a :: Type) wh
   -- execution): a fresh value the DL binds like any other result, so a
   -- request and a later assertion can share it and a replay makes a new one.
   FreshValue :: Text -> WebApiAction s c xstate apps Text
+  -- | A step that performs an effect outside the web API — a foreign
+  -- transform, say — its result bound like any other. The variables the
+  -- effect's closure references are declared up front, so the DL keeps the
+  -- steps that bind them; the effect receives the 'LookUp' that resolves
+  -- them. A 'Left' is the effect's own failure, reported at the step.
+  EffectCall :: (Typeable res, Show res, Eq res, Eq (Action xstate res))
+    => String
+    -> Set.Set (Any Var)
+    -> (LookUp -> IO (Either T.Text res))
+    -> WebApiAction s c xstate apps res
   XAction :: Action xstate a -> WebApiAction s c xstate apps a
 
 -- | What an 'ErrorCall' expects of the response.
@@ -382,6 +392,7 @@ instance StateModel xstate => Show (WebApiAction s c xstate apps a) where
     ClearContext pc -> "Clear-Context: " ++ show (typeRep pc)
     ModelOnly n _ -> "Model: " ++ n
     FreshValue l -> "fresh " ++ T.unpack l
+    EffectCall n _ _ -> n
     XAction xact -> show xact
 
 -- TODO: Revisit
@@ -408,6 +419,9 @@ instance Eq (Action xstate a) => Eq (WebApiAction s c xstate apps a) where
   (==) (FreshValue l1) = \case
     FreshValue l2 -> l1 == l2
     _ -> False
+  (==) (EffectCall n1 _ _) = \case
+    EffectCall n2 _ _ -> n1 == n2
+    _ -> False
   (==) (XAction xact1) = \case
     XAction xact2 -> xact1 == xact2
     _ -> False
@@ -421,6 +435,7 @@ instance StateModel xstate => HasVariables (WebApiAction s c xstate apps a) wher
     ClearContext {} -> mempty
     ModelOnly {} -> mempty
     FreshValue {} -> mempty
+    EffectCall _ vars _ -> vars
     XAction xact -> getAllVariables xact
 
 newtype RefinementId = RefinementId Text
@@ -696,6 +711,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     MkWebApiAction a@(ClearContext {}) -> show a
     MkWebApiAction a@(ModelOnly {}) -> show a
     MkWebApiAction (FreshValue {}) -> "fresh"
+    MkWebApiAction (EffectCall n _ _) -> n
     MkWebApiAction (XAction xact) -> actionName xact
 
   arbitraryAction varCxt s = case reflect (Proxy @s) of
@@ -713,6 +729,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     ClearContext {} -> ApiState {xActionState, currentContext = Nothing, ..}
     ModelOnly _ f -> f s
     FreshValue {} -> s
+    EffectCall {} -> s
     XAction xact -> ApiState {xActionState = nextState xActionState xact var, ..}
 
   failureNextState s@ApiState{xActionState, ..} (MkWebApiAction act) = case act of
@@ -723,6 +740,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     ClearContext {} -> s
     ModelOnly {} -> s
     FreshValue {} -> s
+    EffectCall {} -> s
     XAction xact -> ApiState {xActionState = failureNextState xActionState xact, ..}
 
   precondition s (MkWebApiAction act) = webApiPrecondition s act
@@ -735,6 +753,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     ClearContext {} -> False
     ModelOnly {} -> False
     FreshValue {} -> False
+    EffectCall {} -> False
     XAction xact -> validFailingAction xActionState xact
 
   shrinkAction varCxt s@ApiState{xActionState} (MkWebApiAction act) = case act of
@@ -751,6 +770,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     ClearContext {} -> []
     ModelOnly {} -> []
     FreshValue {} -> []
+    EffectCall {} -> []
     XAction xact -> fmap (\(Some xact') -> Some $ MkWebApiAction $ XAction xact') $ shrinkAction varCxt xActionState xact
 
 
@@ -890,6 +910,8 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     MkWebApiAction (ClearContext pc) -> Right <$> (liftIO $ clearContext pc)
     MkWebApiAction (ModelOnly {}) -> pure (Right ())
     MkWebApiAction (FreshValue l) -> ReaderT $ \_ -> Right <$> freshToken ("fresh:" <> l)
+    MkWebApiAction (EffectCall _ _ eff) -> ReaderT $ \_ ->
+      either (Left . ResultError . MkResultError) Right <$> liftIO (eff lkp)
     MkWebApiAction (XAction xact) -> ReaderT $ \_ -> do
       res <- liftIO $ perform xActionState xact lkp
       pure $ first (XActionError . AnyXActionError) res
@@ -1404,6 +1426,7 @@ webApiPrecondition s@ApiState{xActionState} = \case
   ClearContext {} -> True
   ModelOnly {} -> True
   FreshValue {} -> True
+  EffectCall {} -> True
   XAction xact -> precondition xActionState xact
 
 -- | Run another next-state transition after the model's own.
