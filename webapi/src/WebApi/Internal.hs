@@ -39,7 +39,7 @@ import           Network.HTTP.Media                 (MediaType, mapAcceptMedia,
                                                      matchAccept, matchContent
                                                     , mapAccept)
 import           Network.HTTP.Media.RenderHeader    (renderHeader)
-import           Network.HTTP.Types                 hiding (Query)
+import           Network.HTTP.Types                 hiding (Query, hSetCookie)
 import qualified Network.Wai                        as Wai
 import qualified Network.Wai.Parse                  as Wai
 import           Web.Cookie
