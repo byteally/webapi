@@ -1,0 +1,45 @@
+cabal-version:      3.0
+name:               webapi-session
+version:            0.1.0.0
+synopsis:           The concrete session client over webapi contracts
+-- Moved out of webapi-test (M8a): multi-app routing, wai + http-client
+-- transports, cookie jars, fresh values. Test-named packages never
+-- belonged in the integration layer's link closure; this one carries no
+-- test framework anywhere. webapi-test's plain stanza re-exports this
+-- package's module as Test.WebApi for its existing consumers.
+license:            BSD-3-Clause
+license-file:       LICENSE
+author:             Magesh B
+maintainer:         magesh85@gmail.com
+category:           Web
+build-type:         Simple
+
+library
+    ghc-options: -Wall -Werror
+    exposed-modules:  WebApi.Client.Session
+    build-depends:    base >= 4.18.3.0
+                    , mtl
+                    , text
+                    , bytestring
+                    , wai
+                    , webapi-contract
+                    , webapi
+                    , containers
+                    , wai-extra >= 3.1
+                    , http-types
+                    , http-media
+                    , cookie
+                    , http-client >= 0.7
+                    , time
+    default-extensions: TypeFamilies
+                        LambdaCase
+                        DataKinds
+                        PatternSynonyms
+                        DuplicateRecordFields
+                        NoFieldSelectors
+                        StandaloneDeriving
+                        GeneralizedNewtypeDeriving
+                        DeriveGeneric
+                        DerivingStrategies
+    hs-source-dirs:   src
+    default-language: GHC2021

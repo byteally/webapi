@@ -9,6 +9,7 @@ packages:
 --  webapi-openapi
   webapi-reflex-dom
   webapi-test
+  webapi-session
 --  ../rec/rec
 
 source-repository-package

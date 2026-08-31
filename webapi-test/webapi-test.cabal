@@ -39,7 +39,8 @@ library
     import:           warnings
     exposed-modules:  Test.WebApi
     -- other-modules:
-    build-depends:    wai-extra >= 3.1
+    build-depends:    webapi-session
+                    , wai-extra >= 3.1
                     , http-types
                     , http-media
                     , cookie

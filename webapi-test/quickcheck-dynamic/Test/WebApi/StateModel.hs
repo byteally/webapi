@@ -148,7 +148,6 @@ import WebApi.Contract
 import WebApi.Param
 import WebApi.ContentTypes
 import WebApi.Util
-import Web.Cookie
 import Control.Exception (SomeException)
 import Data.ByteString (ByteString)
 import Data.Text (Text)
@@ -202,27 +201,8 @@ type WebApiActionCxt (apps :: [Type]) (meth :: Type) (app :: Type) (r :: k) =
   , KnownSymbol (GetOpIdName (OperationId meth (app :// r)))
   )
 
-data ApiSuccess (m :: Type) (r :: Type) = ApiSuccess
-  { code      :: H.Status
-  , out       :: ApiOut m r
-  , headerOut :: HeaderOut m r
-  , cookieOut :: CookieOut m r
-  , sent      :: ClientRequest m r
-    -- ^ the request as it went out, so a result can carry what was sent
-    -- (a file's name, say) when the response does not
-  }
-
-getSuccessOut :: ApiSuccess m r -> ApiOut m r
-getSuccessOut (ApiSuccess {out}) = out
-
-getSuccessCode :: ApiSuccess m r -> H.Status
-getSuccessCode (ApiSuccess {code}) = code
-
-getSuccessHeaders :: ApiSuccess m r -> HeaderOut m r
-getSuccessHeaders (ApiSuccess {headerOut}) = headerOut
-
-getSuccessCookies :: ApiSuccess m r -> CookieOut m r
-getSuccessCookies (ApiSuccess {cookieOut}) = cookieOut
+-- ApiSuccess and its accessors moved to WebApi.Client.Session (M8a);
+-- re-exported here unchanged via the open Test.WebApi import.
 
 data ClientRequestVal meth r = ClientRequestVal
   { query :: Val (QueryParam meth r)
@@ -819,11 +799,7 @@ data ResultError = MkResultError
   { err :: T.Text
   } deriving (Show)
 
-data ModifyClientCookies app
-  = SetClientCookies [SetCookie]
-  | ModifyClientCookies (ClientCookies -> ClientCookies)
-  | DeleteClientCookies [ByteString]
---  deriving (Show)
+-- ModifyClientCookies moved to WebApi.Client.Session (M8a).
 
 data WebApiSessionsCxt = WebApiSessionsCxt
   { -- defaultClientsState :: ClientsState
