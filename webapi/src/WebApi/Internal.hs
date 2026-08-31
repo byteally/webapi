@@ -39,7 +39,7 @@ import           Network.HTTP.Media                 (MediaType, mapAcceptMedia,
                                                      matchAccept, matchContent
                                                     , mapAccept)
 import           Network.HTTP.Media.RenderHeader    (renderHeader)
-import           Network.HTTP.Types                 hiding (Query, hSetCookie)
+import           Network.HTTP.Types                 hiding (Query)
 import qualified Network.Wai                        as Wai
 import qualified Network.Wai.Parse                  as Wai
 import           Web.Cookie
@@ -154,7 +154,7 @@ toWaiResponse wreq resp = case resp of
         handleHeaders hds cks = handleHeaders' (maybe [] id hds) (maybe [] id cks)
 
         handleHeaders' :: [Header] -> [(ByteString, CookieInfo ByteString)] -> [Header]
-        handleHeaders' hds cookies = let ckHs = map (\(ck, cv) -> (hSetCookie , renderSC ck cv)) cookies
+        handleHeaders' hds cookies = let ckHs = map (\(ck, cv) -> (WebApi.Internal.hSetCookie, renderSC ck cv)) cookies
                                      in hds <> ckHs
         renderSC k v = toStrict . toLazyByteString . renderSetCookie $ def
           { setCookieName     = k
