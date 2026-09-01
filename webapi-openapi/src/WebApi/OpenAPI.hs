@@ -12,7 +12,7 @@
 module WebApi.OpenAPI where
 
 import Data.ByteString.Lazy as B (readFile)
-import Data.Aeson (eitherDecode, FromJSON (..), withObject, (.:), (.:?))
+import Data.Aeson (eitherDecode, FromJSON (..), withObject, (.:), (.:?), Value (..))
 import Data.OpenApi
     ( Components(_componentsSchemas, _componentsParameters, _componentsRequestBodies, _componentsResponses, _componentsHeaders),
       OpenApi(_openApiComponents, _openApiPaths, _openApiInfo),
@@ -22,7 +22,7 @@ import Data.OpenApi
       Reference(Reference),
       Referenced(..),
       Schema(Schema,_schemaType, _schemaFormat, _schemaItems, _schemaRequired,
-             _schemaProperties, _schemaOneOf),
+             _schemaProperties, _schemaOneOf, _schemaEnum),
       Definitions,
       Param(_paramName, _paramSchema, _paramIn, _paramRequired),
       Operation(_operationParameters, _operationRequestBody, _operationResponses, _operationSummary, _operationOperationId),
@@ -67,6 +67,7 @@ import GHC.SourceGen
       match,
       list,
       funBinds,
+      tuple,
       as'
     )
 import Data.HashMap.Strict.InsOrd as HMO (toList,lookup, empty, fromList, delete)
@@ -94,6 +95,7 @@ import Ormolu
 import System.FilePath.Posix
     ( (<.>), (</>), dropExtension, takeFileName, splitDirectories )
 import System.Directory ( createDirectoryIfMissing )
+import Data.Char (isAlphaNum)
 import Data.List as L (delete, nub)
 import qualified Data.List
 import qualified Crypto.Hash.SHA256 as SHA256
@@ -120,6 +122,15 @@ data ModelGenState =
                   , paramRecords :: Set Text
                   , bodyTypes :: Set Text
                   , resultTypes :: Set Text
+                  -- enums-as-sums (M10c-4)
+                  , enumsAsSums :: Bool
+                  , enumSums :: HashMap [Text] Text
+                    -- ^ canonical (sorted) value-set -> interned type name
+                  , enumTypes :: Set Text
+                  -- inline-record naming keyed by SHAPE, not field names
+                  -- alone (two {refName,id} objects with different id
+                  -- enums must not alias — M10c-4 bug fix)
+                  , inlineShapes :: HashMap Text [([(Text, Text)], Text)]
                   }
 
 data PkgConfig =
@@ -215,8 +226,8 @@ stdDeriving :: [HsDerivingClause']
 stdDeriving = [deriving' [var "Show", var "Eq", var "Generic"]]
 
 generateModels ::
-    FilePath -> FilePath  -> FilePath -> NamingMap -> IO ()
-generateModels fp destFp reqPrefix namingMap = do
+    FilePath -> FilePath  -> FilePath -> NamingMap -> Bool -> IO ()
+generateModels fp destFp reqPrefix namingMap sumEnums = do
     oApi <- readOpenAPI fp
     let compSchemas =  _componentsSchemas . _openApiComponents $ oApi
         compParams = _componentsParameters . _openApiComponents $ oApi
@@ -227,7 +238,7 @@ generateModels fp destFp reqPrefix namingMap = do
         appName = removeUnsupportedSymbols (upperFirstChar oApiName)
         (modelList, modelSt) = runState
                         (mapM (\(x,y) -> createModelData (_schemaType y) compSchemas (x,y)) (HMO.toList compSchemas))
-                        (ModelGenState S.empty S.empty (S.fromList keywords) HM.empty (S.fromList seenVariables) S.empty S.empty S.empty S.empty)
+                        (ModelGenState S.empty S.empty (S.fromList keywords) HM.empty (S.fromList seenVariables) S.empty S.empty S.empty S.empty sumEnums HM.empty S.empty HM.empty)
         hsModuleModel = module' (Just modName) Nothing impsModel
                           (concatMap (\(cts, insts) -> rmChildTypeLayer cts ++ rmInstanceLayer insts) modelList)
         -- the contract pass continues the models pass's state: name and
@@ -237,7 +248,7 @@ generateModels fp destFp reqPrefix namingMap = do
                                    (\(rs, st) -> ((\(a,b,c) -> (Prelude.concat a,Prelude.concat b,Prelude.concat c)) (unzip3 rs), st))
                                    (runState
                                         (mapM (createTypeSynData namingMap appName compSchemas compParams compReqBodies compResponses compHeaders) (filter (T.isPrefixOf (T.pack reqPrefix) . T.pack . fst) (HMO.toList . _openApiPaths $ oApi)))
-                                        (ModelGenState (seenVars modelSt) S.empty (S.fromList keywords) (createdSums modelSt) (jsonInstances modelSt) (inlineRecords modelSt) S.empty S.empty S.empty))
+                                        (ModelGenState (seenVars modelSt) S.empty (S.fromList keywords) (createdSums modelSt) (jsonInstances modelSt) (inlineRecords modelSt) S.empty S.empty S.empty sumEnums (enumSums modelSt) (enumTypes modelSt) (inlineShapes modelSt)))
 
     -- M10: resolved op names are identities (the FQN and the type-level
     -- OperationId) — they must be catalog-unique after sanitizing, and a
@@ -837,17 +848,26 @@ concreteRegistryText appName modName typeSynName schemaNames modelSt synSt route
       , S.fromList (map (removeUnsupportedSymbols . upperFirstChar) (HMQ.keys (createdSums modelSt)))
       , inlineRecords modelSt, inlineRecords synSt
       , paramRecords synSt, bodyTypes synSt, resultTypes synSt
+      , enumTypes modelSt, enumTypes synSt
       ]
     requestSide = SetQ.union (paramRecords synSt) (bodyTypes synSt)
     resultSide = resultTypes synSt
+    -- OverrideType/HsSelect have no generic sum story (Override.hs /
+    -- Select.hs carry no :+: instance) — suppress their emission for
+    -- sum-like types instead of emitting uncompilable empty instances
+    sumLike = SetQ.unions
+      [ enumTypes modelSt, enumTypes synSt
+      , S.fromList (map (removeUnsupportedSymbols . upperFirstChar) (HMQ.keys (createdSums modelSt)))
+      , S.fromList (map (removeUnsupportedSymbols . upperFirstChar) (HMQ.keys (createdSums synSt)))
+      ]
 
     instanceLines n =
       [ "instance HsType " <> n
       , "instance ToHsVal " <> n
       , "instance FromHsVal " <> n
       ]
-      <> [ "instance OverrideType " <> n | n `S.member` requestSide ]
-      <> [ "instance HsSelect " <> n | n `S.member` resultSide ]
+      <> [ "instance OverrideType " <> n | n `S.member` requestSide, not (n `S.member` sumLike) ]
+      <> [ "instance HsSelect " <> n | n `S.member` resultSide, not (n `S.member` sumLike) ]
       <> [ "" ]
 
     ops = [ (synName, methName, outT, om)
@@ -973,6 +993,22 @@ createModelData (Just OpenApiArray) compSchemas (dName,dSchema) =
             let toptype = type' occUnseenVar [] (var "Vector" @@ typ)
             return (ChildType toptype:child_types, child_instances)
 
+createModelData (Just OpenApiString) _ (dName,dSchema)
+    | Just vals@(_ : _) <- _schemaEnum dSchema = do
+        ModelGenState { enumsAsSums, enumSums } <- get
+        if not enumsAsSums
+        then do
+          unseenVar <- mkUnseenVar (upperFirstChar dName)
+          return (mkTopLevelBaseType "Text" (textToOccNameStr unseenVar), [])
+        else case HMQ.lookup (enumKey vals) enumSums of
+          -- the set is already a type under another name: alias to it
+          Just existing -> do
+            unseenVar <- mkUnseenVar (upperFirstChar dName)
+            return (mkTopLevelBaseType existing (textToOccNameStr unseenVar), [])
+          Nothing -> do
+            DataTypeInfo {child_types, child_instances} <-
+              mkEnumType (upperFirstChar dName) dName vals True True
+            return (child_types, child_instances)
 createModelData (Just a) _ (dName,dSchema) = do
     unseenVar <- mkUnseenVar (upperFirstChar dName)
     let occUnseenVar = textToOccNameStr unseenVar
@@ -1073,7 +1109,7 @@ createFromJsonFieldExpr compSchemas dName reqParams schemaProps = do
     let _unused = keywordsToAvoid
         -- the JSON key is the wire name, verbatim; sanitizing is only
         -- for the Haskell field/constructor side
-        instInfo =  (\(x,y) -> if _schemaType (refValToVal compSchemas y) == Just OpenApiArray && notElem x reqParams
+        fieldExpr (x,y) = if _schemaType (refValToVal compSchemas y) == Just OpenApiArray && notElem x reqParams
                                then op (op (var "v")
                                            (findSeparatorSymbol False)
                                            (string . T.unpack $ x))
@@ -1082,7 +1118,7 @@ createFromJsonFieldExpr compSchemas dName reqParams schemaProps = do
                                else op (var "v")
                                        (findSeparatorSymbol (x `elem` reqParams))
                                        (string . T.unpack $ x)
-                    ) <$> schemaProps
+        instInfo = fieldExpr <$> schemaProps
         instInfo' = op (var $ textToRdrNameStr dName) "<$>" (head instInfo):tail instInfo
     return $ foldl1 (`op` "<*>") instInfo'
     where findSeparatorSymbol True = ".:"
@@ -1124,8 +1160,14 @@ parseInlineFields ::
     Maybe ContentTypesOApi ->
     Definitions Schema ->
     m DataTypeInfo
-parseInlineFields (Just OpenApiString) dName _dSchema isReq _ _ _=
-    return $ DataTypeInfo dName (createHsType isReq "Text") [] []
+parseInlineFields (Just OpenApiString) dName dSchema isReq generateInstance instanceType _compSchemas = do
+    ModelGenState { enumsAsSums } <- get
+    case _schemaEnum dSchema of
+      -- sums only in JSON contexts: param records keep Text (their
+      -- Encode/DecodeParam story is a documented cut line)
+      Just vals@(_ : _) | enumsAsSums && instanceType == Just JSON ->
+        mkEnumType (T.append (upperFirstChar dName) "E") dName vals isReq generateInstance
+      _ -> return $ DataTypeInfo dName (createHsType isReq "Text") [] []
 parseInlineFields (Just OpenApiNumber ) dName _dSchema isReq _ _ _=
     return $ DataTypeInfo dName (createHsType isReq "Double") [] []
 parseInlineFields (Just OpenApiInteger) dName dSchema isReq _ _ _=
@@ -1151,12 +1193,20 @@ parseInlineFields (Just OpenApiNull ) _dName _dSchema _isReq _ _ _=
 parseInlineFields (Just OpenApiObject ) dName dSchema isReq generateInstance instanceType compSchemas = do
     dataTypeInfoList <- mapM (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams) generateInstance instanceType compSchemas) (HMO.toList . _schemaProperties $ dSchema)
     let (childInlines,childTypes,childInstances) = unzip3 $ (\(DataTypeInfo a b c d) -> ((a,b),c,d)) <$> dataTypeInfoList
-        vName = T.append "NsObj" (T.concat (upperFirstChar . removeUnsupportedSymbols . fst <$> childInlines))
-        objType = var (textToRdrNameStr vName)
-    ModelGenState { seenVars, keywordsToAvoid } <- get
+        baseName = T.append "NsObj" (T.concat (upperFirstChar . removeUnsupportedSymbols . fst <$> childInlines))
+        -- the SHAPE, not just the field names: two {refName,id} objects
+        -- whose id fields carry different enums are different types —
+        -- the old names-only key silently aliased them (first won)
+        shape = [ (fn, renderHsType ft) | (fn, ft) <- childInlines ]
+    -- seenVars BEFORE interning: a freshly minted variant name is put
+    -- into seenVars by mkUnseenVar itself, and must still get its decl
+    ModelGenState { seenVars = seenBefore } <- get
+    (vName, isNewName) <- internInlineShape baseName shape
+    let objType = var (textToRdrNameStr vName)
+    ModelGenState { keywordsToAvoid } <- get
     let mkFld (x,y) = (textToOccNameStr (avoidKeywords (removeUnsupportedSymbols (lowerFirstChar x)) keywordsToAvoid), field y)
         objDecl = ChildType $ data' (textToOccNameStr vName) [] [recordCon (textToOccNameStr vName) (mkFld <$> childInlines)] stdDeriving
-        newDecls = if member vName seenVars then [] else [objDecl]
+        newDecls = if isNewName && not (member vName seenBefore) then [objDecl] else []
     modify (updateSeenVars vName)
     modify (\st -> st { inlineRecords = S.insert vName (inlineRecords st) })
     jsonInsts <- if generateInstance
@@ -1176,12 +1226,30 @@ parseInlineFields (Just OpenApiObject ) dName dSchema isReq generateInstance ins
                           (Prelude.concat childInstances ++ jsonInsts)
     where reqParams =  _schemaRequired dSchema
 
+
 parseInlineFields Nothing dName dSchema isReq generateInstance instanceType compSchemas=
     case _schemaOneOf dSchema of
         Nothing -> if Prelude.null (_schemaProperties dSchema)
                    then error "Unexpected Schema type"
                    else parseInlineFields (Just OpenApiObject) dName dSchema isReq generateInstance instanceType compSchemas
         Just x -> mkSumType dName isReq x False generateInstance instanceType compSchemas
+
+-- | First shape under a base name keeps the bare name (text-mode output
+-- is byte-stable); a different shape gets a fresh suffixed name.
+internInlineShape ::
+    (MonadState ModelGenState m) => Text -> [(Text, Text)] -> m (Text, Bool)
+internInlineShape baseName shape = do
+    ModelGenState { inlineShapes = shapeTbl } <- get
+    let entries = fromMaybe [] (HMQ.lookup baseName shapeTbl)
+    case Prelude.lookup shape entries of
+      Just name -> return (name, False)
+      Nothing -> do
+        name <- if Prelude.null entries
+                then return baseName
+                else mkUnseenVar (T.append baseName "V")
+        modify (\st -> st { inlineShapes =
+          HMQ.insertWith (++) baseName [(shape, name)] (inlineShapes st) })
+        return (name, True)
 
 mkSumType ::
     MonadState ModelGenState m =>
@@ -1290,6 +1358,84 @@ registerSumType tName schemaList hm =
 
 mkNewVariables :: Text -> Int -> [Text]
 mkNewVariables dName x =  [T.concat [dName,"C", T.pack . show $ a] | a <- [1..x]]
+
+-- | The canonical identity of an enum: its sorted value list. Sorting
+-- also fixes constructor order, so a later occurrence (any doc order)
+-- rebuilds the identical type.
+enumKey :: [Value] -> [Text]
+enumKey = Data.List.sort . map asEnumStr
+
+asEnumStr :: Value -> Text
+asEnumStr = \case
+    String s -> s
+    other -> error ("non-string enum value unsupported: " <> show other)
+
+-- | An enum schema as a real sum (M10c-4, --enumMode=sum): interned by
+-- value-set (the catalog repeats the same 175 sets across 400+ fields),
+-- nullary constructors prefixed by the type name (constructors share the
+-- module namespace across 175 types), and a wire table for To/FromJSON —
+-- enum values are rarely identifier-safe ("27", "Asia/Katmandu").
+mkEnumType ::
+    (MonadState ModelGenState m) =>
+    Text -> Text -> [Value] -> Bool -> Bool -> m DataTypeInfo
+mkEnumType nameHint dName vals isReq generateInstance = do
+    let key = enumKey vals
+    ModelGenState { enumSums = knownEnums } <- get
+    case HMQ.lookup key knownEnums of
+      Just tyName -> do
+        insts <- emitEnumInstancesOnce tyName key generateInstance
+        return $ DataTypeInfo dName (createHsType isReq tyName) [] insts
+      Nothing -> do
+        tyName <- mkUnseenVar nameHint
+        modify (\st -> st { enumSums = HMQ.insert key tyName (enumSums st)
+                          , enumTypes = S.insert tyName (enumTypes st) })
+        let decl = ChildType (data' (textToOccNameStr tyName) []
+                     [ prefixCon (textToOccNameStr c) [] | (c, _) <- enumCtors tyName key ]
+                     stdDeriving)
+        insts <- emitEnumInstancesOnce tyName key generateInstance
+        return $ DataTypeInfo dName (createHsType isReq tyName) [decl] insts
+
+-- constructors from the canonical order; mangle-collisions ("a-b" vs
+-- "aB") get index suffixes deterministically
+enumCtors :: Text -> [Text] -> [(Text, Text)]
+enumCtors tyName key = go S.empty key
+    where go _ [] = []
+          go seen (v : vs) =
+            let base = T.append tyName (mangleEnumPiece v)
+                c = if member base seen then bump (2 :: Integer) base else base
+                bump n b = let b' = T.append b (T.pack (show n))
+                           in if member b' seen then bump (n + 1) b else b'
+            in (c, v) : go (S.insert c seen) vs
+
+mangleEnumPiece :: Text -> Text
+mangleEnumPiece v =
+    case Prelude.filter (not . TQ.null) (TQ.split (not . isAlphaNum) v) of
+      [] -> "U"
+      pieces -> T.concat (upperFirstChar <$> pieces)
+
+emitEnumInstancesOnce ::
+    (MonadState ModelGenState m) => Text -> [Text] -> Bool -> m [Instance]
+emitEnumInstancesOnce tyName key generateInstance = do
+    ModelGenState { jsonInstances } <- get
+    if not generateInstance || member tyName jsonInstances
+    then return []
+    else do
+      modify (updateJsonInstances tyName)
+      let pairs = enumCtors tyName key
+          toJ = Instance (instance' (var "ToJSON" @@ var (textToRdrNameStr tyName))
+                  [funBinds "toJSON"
+                     [ match [conP (textToRdrNameStr c) []] (var "String" @@ string (T.unpack w))
+                     | (c, w) <- pairs ]])
+          fromJ = Instance (instance' (var "FromJSON" @@ var (textToRdrNameStr tyName))
+                  [valBind "parseJSON"
+                     (op (var "withText" @@ string (T.unpack tyName)) "$"
+                        (lambda [conP_ "t"]
+                           (var "maybe" @@ (var "fail" @@ string ("unexpected " <> T.unpack tyName <> " value"))
+                                        @@ var "pure"
+                                        @@ (var "lookup" @@ var "t"
+                                              @@ list [ tuple [string (T.unpack w), var (textToRdrNameStr c)]
+                                                      | (c, w) <- pairs ]))))])
+      return [fromJ, toJ]
 
 parseIntegerFld :: Maybe Text -> Text
 parseIntegerFld (Just x) = let y = upperFirstChar x

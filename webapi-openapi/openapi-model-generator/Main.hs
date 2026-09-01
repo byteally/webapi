@@ -10,8 +10,11 @@ import Options.Applicative
       fullDesc,
       header,
       info,
+      help,
       long,
       optional,
+      showDefault,
+      value,
       progDesc,
       strOption,
       execParser,
@@ -25,7 +28,8 @@ data CliArgs
       { inputJsonFP :: FilePath,
         outDirBaseFp :: FilePath,
         reqFilePathPrefix :: FilePath,
-        namingMapFP :: Maybe FilePath
+        namingMapFP :: Maybe FilePath,
+        enumMode :: String
       }
 
 cliParser :: Parser CliArgs
@@ -35,12 +39,17 @@ cliParser =
     <*> strOption (long "outDirBaseFp")
     <*> strOption (long "reqFilePathPrefix")
     <*> optional (strOption (long "namingMapFP"))
+    <*> strOption (long "enumMode" <> value "text" <> showDefault <> help "text | sum")
 
 main :: IO ()
 main = do
   CliArgs {..} <- execParser opts
   namingMap <- maybe (pure HM.empty) loadNamingMap namingMapFP
-  generateModels inputJsonFP outDirBaseFp reqFilePathPrefix namingMap
+  sumEnums <- case enumMode of
+    "text" -> pure False
+    "sum" -> pure True
+    other -> die ("--enumMode must be text or sum, not " <> other)
+  generateModels inputJsonFP outDirBaseFp reqFilePathPrefix namingMap sumEnums
   where opts =
           info
             (cliParser <**> helper)
