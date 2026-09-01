@@ -39,6 +39,7 @@ library
     , directory
     , template-haskell
     , fitspec
+    , cryptohash-sha256
     , http-media
   default-language: Haskell2010
   ghc-options: -Wall -Werror -O2
