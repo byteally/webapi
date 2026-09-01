@@ -50,6 +50,9 @@ executable openapi-model-generator
   build-depends:       base                      >= 4.9   && < 5
                      , optparse-applicative
                      , webapi-openapi
+                     , aeson
+                     , bytestring
+                     , unordered-containers
 
   default-language:    Haskell2010
   ghc-options: -Wall -Werror -O2 -threaded -rtsopts -with-rtsopts=-N

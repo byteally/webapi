@@ -12,7 +12,7 @@
 module WebApi.OpenAPI where
 
 import Data.ByteString.Lazy as B (readFile)
-import Data.Aeson (eitherDecode)
+import Data.Aeson (eitherDecode, FromJSON (..), withObject, (.:), (.:?))
 import Data.OpenApi
     ( Components(_componentsSchemas, _componentsParameters, _componentsRequestBodies, _componentsResponses, _componentsHeaders),
       OpenApi(_openApiComponents, _openApiPaths, _openApiInfo),
@@ -25,7 +25,7 @@ import Data.OpenApi
              _schemaProperties, _schemaOneOf),
       Definitions,
       Param(_paramName, _paramSchema, _paramIn, _paramRequired),
-      Operation(_operationParameters, _operationRequestBody, _operationResponses, _operationSummary),
+      Operation(_operationParameters, _operationRequestBody, _operationResponses, _operationSummary, _operationOperationId),
       ParamLocation(ParamHeader, ParamCookie, ParamQuery),
       Info(_infoTitle),
       RequestBody(_requestBodyContent),
@@ -104,7 +104,8 @@ import Language.Haskell.TH (Extension(..))
 import Test.FitSpec.Utils(contained)
 import Network.HTTP.Media ( MediaType , (//), (/:), parseAccept)
 import Data.Maybe ( fromMaybe, catMaybes )
-import Control.Monad(when)
+import Control.Monad(when, unless)
+import Control.Applicative ((<|>))
 import Control.Exception (SomeException, catch)
 import Debug.Trace(trace, traceM)
 
@@ -125,6 +126,73 @@ data PkgConfig =
     PkgConfig { authorName :: Text
               , email :: Text
               }
+
+-- | One curated entry of the naming map (M10): the FQN/OpId name for an
+-- operation, optionally pinning its action uuid (a published corpus
+-- references both) and overriding the doc's summary. Keys are
+-- @"METHOD /path"@ — total and unique by construction, where
+-- operationId is optional and vendor-owned.
+data NameEntry =
+    NameEntry { neName :: Text
+              , neUuid :: Maybe Text
+              , neSummary :: Maybe Text
+              , neDefaults :: Maybe (HM.HashMap Text (HM.HashMap Text Text))
+                -- ^ curated binding defaults: request part -> field -> a
+                -- Haskell expression for the value (spliced verbatim into
+                -- the registry's cbDefaults). Curation, not schema policy:
+                -- e.g. NetSuite's required-but-HATEOAS body.links defaults
+                -- to @fromHsLit (mempty :: Vector NsLink)@.
+              }
+
+instance FromJSON NameEntry where
+  parseJSON = withObject "NameEntry" $ \o ->
+    NameEntry <$> o .: "name" <*> o .:? "uuid" <*> o .:? "summary" <*> o .:? "defaults"
+
+type NamingMap = HM.HashMap Text NameEntry
+
+-- | What an operation is called, resolved once where the Operation and
+-- its path meet: curated (naming map) -> sanitized operationId ->
+-- Nothing (the emission's positional fallback). Rides the routeInfo
+-- tuple into every consumer.
+data OpMeta =
+    OpMeta { omKey :: Text          -- ^ "METHOD /path", the map coordinate
+           , omName :: Maybe Text   -- ^ resolved op name; Nothing = positional
+           , omUuid :: Maybe Text   -- ^ curated uuid pin only
+           , omSummary :: Maybe Text
+           , omDefaults :: Maybe (HM.HashMap Text (HM.HashMap Text Text))
+           }
+
+resolveOpMeta :: NamingMap -> FilePath -> Text -> Operation -> OpMeta
+resolveOpMeta namingMap path method oper =
+    OpMeta { omKey = key, omName = name, omUuid = uuid, omSummary = summ
+           , omDefaults = neDefaults =<< curated }
+    where key = method <> " " <> T.pack path
+          curated = HM.lookup key namingMap
+          name = (neName <$> curated) <|> (sanitizeOpName <$> _operationOperationId oper)
+          uuid = case neUuid =<< curated of
+                   Just u | not (validUuid u) ->
+                     error ("naming map " <> T.unpack key <> ": bad uuid literal " <> T.unpack u)
+                   x -> x
+          summ = (neSummary =<< curated) <|> _operationSummary oper
+
+-- | operationId -> a lowerCamel Haskell-safe name: the base sanitizer's
+-- char set plus the separators vendors actually use in operation ids.
+sanitizeOpName :: Text -> Text
+sanitizeOpName =
+    lowerFirstChar . removeSymbol '_' . removeSymbol '.' . removeSymbol '/'
+      . removeUnsupportedSymbols
+
+validUuid :: Text -> Bool
+validUuid t =
+    TQ.length t == 36
+      && and [ TQ.index t i == '-' | i <- [8, 13, 18, 23] ]
+      && TQ.all (\c -> c == '-' || c `TQ.elem` "0123456789abcdef") t
+
+-- | The per-(method, route) contract slots plus the op's resolved
+-- naming ('OpMeta') — the shape routeInfo carries everywhere.
+type OpSlot =
+    ( Maybe HsType', Maybe HsType', Maybe HsType', Maybe HsType'
+    , Maybe HsType', Maybe HsType', Maybe HsType', OpMeta )
 
 newtype ChildType = ChildType HsDecl'
 newtype Instance = Instance HsDecl'
@@ -147,8 +215,8 @@ stdDeriving :: [HsDerivingClause']
 stdDeriving = [deriving' [var "Show", var "Eq", var "Generic"]]
 
 generateModels ::
-    FilePath -> FilePath  -> FilePath -> IO ()
-generateModels fp destFp reqPrefix = do
+    FilePath -> FilePath  -> FilePath -> NamingMap -> IO ()
+generateModels fp destFp reqPrefix namingMap = do
     oApi <- readOpenAPI fp
     let compSchemas =  _componentsSchemas . _openApiComponents $ oApi
         compParams = _componentsParameters . _openApiComponents $ oApi
@@ -160,12 +228,30 @@ generateModels fp destFp reqPrefix = do
         (modelList, modelSt) = runState
                         (mapM (\(x,y) -> createModelData (_schemaType y) compSchemas (x,y)) (HMO.toList compSchemas))
                         (ModelGenState S.empty S.empty (S.fromList keywords) HM.empty (S.fromList seenVariables) S.empty S.empty S.empty S.empty)
-        hsModuleModel = module' (Just modName) Nothing impsModel (rmChildTypeLayer (Prelude.concat modelList))
+        hsModuleModel = module' (Just modName) Nothing impsModel
+                          (concatMap (\(cts, insts) -> rmChildTypeLayer cts ++ rmInstanceLayer insts) modelList)
+        -- the contract pass continues the models pass's state: name and
+        -- instance dedup must be global or the two modules would emit
+        -- duplicate decls/instances (and GHC would refuse the package)
         ((routeInfo,typeSynList,instances), synSt) =
                                    (\(rs, st) -> ((\(a,b,c) -> (Prelude.concat a,Prelude.concat b,Prelude.concat c)) (unzip3 rs), st))
                                    (runState
-                                        (mapM (createTypeSynData appName compSchemas compParams compReqBodies compResponses compHeaders) (filter (T.isPrefixOf (T.pack reqPrefix) . T.pack . fst) (HMO.toList . _openApiPaths $ oApi)))
-                                        (ModelGenState (S.fromList seenVariables) S.empty (S.fromList keywords) HM.empty (S.fromList seenVariables) S.empty S.empty S.empty S.empty))
+                                        (mapM (createTypeSynData namingMap appName compSchemas compParams compReqBodies compResponses compHeaders) (filter (T.isPrefixOf (T.pack reqPrefix) . T.pack . fst) (HMO.toList . _openApiPaths $ oApi)))
+                                        (ModelGenState (seenVars modelSt) S.empty (S.fromList keywords) (createdSums modelSt) (jsonInstances modelSt) (inlineRecords modelSt) S.empty S.empty S.empty))
+
+    -- M10: resolved op names are identities (the FQN and the type-level
+    -- OperationId) — they must be catalog-unique after sanitizing, and a
+    -- naming-map key that matched no op is a typo worth flagging
+    let finalOps = [ (omKey om, finalOpName synName methName om)
+                   | (synName, ms) <- routeInfo, (methName, (_,_,_,_,_,_,_,om)) <- ms ]
+        dups = [ (n, ks)
+               | (n, ks) <- HMQ.toList (HMQ.fromListWith (++) [ (n, [k]) | (k, n) <- finalOps ])
+               , Prelude.length ks > 1 ]
+        unmatched = filter (`Prelude.notElem` fmap fst finalOps) (HMQ.keys namingMap)
+    unless (Prelude.null dups) $
+      error ("op names collide after resolution (curate the naming map): " <> show dups)
+    unless (Prelude.null unmatched) $
+      putStrLn ("[openapi] naming-map keys matching no operation: " <> show unmatched)
 
     let simplifiedRouteInfo = (fmap . fmap) (map fst) routeInfo
         apiContractInstances =  Prelude.concat $ mkApiContractInstances appName <$> routeInfo
@@ -178,9 +264,11 @@ generateModels fp destFp reqPrefix = do
 
     where impsModel =
                  [ import' "Data.Int"
-                 , import' "Data.Vector"
+                 , import' "Data.Vector" `as'` "V"
                  , exposing (import' "GHC.Generics") [var "Generic"]
                  , exposing (import' "Data.Text") [var "Text"]
+                 , import' "Data.Aeson"
+                 , import' "Control.Applicative"
                  ]
           impsTypeSyn =
                  [ import' "WebApi.Contract"
@@ -194,7 +282,7 @@ generateModels fp destFp reqPrefix = do
                  , import' "Control.Applicative"
                  ]
 
-          es = [TypeOperators,KindSignatures,DataKinds,DuplicateRecordFields,DeriveGeneric]
+          es = [TypeOperators,KindSignatures,DataKinds,DuplicateRecordFields,DeriveGeneric,OverloadedStrings]
           es2 = [DataKinds,TypeOperators,TypeSynonymInstances,FlexibleInstances,MultiParamTypeClasses,TypeFamilies, OverloadedStrings,DeriveGeneric,DuplicateRecordFields]
           keywords = [ "case","class","data","default","deriving","do","else"
                      , "foreign","if","import","in","infix","infixl","infixr"
@@ -216,13 +304,13 @@ generateModels fp destFp reqPrefix = do
 
 mkApiContractInstances ::
     Text ->
-    (Text, [(Text, (Maybe HsType', Maybe HsType', Maybe HsType', Maybe HsType',Maybe HsType',Maybe HsType', Maybe HsType', Maybe Text))]) ->
+    (Text, [(Text, OpSlot)]) ->
     [HsDecl']
 mkApiContractInstances oApiName (typName,instanceInfo) =
     mkOneInstance <$> instanceInfo
-    where mkOneInstance (methName,(headInfo,queryInfo,cookieInfo,reqBodyInfo,apiOutInfo,apiErrInfo,headerOutInfo,_summary)) =
+    where mkOneInstance (methName,(headInfo,queryInfo,cookieInfo,reqBodyInfo,apiOutInfo,apiErrInfo,headerOutInfo,om)) =
                 instance' (var "ApiContract" @@ var (textToRdrNameStr oApiName) @@ var (textToRdrNameStr methName) @@ var (textToRdrNameStr typName))
-                          (opIdSyn methName :
+                          (opIdSyn methName om :
                            Prelude.concat (mkTypeSyns methName <$> [("HeaderIn",headInfo)
                                                                    ,("QueryParam",queryInfo)
                                                                    ,("CookieIn",cookieInfo)
@@ -233,10 +321,14 @@ mkApiContractInstances oApiName (typName,instanceInfo) =
                                                                    ]))
           -- the modern contract requires an injective OperationId per
           -- (method, route); the name only surfaces in wire logs
-          opIdSyn methName = tyFamInst "OperationId"
+          -- the resolved name doubles as the OperationId Symbol — a
+          -- legal record-field name, so CompactServer can serve the
+          -- contract (the positional fallback keeps the old hyphenated
+          -- text)
+          opIdSyn methName om = tyFamInst "OperationId"
                                        [var (textToRdrNameStr methName), var (textToRdrNameStr typName)]
                                        (var "'OpId" @@ var (textToRdrNameStr oApiName)
-                                                    @@ stringTy (T.unpack (T.append (T.toLower methName) (T.append "-" typName))))
+                                                    @@ stringTy (T.unpack (fromMaybe (T.append (T.toLower methName) (T.append "-" typName)) (omName om))))
           mkTypeSyns _ (_,Nothing) = []
           mkTypeSyns methName (tName,Just typ) = [tyFamInst (textToRdrNameStr tName)
                                                             [var (textToRdrNameStr methName),var (textToRdrNameStr typName) ]
@@ -245,6 +337,7 @@ mkApiContractInstances oApiName (typName,instanceInfo) =
 
 createTypeSynData ::
     (MonadState ModelGenState m) =>
+    NamingMap ->
     Text ->
     Definitions Schema ->
     Definitions Param ->
@@ -252,8 +345,8 @@ createTypeSynData ::
     Definitions Response ->
     Definitions Header ->
     (FilePath,PathItem) ->
-    m ([(Text, [(Text, (Maybe HsType', Maybe HsType', Maybe HsType', Maybe HsType',Maybe HsType',Maybe HsType', Maybe HsType', Maybe Text))])],[ChildType],[Instance])
-createTypeSynData appName compSchemas compsParam compReqBodies compResponses compHeaders (fp,PathItem _ _ piGet piPut piPost piDelete piOptions piHead piPatch piTrace _ piParams) = do
+    m ([(Text, [(Text, OpSlot)])],[ChildType],[Instance])
+createTypeSynData namingMap appName compSchemas compsParam compReqBodies compResponses compHeaders (fp,PathItem _ _ piGet piPut piPost piDelete piOptions piHead piPatch piTrace _ piParams) = do
     let paramsMap = refParamsToParams compsParam piParams
         commonParams =
             (\case
@@ -271,7 +364,7 @@ createTypeSynData appName compSchemas compsParam compReqBodies compResponses com
                               else do
                                  ((a,_b),c) <- createTypSynonym appName compSchemas ("",commonParams)
                                  return [((a,S.toList diff),c)]
-    (apiConInsData,ct3,ci3) <-  unzip3 <$> mapM (createApiContractInsData compSchemas compsParam compReqBodies compResponses compHeaders paramsMap) opList
+    (apiConInsData,ct3,ci3) <-  unzip3 <$> mapM (createApiContractInsData namingMap fp compSchemas compsParam compReqBodies compResponses compHeaders paramsMap) opList
     return ((fmap . fmap) (applyApiContractInfo (unions apiConInsData)) <$> commonTypSyn ++ typSyns
            , Prelude.concat ct1 ++ Prelude.concat ct2 ++ Prelude.concat ct3
            , Prelude.concat ci3)
@@ -294,6 +387,8 @@ fetchJusts =
 
 createApiContractInsData ::
     (MonadState ModelGenState m) =>
+    NamingMap ->
+    FilePath ->
     Definitions Schema ->
     Definitions Param ->
     Definitions RequestBody ->
@@ -301,8 +396,8 @@ createApiContractInsData ::
     Definitions Header ->
     HashMap Text (Bool, Param) ->
     (Text,Operation) ->
-    m (HashMap Text (Maybe HsType',Maybe HsType',Maybe HsType', Maybe HsType',Maybe HsType',Maybe HsType', Maybe HsType', Maybe Text),[ChildType],[Instance])
-createApiContractInsData compSchemas compsParam compsReqBodies compResponses compHeaders commonParamMap (opName,operationData) = do
+    m (HashMap Text OpSlot,[ChildType],[Instance])
+createApiContractInsData namingMap fp compSchemas compsParam compsReqBodies compResponses compHeaders commonParamMap (opName,operationData) = do
     let opParamsMap = refParamsToParams compsParam (_operationParameters operationData)
         overrideParams = HM.toList $ opParamsMap `union` commonParamMap
         opReqBody = _operationRequestBody operationData
@@ -324,11 +419,16 @@ createApiContractInsData compSchemas compsParam compsReqBodies compResponses com
                             defaultResponse
     (apiErrType,ct6,ci6) <- createApiErr compSchemas compResponses defaultResponse (HMO.toList(findResponseApiErr opResponses))
     (headerOutType,ct7) <- createHeaderOut compSchemas headerOutSchemas
-    return ( HM.singleton opName (headtypTuple,querytypTuple,cookietypTuple,reqBody,apiOutType,apiErrType,headerOutType,_operationSummary operationData)
+    return ( HM.singleton opName (headtypTuple,querytypTuple,cookietypTuple,reqBody,apiOutType,apiErrType,headerOutType,opMeta)
            , ct1 ++ ct2 ++ ct3 ++ ct4 ++ ct5 ++ ct6 ++ ct7
            , ci1 ++ ci2 ++ ci3' ++ ci4 ++ ci5 ++ ci6
            )
-    where mFilter x = filter (\(_a,(_b,c)) -> _paramIn c == x)
+    where opMeta = resolveOpMeta namingMap fp opName operationData
+          -- param records are named after the op when it has a name —
+          -- catalog-wide "GetQP0"-style digit suffixes only for the
+          -- positional fallback
+          pBase = fromMaybe (T.toLower opName) (omName opMeta)
+          mFilter x = filter (\(_a,(_b,c)) -> _paramIn c == x)
           -- Header params are dropped for now: their wire names
           -- (X-NetSuite-*, Prefer) are not legal record fields and the
           -- param codecs read wire names from field names. They are
@@ -350,7 +450,7 @@ createApiContractInsData compSchemas compsParam compsReqBodies compResponses com
           -- are what both webapi's param codecs and the Dhall bridge walk
           mkParamRecord _ [] = return (Nothing,[],[])
           mkParamRecord loc ps = do
-              vName <- mkUnseenVar (T.concat [upperFirstChar (T.toLower opName), partLabel loc, "P"])
+              vName <- mkUnseenVar (T.concat [upperFirstChar pBase, partLabel loc, "P"])
               modify (\st -> st { paramRecords = S.insert vName (paramRecords st) })
               dataTypeInfoList <- mapM (\(pname,(_,param)) ->
                                           parseRecordFields (pname, maySchemaToSchema (_paramSchema param))
@@ -541,6 +641,13 @@ parseTypeSynInfo compSchemas (Right (x,Just (_,y))) =
             return (typ,child_types)
 
 
+-- | The op's final emitted name: resolved ('OpMeta') or the positional
+-- fallback (method + the route synonym less its R suffix) — one formula
+-- shared by the registry emission and the uniqueness check.
+finalOpName :: Text -> Text -> OpMeta -> Text
+finalOpName synName methName om =
+    fromMaybe (T.toLower methName <> fromMaybe synName (TQ.stripSuffix "R" synName)) (omName om)
+
 mkTypeSynName :: [Either Text (Text, Maybe (Bool, Param))] -> Text -> Text
 mkTypeSynName a = T.append
     (T.concat $ upperFirstChar . leftVal <$> filter isLeft a)
@@ -664,7 +771,7 @@ concreteRegistryText
   -> [Text]          -- ^ the component schema names
   -> ModelGenState   -- ^ the models pass's final state
   -> ModelGenState   -- ^ the contract pass's final state
-  -> [(Text, [(Text, (Maybe HsType', Maybe HsType', Maybe HsType', Maybe HsType',Maybe HsType',Maybe HsType', Maybe HsType', Maybe Text))])]
+  -> [(Text, [(Text, OpSlot)])]
   -> Text
 concreteRegistryText appName modName typeSynName schemaNames modelSt synSt routeInfo = TQ.unlines $
   [ "{-# LANGUAGE DataKinds #-}"
@@ -688,6 +795,12 @@ concreteRegistryText appName modName typeSynName schemaNames modelSt synSt route
   , "import WebApi.Contract"
   , "import WebApi.Client.Session (AppIsElem, getSuccessOut)"
   , ""
+  , "import Data.Vector (Vector)"
+  , "import Data.Void (Void)"
+  , "import Dhall.Core (Expr (..), makeRecordField)"
+  , "import qualified Dhall.Map"
+  , "import Dhall.Src (Src)"
+  , ""
   , "import Dhall.Do.Api.Bridge"
   , "import Dhall.Do.Api.Id (DLActionId, FQN (..), mkDLActionId)"
   , "import Dhall.Do.Api.WebApi.Concrete.Binding"
@@ -698,6 +811,13 @@ concreteRegistryText appName modName typeSynName schemaNames modelSt synSt route
   ]
   <> concatMap instanceLines (S.toList allTypes)
   <> [ ""
+     , "-- curated binding defaults ride in as literal record parts"
+     , "recPart :: [(Text, Expr Src Void)] -> Expr Src Void"
+     , "recPart = RecordLit . Dhall.Map.fromList . map (fmap makeRecordField)"
+     , ""
+     , "_unusedVectorAnchor :: Maybe (Vector ()) "
+     , "_unusedVectorAnchor = Nothing"
+     , ""
      , "opIdOf :: HasCallStack => Text -> DLActionId"
      , "opIdOf t = mkDLActionId (fromMaybe (error (\"bad uuid literal: \" <> T.unpack t)) (UUID.fromText t))"
      , ""
@@ -730,23 +850,34 @@ concreteRegistryText appName modName typeSynName schemaNames modelSt synSt route
       <> [ "instance HsSelect " <> n | n `S.member` resultSide ]
       <> [ "" ]
 
-    ops = [ (synName, methName, outT, summ)
+    ops = [ (synName, methName, outT, om)
           | (synName, methodInfos) <- routeInfo
-          , (methName, (_h,_q,_c,_b,outInfo,_e,_ho,summ)) <- methodInfos
+          , (methName, (_h,_q,_c,_b,outInfo,_e,_ho,om)) <- methodInfos
           , let outT = maybe "()" renderHsType outInfo
           ]
 
     registrationLines =
       [ "    " <> (if i == 0 then "  " else ". ")
-          <> "addConcreteOp (opIdOf \"" <> opUuid synName methName <> "\") (mkFqn \"" <> fqnName synName methName <> "\") (ConcreteOp ((concreteBinding (Right . getSuccessOut)) { cbSummary = Just \"" <> escape (fromMaybe (fqnName synName methName) summ) <> "\" } :: ConcreteBinding apps " <> methName <> " " <> appName <> " " <> synName <> "Path (" <> TQ.replace "\n" " " outT <> ")))"
-      | (i, (synName, methName, outT, summ)) <- zip [0 :: Int ..] ops
+          <> "addConcreteOp (opIdOf \"" <> opUuid synName methName om <> "\") (mkFqn \"" <> finalOpName synName methName om <> "\") (ConcreteOp ((concreteBinding (Right . getSuccessOut)) { cbSummary = Just \"" <> escape (fromMaybe (finalOpName synName methName om) (omSummary om)) <> "\"" <> defaultsField om <> " } :: ConcreteBinding apps " <> methName <> " " <> appName <> " " <> synName <> "Path (" <> TQ.replace "\n" " " outT <> ")))"
+      | (i, (synName, methName, outT, om)) <- zip [0 :: Int ..] ops
       ]
 
-    fqnName synName methName =
-      T.toLower methName <> fromMaybe synName (TQ.stripSuffix "R" synName)
+    defaultsField om = case omDefaults om of
+      Nothing -> ""
+      Just parts ->
+        ", cbDefaults = pure (recPart ["
+          <> TQ.intercalate ", "
+               [ "(\"" <> part <> "\", recPart ["
+                   <> TQ.intercalate ", "
+                        [ "(\"" <> fld <> "\", " <> expr <> ")" | (fld, expr) <- HMQ.toList flds ]
+                   <> "])"
+               | (part, flds) <- HMQ.toList parts ]
+          <> "])"
 
-    opUuid synName methName =
-      asUuid ("dhall-do-connector|" <> appName <> "|" <> fqnName synName methName)
+    -- a curated uuid pins the action id (published corpora reference
+    -- it); otherwise the deterministic sha of the final name
+    opUuid synName methName om =
+      fromMaybe (asUuid ("dhall-do-connector|" <> appName <> "|" <> finalOpName synName methName om)) (omUuid om)
 
     -- a deterministic 32-hex identity for the seed, laid out as a UUID
     asUuid seed =
@@ -788,7 +919,7 @@ writeCabal pkgName (PkgConfig aName aEmail) modName exposMods pkgHome = do
             , "    hs-source-dirs:   src-registry"
             , "    default-language: Haskell2010"
             , "    build-depends:    " ++ Data.List.intercalate ", "
-                (dpends ++ [pkgName, "uuid-types", "webapi-session", "dhall-do-api", "dhall-do-api-webapi"])
+                (dpends ++ [pkgName, "uuid-types", "webapi-session", "dhall", "dhall-do-api", "dhall-do-api-webapi"])
             ]
           dpends = ["base","text","vector","aeson","webapi-contract"]
           xposedMods = modName:exposMods
@@ -796,27 +927,41 @@ writeCabal pkgName (PkgConfig aName aEmail) modName exposMods pkgHome = do
 ppExtension :: Extension -> String
 ppExtension e = "{-# LANGUAGE " <> show e <> " #-}\n"
 
+-- M10: the models pass emits the To/FromJSON layer beside each data
+-- decl — the 1,000+ hand-rolled instances were landing in the contract
+-- module (the type-checker hot spot) purely because only that pass set
+-- generateInstance. The contract pass is seeded from this pass's state,
+-- so it emits instances only for contract-born types.
 createModelData ::
     (MonadState ModelGenState m) =>
-    Maybe OpenApiType -> Definitions Schema -> (Text,Schema) -> m [ChildType]
+    Maybe OpenApiType -> Definitions Schema -> (Text,Schema) -> m ([ChildType],[Instance])
 createModelData (Just OpenApiObject) compSchemas (dName,dSchema) = do
     let reqParams =  _schemaRequired dSchema
     unseenVar <- mkUnseenVar (upperFirstChar dName)
-    dataTypeInfoList <- mapM (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams) False Nothing compSchemas)  (HMO.toList . _schemaProperties $ dSchema)
-    let (rFields,childTypes) = unzip $ (\(DataTypeInfo a b c _) -> ((a,b),c)) <$> dataTypeInfoList
+    dataTypeInfoList <- mapM (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams) True (Just JSON) compSchemas)  (HMO.toList . _schemaProperties $ dSchema)
+    let (rFields,childTypes,childInsts) = unzip3 $ (\(DataTypeInfo a b c d) -> ((a,b),c,d)) <$> dataTypeInfoList
     ModelGenState { keywordsToAvoid } <- get
     let frFields = (\(x,y)-> (textToOccNameStr $ avoidKeywords x keywordsToAvoid,y)) .
                       bimap (removeUnsupportedSymbols . lowerFirstChar) field  <$> rFields
-    return $ Prelude.concat childTypes ++
+    ModelGenState { jsonInstances } <- get
+    ownInsts <- if member unseenVar jsonInstances
+                then return []
+                else do
+                   modify (updateJsonInstances unseenVar)
+                   fj <- createFromJsonInstancesRecord unseenVar dSchema compSchemas
+                   tj <- createToJsonInstancesRecord unseenVar dSchema
+                   return [fj, tj]
+    return ( Prelude.concat childTypes ++
              [ChildType $ data' (textToOccNameStr unseenVar) [] [recordCon (textToOccNameStr unseenVar) frFields] stdDeriving]
+           , Prelude.concat childInsts ++ ownInsts )
 createModelData Nothing compSchemas (dName,dSchema) =
     case _schemaOneOf dSchema of
         Nothing -> error "Unexpected Schema type"
         Just [] -> error "Bad OneOf Specification"
         Just [_x] -> error "Bad OneOf Specification"
         Just x -> do
-            DataTypeInfo {child_types} <- mkSumType dName True x True False Nothing compSchemas
-            return child_types
+            DataTypeInfo {child_types, child_instances} <- mkSumType dName True x True True (Just JSON) compSchemas
+            return (child_types, child_instances)
 createModelData (Just OpenApiArray) compSchemas (dName,dSchema) =
     case _schemaItems dSchema of
         Nothing -> error "No _schemaItems value for Array"
@@ -824,14 +969,14 @@ createModelData (Just OpenApiArray) compSchemas (dName,dSchema) =
         Just (OpenApiItemsObject sch) -> do
             unseenVar <- mkUnseenVar (upperFirstChar dName)
             let occUnseenVar = textToOccNameStr unseenVar
-            DataTypeInfo {typ,child_types} <- parseRecordFields (dName,sch) True False Nothing compSchemas
+            DataTypeInfo {typ,child_types,child_instances} <- parseRecordFields (dName,sch) True True (Just JSON) compSchemas
             let toptype = type' occUnseenVar [] (var "Vector" @@ typ)
-            return $ ChildType toptype:child_types
+            return (ChildType toptype:child_types, child_instances)
 
 createModelData (Just a) _ (dName,dSchema) = do
     unseenVar <- mkUnseenVar (upperFirstChar dName)
     let occUnseenVar = textToOccNameStr unseenVar
-    return $ mkTopLevelBaseType (findTopType a) occUnseenVar
+    return (mkTopLevelBaseType (findTopType a) occUnseenVar, [])
     where findTopType OpenApiString = "Text"
           findTopType OpenApiNumber = "Double"
           findTopType OpenApiInteger = parseIntegerFld (_schemaFormat dSchema)
@@ -855,14 +1000,14 @@ parseRecordFields ::
     Maybe ContentTypesOApi ->
     Definitions Schema ->
     m DataTypeInfo
-parseRecordFields (dName,Ref (Reference x)) isReq generateInstance instanceType compSchemas = do
+-- A Ref names a component schema, and every component's decl AND
+-- instances are emitted where the models pass processes that component —
+-- recursing here would only re-walk it, and the recursive walk discards
+-- inline child DECLS while registering their names, losing the decl for
+-- good (found by the M10 relocation). So a Ref is only ever a name.
+parseRecordFields (dName,Ref (Reference x)) isReq _generateInstance _instanceType _compSchemas = do
     let sName = removeUnsupportedSymbols . upperFirstChar $ x
-    if generateInstance
-    then do
-        let schemaVal = refValToVal compSchemas (Ref (Reference x))
-        instanceList <- createInstanceData instanceType sName schemaVal compSchemas
-        return $ DataTypeInfo dName (createHsType isReq sName) [] instanceList
-    else return $ DataTypeInfo  dName (createHsType isReq sName) [] []
+    return $ DataTypeInfo dName (createHsType isReq sName) [] []
 parseRecordFields (dName,Inline dSchema) isReq generateInstance instanceType compSchemas =
     parseInlineFields (_schemaType dSchema) dName dSchema isReq generateInstance instanceType compSchemas
 
