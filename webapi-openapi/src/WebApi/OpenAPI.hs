@@ -183,7 +183,10 @@ generateModels fp destFp reqPrefix = do
 
           es = [TypeOperators,KindSignatures,DataKinds,DuplicateRecordFields,DeriveGeneric]
           es2 = [DataKinds,TypeOperators,TypeSynonymInstances,FlexibleInstances,MultiParamTypeClasses,TypeFamilies, OverloadedStrings,DeriveGeneric,DuplicateRecordFields]
-          keywords = ["type","class"]
+          keywords = [ "case","class","data","default","deriving","do","else"
+                     , "foreign","if","import","in","infix","infixl","infixr"
+                     , "instance","let","module","newtype","of","then","type"
+                     , "where","forall" ]
           seenVariables = ["Untyped"]
           pkgName = T.unpack . flip T.append "-models" . T.pack . dropExtension . takeFileName $ fp
           pkgHome = destFp </> pkgName
