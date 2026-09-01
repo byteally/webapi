@@ -1,0 +1,4 @@
+packages: webapi-openapi
+with-compiler: /home/magesh/.ghcup/bin/ghc-9.6.7
+allow-newer: webapi-openapi:*
+constraints: openapi3 == 3.2.4, insert-ordered-containers < 0.3

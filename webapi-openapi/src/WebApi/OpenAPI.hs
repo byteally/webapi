@@ -8,6 +8,7 @@
 
 {-# OPTIONS_GHC -Wno-type-defaults #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module WebApi.OpenAPI where
 
 import Data.ByteString.Lazy as B (readFile)
@@ -23,7 +24,7 @@ import Data.OpenApi
       Schema(Schema,_schemaType, _schemaFormat, _schemaItems, _schemaRequired,
              _schemaProperties, _schemaOneOf),
       Definitions,
-      Param(_paramName, _paramSchema, _paramIn),
+      Param(_paramName, _paramSchema, _paramIn, _paramRequired),
       Operation(_operationParameters, _operationRequestBody, _operationResponses),
       ParamLocation(ParamHeader, ParamCookie, ParamQuery),
       Info(_infoTitle),
@@ -34,6 +35,7 @@ import Data.OpenApi
       Responses(_responsesResponses,_responsesDefault))
 import GHC.SourceGen
     ( data',
+      deriving',
       field,
       prefixCon,
       recordCon,
@@ -48,6 +50,7 @@ import GHC.SourceGen
       BVar(bvar),
       Var(var),
       HsDecl',
+      HsDerivingClause',
       HsModule',
       HsType',
       type',
@@ -64,15 +67,14 @@ import GHC.SourceGen
       match,
       list,
       funBinds,
-      as',
-      tuplePromotedTy
+      as'
     )
 import Data.HashMap.Strict.InsOrd as HMO (toList,lookup, empty, fromList, delete)
 import Data.Text as T ( unpack, Text, append, splitAt, toUpper, take, pack, dropEnd, concat, split, toLower, breakOnEnd, isPrefixOf)
 import Data.Text.IO as T (writeFile)
 #if (MIN_VERSION_ghc(9,0,0))
 import GHC.Plugins(mkVarOcc)
-import GHC.Utils.Outputable(ppr,showSDocOneLine, defaultSDocContext)
+import GHC.Utils.Outputable(ppr,renderWithContext, defaultSDocContext)
 #else
 import GhcPlugins(getDynFlags,mkVarOcc)
 import Outputable(ppr,showSDoc)
@@ -86,17 +88,18 @@ import Data.String ( IsString(fromString) )
 import Data.Bifunctor ( Bifunctor(bimap), second)
 import Ormolu
     ( ormolu, defaultConfig, Config(cfgCheckIdempotence) )
-import System.Process ( callCommand )
 import System.FilePath.Posix
     ( (<.>), (</>), dropExtension, takeFileName, splitDirectories )
 import System.Directory ( createDirectoryIfMissing )
 import Data.List as L (delete, nub)
+import qualified Data.List
 import Data.HashMap.Internal as HM (HashMap, singleton, unions, lookup, empty, insert, union, toList, fromList)
 import Language.Haskell.TH (Extension(..))
 import Test.FitSpec.Utils(contained)
 import Network.HTTP.Media ( MediaType , (//), (/:), parseAccept)
 import Data.Maybe ( fromMaybe, catMaybes )
 import Control.Monad(when)
+import Control.Exception (SomeException, catch)
 import Debug.Trace(trace, traceM)
 
 data ModelGenState =
@@ -126,6 +129,12 @@ data DataTypeInfo =
 mkPkgConfig :: PkgConfig
 mkPkgConfig = PkgConfig "\"Pankaj Singh Sijwali\"" "pankajsijwali1@gmail.com"
 
+-- | Every generated data type carries the instances the Dhall bridge's
+-- generic defaults hang off (M9 spike: Show/Eq for the test layer,
+-- Generic for both webapi's param codecs and the bridge walks).
+stdDeriving :: [HsDerivingClause']
+stdDeriving = [deriving' [var "Show", var "Eq", var "Generic"]]
+
 generateModels ::
     FilePath -> FilePath  -> FilePath -> IO ()
 generateModels fp destFp reqPrefix = do
@@ -136,6 +145,7 @@ generateModels fp destFp reqPrefix = do
         compResponses = _componentsResponses . _openApiComponents $ oApi
         compHeaders = _componentsHeaders . _openApiComponents $ oApi
         oApiName = _infoTitle . _openApiInfo $ oApi
+        appName = removeUnsupportedSymbols (upperFirstChar oApiName)
         modelList = evalState
                         (mapM (\(x,y) -> createModelData (_schemaType y) compSchemas (x,y)) (HMO.toList compSchemas))
                         (ModelGenState S.empty S.empty (S.fromList keywords) HM.empty (S.fromList seenVariables))
@@ -143,12 +153,12 @@ generateModels fp destFp reqPrefix = do
         (routeInfo,typeSynList,instances) = (\(a,b,c) -> (Prelude.concat a,Prelude.concat b,Prelude.concat c))
                                    (unzip3 $
                                        evalState
-                                        (mapM (createTypeSynData compSchemas compParams compReqBodies compResponses compHeaders) (filter (T.isPrefixOf (T.pack reqPrefix) . T.pack . fst) (HMO.toList . _openApiPaths $ oApi)))
+                                        (mapM (createTypeSynData appName compSchemas compParams compReqBodies compResponses compHeaders) (filter (T.isPrefixOf (T.pack reqPrefix) . T.pack . fst) (HMO.toList . _openApiPaths $ oApi)))
                                         (ModelGenState (S.fromList seenVariables) S.empty (S.fromList keywords) HM.empty (S.fromList seenVariables)))
 
     let simplifiedRouteInfo = (fmap . fmap) (map fst) routeInfo
-        apiContractInstances =  Prelude.concat $ mkApiContractInstances oApiName <$> routeInfo
-        hsModuleTypeSyn = module' (Just typeSynName) Nothing impsTypeSyn (untypedDef:rmChildTypeLayer typeSynList ++ webApiInstance oApiName simplifiedRouteInfo ++ apiContractInstances ++ rmInstanceLayer instances)
+        apiContractInstances =  Prelude.concat $ mkApiContractInstances appName <$> routeInfo
+        hsModuleTypeSyn = module' (Just typeSynName) Nothing impsTypeSyn (untypedDef:rmChildTypeLayer typeSynList ++ webApiInstance appName simplifiedRouteInfo ++ apiContractInstances ++ rmInstanceLayer instances)
     writeModule (pkgHome </> "src") (modName <.> "hs") es hsModuleModel
     writeModule (pkgHome </> "src") (typeSynName <.> "hs") es2 hsModuleTypeSyn
     writeCabal pkgName mkPkgConfig modName [typeSynName] pkgHome
@@ -156,30 +166,30 @@ generateModels fp destFp reqPrefix = do
     where impsModel =
                  [ import' "Data.Int"
                  , import' "Data.Vector"
-                 , import' "Record"
-                 , exposing (import' "GHC.Types") [var "Symbol"]
+                 , exposing (import' "GHC.Generics") [var "Generic"]
                  , exposing (import' "Data.Text") [var "Text"]
                  ]
           impsTypeSyn =
                  [ import' "WebApi.Contract"
+                 , import' "WebApi.Param"
                  , import' modName
                  , import' "Data.Int"
-                 , exposing (import' "GHC.Types") [var "Symbol"]
+                 , exposing (import' "GHC.Generics") [var "Generic"]
                  , exposing (import' "Data.Text") [var "Text"]
                  , import' "Data.Vector" `as'` "V"
                  , import' "Data.Aeson"
                  , import' "Control.Applicative"
                  ]
 
-          es = [TypeOperators,KindSignatures,DataKinds,DuplicateRecordFields]
-          es2 = [DataKinds,TypeOperators,TypeSynonymInstances,FlexibleInstances,MultiParamTypeClasses,TypeFamilies, OverloadedStrings]
+          es = [TypeOperators,KindSignatures,DataKinds,DuplicateRecordFields,DeriveGeneric]
+          es2 = [DataKinds,TypeOperators,TypeSynonymInstances,FlexibleInstances,MultiParamTypeClasses,TypeFamilies, OverloadedStrings,DeriveGeneric,DuplicateRecordFields]
           keywords = ["type","class"]
           seenVariables = ["Untyped"]
           pkgName = T.unpack . flip T.append "-models" . T.pack . dropExtension . takeFileName $ fp
           pkgHome = destFp </> pkgName
           modName = "OpenApiModels"
           typeSynName = "WebApiInstances"
-          dataTypeForOApi a = data' (textToOccNameStr . upperFirstChar $ a) [] [] []
+          dataTypeForOApi a = data' (textToOccNameStr a) [] [] []
           webApiInstance a b = [dataTypeForOApi a,
                                     instance' (var "WebApi" @@ var (textToRdrNameStr a))
                                               [tyFamInst "Apis" [var $ textToRdrNameStr a] (listPromotedTy (oneRoute <$> b))]]
@@ -196,7 +206,8 @@ mkApiContractInstances oApiName (typName,instanceInfo) =
     mkOneInstance <$> instanceInfo
     where mkOneInstance (methName,(headInfo,queryInfo,cookieInfo,reqBodyInfo,apiOutInfo,apiErrInfo,headerOutInfo)) =
                 instance' (var "ApiContract" @@ var (textToRdrNameStr oApiName) @@ var (textToRdrNameStr methName) @@ var (textToRdrNameStr typName))
-                          (Prelude.concat (mkTypeSyns methName <$> [("HeaderIn",headInfo)
+                          (opIdSyn methName :
+                           Prelude.concat (mkTypeSyns methName <$> [("HeaderIn",headInfo)
                                                                    ,("QueryParam",queryInfo)
                                                                    ,("CookieIn",cookieInfo)
                                                                    ,("RequestBody",reqBodyInfo)
@@ -204,6 +215,12 @@ mkApiContractInstances oApiName (typName,instanceInfo) =
                                                                    ,("ApiErr",apiErrInfo)
                                                                    ,("HeaderOut",headerOutInfo)
                                                                    ]))
+          -- the modern contract requires an injective OperationId per
+          -- (method, route); the name only surfaces in wire logs
+          opIdSyn methName = tyFamInst "OperationId"
+                                       [var (textToRdrNameStr methName), var (textToRdrNameStr typName)]
+                                       (var "'OpId" @@ var (textToRdrNameStr oApiName)
+                                                    @@ stringTy (T.unpack (T.append (T.toLower methName) (T.append "-" typName))))
           mkTypeSyns _ (_,Nothing) = []
           mkTypeSyns methName (tName,Just typ) = [tyFamInst (textToRdrNameStr tName)
                                                             [var (textToRdrNameStr methName),var (textToRdrNameStr typName) ]
@@ -212,6 +229,7 @@ mkApiContractInstances oApiName (typName,instanceInfo) =
 
 createTypeSynData ::
     (MonadState ModelGenState m) =>
+    Text ->
     Definitions Schema ->
     Definitions Param ->
     Definitions RequestBody ->
@@ -219,7 +237,7 @@ createTypeSynData ::
     Definitions Header ->
     (FilePath,PathItem) ->
     m ([(Text, [(Text, (Maybe HsType', Maybe HsType', Maybe HsType', Maybe HsType',Maybe HsType',Maybe HsType', Maybe HsType'))])],[ChildType],[Instance])
-createTypeSynData compSchemas compsParam compReqBodies compResponses compHeaders (fp,PathItem _ _ piGet piPut piPost piDelete piOptions piHead piPatch piTrace _ piParams) = do
+createTypeSynData appName compSchemas compsParam compReqBodies compResponses compHeaders (fp,PathItem _ _ piGet piPut piPost piDelete piOptions piHead piPatch piTrace _ piParams) = do
     let paramsMap = refParamsToParams compsParam piParams
         commonParams =
             (\case
@@ -230,12 +248,12 @@ createTypeSynData compSchemas compsParam compReqBodies compResponses compHeaders
                Left a -> Left a) <$> parseFilePath fp
         opList = fetchJusts [("GET",piGet), ("PUT",piPut), ("POST",piPost), ("DELETE",piDelete), ("OPTIONS",piOptions), ("HEAD",piHead), ("PATCH",piPatch), ("TRACE",piTrace)]
         overridesParam = fetchJusts $ fmap (handleOverridenParams compsParam commonParams)  <$> opList
-    (typSyns,ct1) <- unzip <$> mapM (createTypSynonym compSchemas) overridesParam
+    (typSyns,ct1) <- unzip <$> mapM (createTypSynonym appName compSchemas) overridesParam
     (commonTypSyn,ct2) <- unzip <$> let diff = S.difference (pairLisToSet opList) (pairLisToSet overridesParam)
                               in if S.null diff
                               then return []
                               else do
-                                 ((a,_b),c) <- createTypSynonym compSchemas ("",commonParams)
+                                 ((a,_b),c) <- createTypSynonym appName compSchemas ("",commonParams)
                                  return [((a,S.toList diff),c)]
     (apiConInsData,ct3,ci3) <-  unzip3 <$> mapM (createApiContractInsData compSchemas compsParam compReqBodies compResponses compHeaders paramsMap) opList
     return ((fmap . fmap) (applyApiContractInfo (unions apiConInsData)) <$> commonTypSyn ++ typSyns
@@ -279,9 +297,9 @@ createApiContractInsData compSchemas compsParam compsReqBodies compResponses com
                                                     (responseToHeader <$> ( case defaultResponse of
                                                                         Nothing -> responseList
                                                                         (Just x) -> (0,refValToVal compResponses x):responseList))
-    (headtypTuple,ct1)  <- createType ParamHeader overrideParams
-    (querytypTuple,ct2)  <- createType ParamQuery  overrideParams
-    (cookietypTuple,ct3) <- createType ParamCookie overrideParams
+    (headtypTuple,ct1,ci1)  <- createType ParamHeader overrideParams
+    (querytypTuple,ct2,ci2)  <- createType ParamQuery  overrideParams
+    (cookietypTuple,ct3,ci3') <- createType ParamCookie overrideParams
     (reqBody,ct4,ci4) <- createReqBody compSchemas compsReqBodies opReqBody
     (apiOutType,ct5,ci5) <- createApiOut
                             compSchemas
@@ -292,16 +310,45 @@ createApiContractInsData compSchemas compsParam compsReqBodies compResponses com
     (headerOutType,ct7) <- createHeaderOut compSchemas headerOutSchemas
     return ( HM.singleton opName (headtypTuple,querytypTuple,cookietypTuple,reqBody,apiOutType,apiErrType,headerOutType)
            , ct1 ++ ct2 ++ ct3 ++ ct4 ++ ct5 ++ ct6 ++ ct7
-           , ci4 ++ ci5 ++ ci6
+           , ci1 ++ ci2 ++ ci3' ++ ci4 ++ ci5 ++ ci6
            )
     where mFilter x = filter (\(_a,(_b,c)) -> _paramIn c == x)
-          createType a b = mkTypeTuple $ fmap (\ (_, x) -> _paramSchema x) <$> mFilter a b
-          mkTypeTuple [] = return (Nothing,[])
-          mkTypeTuple schemas = do
-              dataTypeInfoList <- mapM (\x -> mayBeSchemaToHsType x False Nothing compSchemas) schemas
+          -- Header params are dropped for now: their wire names
+          -- (X-NetSuite-*, Prefer) are not legal record fields and the
+          -- param codecs read wire names from field names. They are
+          -- operational headers, session-level concerns, not operation
+          -- vocabulary. Recorded as a spike finding.
+          createType ParamHeader b = do
+              let hs = fst <$> mFilter ParamHeader b
+              when (not (Prelude.null hs)) $
+                traceM ("[openapi] " <> T.unpack opName <> ": dropping header params " <> show hs)
+              return (Nothing,[],[])
+          createType a b = mkParamRecord a (mFilter a b)
+          partLabel ParamQuery = "Q"
+          partLabel ParamCookie = "C"
+          partLabel _ = "X"
+          promotedPart ParamQuery = "'QueryParam"
+          promotedPart ParamCookie = "'Cookie"
+          promotedPart _ = "'QueryParam"
+          -- a named record per (operation, part): nominal Generic records
+          -- are what both webapi's param codecs and the Dhall bridge walk
+          mkParamRecord _ [] = return (Nothing,[],[])
+          mkParamRecord loc ps = do
+              vName <- mkUnseenVar (T.concat [upperFirstChar (T.toLower opName), partLabel loc, "P"])
+              dataTypeInfoList <- mapM (\(pname,(_,param)) ->
+                                          parseRecordFields (pname, maySchemaToSchema (_paramSchema param))
+                                                            (fromMaybe False (_paramRequired param))
+                                                            False Nothing compSchemas) ps
               let (schemaList,childTypes) = unzip $ (\(DataTypeInfo a b c _) -> ((a,b),c) ) <$> dataTypeInfoList
-              let typeTuple = var "Rec" @@ (listPromotedTy $ (\(x,y)-> tuplePromotedTy [stringTy (T.unpack x), y]) <$> schemaList)
-              return (Just typeTuple,Prelude.concat childTypes)
+                  wireUnsafe = [x | (x,_) <- schemaList, removeUnsupportedSymbols x /= x]
+              when (not (Prelude.null wireUnsafe)) $
+                traceM ("[openapi] " <> T.unpack opName <> ": param wire names change under sanitizing: " <> show wireUnsafe)
+              ModelGenState { keywordsToAvoid } <- get
+              let mkFld (x,y) = (textToOccNameStr (avoidKeywords (removeUnsupportedSymbols (lowerFirstChar x)) keywordsToAvoid), field y)
+                  decl = ChildType $ data' (textToOccNameStr vName) [] [recordCon (textToOccNameStr vName) (mkFld <$> schemaList)] stdDeriving
+                  pInsts = [ Instance $ instance' (var "ToParam" @@ var (fromString (promotedPart loc)) @@ var (textToRdrNameStr vName)) []
+                           , Instance $ instance' (var "FromParam" @@ var (fromString (promotedPart loc)) @@ var (textToRdrNameStr vName)) [] ]
+              return (Just (var (textToRdrNameStr vName)), decl : Prelude.concat childTypes, pInsts)
           responseToHeader (_,res) = fmap (_headerSchema . refValToVal compHeaders) <$> (HMO.toList . _responseHeaders $ res)
           findResponseApiOut hMap = case catMaybes [HMO.lookup x hMap | x <- [200..299]] of
                                         [] -> Nothing
@@ -435,18 +482,21 @@ textToMediaType t = fromMaybe "MEDIA TYPE PARSE ERROR" (parseAccept $ fromString
 
 createTypSynonym ::
     (MonadState ModelGenState m) =>
+    Text ->
     Definitions Schema ->
     (Text ,[Either Text (Text, Maybe (Bool, Param))]) ->
     m ((Text,[Text]),[ChildType])
-createTypSynonym compSchemas(oName,params) = do
+createTypSynonym appName compSchemas(oName,params) = do
     varName <- mkUnseenVar (mkTypeSynName params (T.append oName "R"))
     (typInfo,childTypes) <-unzip <$> mapM (parseTypeSynInfo compSchemas) params
+    -- modern route DSL: App :// "seg" :/ Capture :/ ...
     return ((varName, [oName]), ChildType (
                                   type' (textToOccNameStr varName)
                                         []
-                                        (case typInfo of
-                                           [x] -> var "Static" @@ x
-                                           _ -> foldr1 (`op` ":/") typInfo)): Prelude.concat childTypes)
+                                        (op (var (textToRdrNameStr appName)) "://"
+                                            (case typInfo of
+                                               [x] -> x
+                                               _ -> foldr1 (`op` ":/") typInfo))): Prelude.concat childTypes)
 
 parseTypeSynInfo ::
     (MonadState ModelGenState m) =>
@@ -550,31 +600,44 @@ writeModule :: FilePath -> String -> [Extension] -> HsModule' -> IO ()
 writeModule destFp fName es hsModule = do
     contents <- do
 #if (MIN_VERSION_ghc(9,2,0))
-      pure (showSDocOneLine defaultSDocContext (ppr hsModule))  
+      pure (renderWithContext defaultSDocContext (ppr hsModule))  
 #else
       dynFlags <- runGhc (Just libdir) getDynFlags
       pure (showSDoc dynFlags (ppr hsModule))
 #endif
     let fileContent = concatMap ppExtension es <> contents
-    txt <- ormolu defaultConfig { cfgCheckIdempotence = True } "" fileContent
+    txt <- ormolu defaultConfig { cfgCheckIdempotence = True } "" (T.pack fileContent)
+              `catch` \(e :: SomeException) -> do
+                 putStrLn ("[writeModule] formatter failed for " <> fName
+                           <> " (writing unformatted): " <> show e)
+                 pure (T.pack fileContent)
     createDirectoryIfMissing True destFp
     T.writeFile (destFp </> fName) txt --(T.pack fileContent)
 
+-- Written directly rather than shelled out to @cabal init@: init's
+-- @--overwrite@ moves an existing src/ aside, clobbering the modules
+-- this generator just wrote.
 writeCabal :: String -> PkgConfig -> String -> [String] -> FilePath ->IO ()
-writeCabal pkgName (PkgConfig aName aEmail) modName exposMods pkgHome =
-    callCommand ("cd " ++ pkgHome ++ " ; " ++ str)
-    where str = "cabal init --non-interactive --overwrite"
-                 ++ " --package-name="
-                 ++ pkgName
-                 ++ " --author=" ++ T.unpack aName
-                 ++ " --email=" ++ T.unpack aEmail
-                 ++ " --lib"
-                 ++ " --source-dir=src"
-                 ++ iterateOption " --expose-module" xposedMods
-                 ++ iterateOption " --dependency" dpends
-          dpends = ["base","text", "ghc-prim","vector","aeson","webapi-contract"]
+writeCabal pkgName (PkgConfig aName aEmail) modName exposMods pkgHome = do
+    createDirectoryIfMissing True pkgHome
+    Prelude.writeFile (pkgHome </> pkgName <.> "cabal") cabalFile
+    where cabalFile = unlines
+            [ "cabal-version:      2.4"
+            , "name:               " ++ pkgName
+            , "version:            0.1.0.0"
+            , "synopsis:           Generated webapi contract (openapi-model-generator)"
+            , "author:             " ++ T.unpack aName
+            , "maintainer:         " ++ T.unpack aEmail
+            , "build-type:         Simple"
+            , ""
+            , "library"
+            , "    exposed-modules:  " ++ Data.List.intercalate ", " xposedMods
+            , "    hs-source-dirs:   src"
+            , "    default-language: Haskell2010"
+            , "    build-depends:    " ++ Data.List.intercalate ", " dpends
+            ]
+          dpends = ["base","text","vector","aeson","webapi-contract"]
           xposedMods = modName:exposMods
-          iterateOption option = concatMap (\x -> option ++ "=" ++ x)
 
 ppExtension :: Extension -> String
 ppExtension e = "{-# LANGUAGE " <> show e <> " #-}\n"
@@ -591,7 +654,7 @@ createModelData (Just OpenApiObject) compSchemas (dName,dSchema) = do
     let frFields = (\(x,y)-> (textToOccNameStr $ avoidKeywords x keywordsToAvoid,y)) .
                       bimap (removeUnsupportedSymbols . lowerFirstChar) field  <$> rFields
     return $ Prelude.concat childTypes ++
-             [ChildType $ data' (textToOccNameStr unseenVar) [] [recordCon (textToOccNameStr unseenVar) frFields] []]
+             [ChildType $ data' (textToOccNameStr unseenVar) [] [recordCon (textToOccNameStr unseenVar) frFields] stdDeriving]
 createModelData Nothing compSchemas (dName,dSchema) =
     case _schemaOneOf dSchema of
         Nothing -> error "Unexpected Schema type"
@@ -708,15 +771,18 @@ createFromJsonFieldExpr ::
     m HsExpr'
 createFromJsonFieldExpr compSchemas dName reqParams schemaProps = do
     ModelGenState {keywordsToAvoid} <- get
-    let instInfo =  (\(x,y) -> if _schemaType (refValToVal compSchemas y) == Just OpenApiArray && notElem x reqParams
+    let _unused = keywordsToAvoid
+        -- the JSON key is the wire name, verbatim; sanitizing is only
+        -- for the Haskell field/constructor side
+        instInfo =  (\(x,y) -> if _schemaType (refValToVal compSchemas y) == Just OpenApiArray && notElem x reqParams
                                then op (op (var "v")
                                            (findSeparatorSymbol False)
-                                           (string . T.unpack . (`avoidKeywords` keywordsToAvoid) . lowerFirstChar . removeUnsupportedSymbols $ x))
+                                           (string . T.unpack $ x))
                                        ".!="
                                        (var "V.empty")
                                else op (var "v")
                                        (findSeparatorSymbol (x `elem` reqParams))
-                                       (string . T.unpack . (`avoidKeywords` keywordsToAvoid) . lowerFirstChar . removeUnsupportedSymbols $ x)
+                                       (string . T.unpack $ x)
                     ) <$> schemaProps
         instInfo' = op (var $ textToRdrNameStr dName) "<$>" (head instInfo):tail instInfo
     return $ foldl1 (`op` "<*>") instInfo'
@@ -732,9 +798,12 @@ createToJsonInstancesRecord ::
 createToJsonInstancesRecord schemaName schemaVal = do
     ModelGenState {keywordsToAvoid} <- get
     let schemaProperties = HMO.toList . _schemaProperties $ schemaVal
-        sFields =  (`avoidKeywords` keywordsToAvoid) . lowerFirstChar . removeUnsupportedSymbols . fst <$> schemaProperties
-        rFieldList = bvar . textToOccNameStr <$> sFields
-        associationList = list $ (\x -> op (string . T.unpack $ x) ".=" (var . textToRdrNameStr $ x)) <$> sFields
+        -- pattern variables are the sanitized field names; the JSON key
+        -- stays the wire name
+        sanitize = (`avoidKeywords` keywordsToAvoid) . lowerFirstChar . removeUnsupportedSymbols
+        wireFields = fst <$> schemaProperties
+        rFieldList = bvar . textToOccNameStr . sanitize <$> wireFields
+        associationList = list $ (\x -> op (string . T.unpack $ x) ".=" (var . textToRdrNameStr . sanitize $ x)) <$> wireFields
     let toJsonInst = instance' (var "ToJSON" @@ var (textToRdrNameStr schemaName))
                                [funBind "toJSON" (match [conP (textToRdrNameStr schemaName) rFieldList] (var "object" @@ associationList) ) ]
     return $ Instance toJsonInst
@@ -774,14 +843,37 @@ parseInlineFields (Just OpenApiArray ) dName dSchema _isReq generateInstance ins
         Just (OpenApiItemsArray _) -> error "OpenApiItemsArray Array type"
 parseInlineFields (Just OpenApiNull ) _dName _dSchema _isReq _ _ _=
     error "Null OpenApi Type"
+-- An inline object becomes a named record rather than an anonymous
+-- @Rec@: the Dhall bridge's generic walks (and webapi's param codecs)
+-- work over nominal 'Generic' records. The name is a pure function of
+-- the field list, so the two generator passes (models, JSON instances)
+-- agree on it without sharing state, and NetSuite's ubiquitous
+-- @{id, refName}@ reference idiom collapses to one shared type.
 parseInlineFields (Just OpenApiObject ) dName dSchema isReq generateInstance instanceType compSchemas = do
     dataTypeInfoList <- mapM (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams) generateInstance instanceType compSchemas) (HMO.toList . _schemaProperties $ dSchema)
     let (childInlines,childTypes,childInstances) = unzip3 $ (\(DataTypeInfo a b c d) -> ((a,b),c,d)) <$> dataTypeInfoList
-    let typeTuple = var "Rec" @@ (listPromotedTy $ (\(x,y)-> tuplePromotedTy [stringTy (T.unpack x), y]) <$> childInlines)
+        vName = T.append "NsObj" (T.concat (upperFirstChar . removeUnsupportedSymbols . fst <$> childInlines))
+        objType = var (textToRdrNameStr vName)
+    ModelGenState { seenVars, keywordsToAvoid } <- get
+    let mkFld (x,y) = (textToOccNameStr (avoidKeywords (removeUnsupportedSymbols (lowerFirstChar x)) keywordsToAvoid), field y)
+        objDecl = ChildType $ data' (textToOccNameStr vName) [] [recordCon (textToOccNameStr vName) (mkFld <$> childInlines)] stdDeriving
+        newDecls = if member vName seenVars then [] else [objDecl]
+    modify (updateSeenVars vName)
+    jsonInsts <- if generateInstance
+                 then do
+                    ModelGenState { jsonInstances } <- get
+                    if member vName jsonInstances
+                    then return []
+                    else do
+                       modify (updateJsonInstances vName)
+                       fj <- createFromJsonInstancesRecord vName dSchema compSchemas
+                       tj <- createToJsonInstancesRecord vName dSchema
+                       return [fj, tj]
+                 else return []
     return $ DataTypeInfo dName
-                          (if isReq then typeTuple else var "Maybe" @@ typeTuple)
-                          (Prelude.concat childTypes)
-                          (Prelude.concat childInstances)
+                          (if isReq then objType else var "Maybe" @@ objType)
+                          (Prelude.concat childTypes ++ newDecls)
+                          (Prelude.concat childInstances ++ jsonInsts)
     where reqParams =  _schemaRequired dSchema
 
 parseInlineFields Nothing dName dSchema isReq generateInstance instanceType compSchemas=
@@ -817,7 +909,7 @@ mkSumType dName isReq x isTopLevel generateInstance instanceType compSchemas = d
             if isReg
             then return $ DataTypeInfo dName (createHsType isReq vName) [] encodeDecodeInstances
             else do
-                let oneOfTyp = ChildType $ data' (textToOccNameStr vName) [] ((\(a,b) -> prefixCon (textToOccNameStr a) [field b]) <$> typList) []
+                let oneOfTyp = ChildType $ data' (textToOccNameStr vName) [] ((\(a,b) -> prefixCon (textToOccNameStr a) [field b]) <$> typList) stdDeriving
                 return $ DataTypeInfo dName
                                       (createHsType isReq vName)
                                       (oneOfTyp : Prelude.concat childTypes)
