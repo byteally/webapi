@@ -149,10 +149,11 @@ data NameEntry =
               , neSummary :: Maybe Text
               , neDefaults :: Maybe (HM.HashMap Text (HM.HashMap Text Text))
                 -- ^ curated binding defaults: request part -> field -> a
-                -- Haskell expression for the value (spliced verbatim into
-                -- the registry's cbDefaults). Curation, not schema policy:
+                -- Haskell expression for the field's VALUE (spliced
+                -- verbatim as @setField @field (Const (expr))@ on the
+                -- binding's typed request). Curation, not schema policy:
                 -- e.g. NetSuite's required-but-HATEOAS body.links defaults
-                -- to @fromHsLit (mempty :: Vector NsLink)@.
+                -- to @mempty :: Vector NsLink@ (the value, no outer parentheses).
               }
 
 instance FromJSON NameEntry where
@@ -786,6 +787,7 @@ concreteRegistryText
   -> Text
 concreteRegistryText appName modName typeSynName schemaNames modelSt synSt routeInfo = TQ.unlines $
   [ "{-# LANGUAGE DataKinds #-}"
+  , "{-# LANGUAGE TypeApplications #-}"
   , "{-# LANGUAGE TypeOperators #-}"
   , "{-# LANGUAGE ScopedTypeVariables #-}"
   , "{-# LANGUAGE OverloadedStrings #-}"
@@ -807,10 +809,6 @@ concreteRegistryText appName modName typeSynName schemaNames modelSt synSt route
   , "import WebApi.Client.Session (AppIsElem, getSuccessOut)"
   , ""
   , "import Data.Vector (Vector)"
-  , "import Data.Void (Void)"
-  , "import Dhall.Core (Expr (..), makeRecordField)"
-  , "import qualified Dhall.Map"
-  , "import Dhall.Src (Src)"
   , ""
   , "import Dhall.Do.Api.Bridge"
   , "import Dhall.Do.Api.Id (DLActionId, FQN (..), mkDLActionId)"
@@ -822,10 +820,6 @@ concreteRegistryText appName modName typeSynName schemaNames modelSt synSt route
   ]
   <> concatMap instanceLines (S.toList allTypes)
   <> [ ""
-     , "-- curated binding defaults ride in as literal record parts"
-     , "recPart :: [(Text, Expr Src Void)] -> Expr Src Void"
-     , "recPart = RecordLit . Dhall.Map.fromList . map (fmap makeRecordField)"
-     , ""
      , "_unusedVectorAnchor :: Maybe (Vector ()) "
      , "_unusedVectorAnchor = Nothing"
      , ""
@@ -882,17 +876,28 @@ concreteRegistryText appName modName typeSynName schemaNames modelSt synSt route
       | (i, (synName, methName, outT, om)) <- zip [0 :: Int ..] ops
       ]
 
+    -- curated defaults ride in on the binding's typed request (design D1):
+    -- one setter per part over emptyRequest, one setField per curated
+    -- field over unsetRecord — every name GHC-checked against the record
     defaultsField om = case omDefaults om of
       Nothing -> ""
       Just parts ->
-        ", cbDefaults = pure (recPart ["
-          <> TQ.intercalate ", "
-               [ "(\"" <> part <> "\", recPart ["
-                   <> TQ.intercalate ", "
-                        [ "(\"" <> fld <> "\", " <> expr <> ")" | (fld, expr) <- HMQ.toList flds ]
-                   <> "])"
-               | (part, flds) <- HMQ.toList parts ]
-          <> "])"
+        ", cbRequest = "
+          <> foldr
+               (\(part, flds) inner ->
+                  partSetter part <> " ("
+                    <> TQ.concat [ "setField @\"" <> fld <> "\" (Const (" <> expr <> ")) " | (fld, expr) <- HMQ.toList flds ]
+                    <> "unsetRecord) (" <> inner <> ")")
+               "emptyRequest"
+               (HMQ.toList parts)
+    partSetter = \case
+      "query" -> "setQuery"
+      "form" -> "setForm"
+      "header" -> "setHeader"
+      "path" -> "setPath"
+      "body" -> "setBody"
+      "file" -> "setFile"
+      other -> error ("naming map: unknown request part " <> T.unpack other)
 
     -- a curated uuid pins the action id (published corpora reference
     -- it); otherwise the deterministic sha of the final name
