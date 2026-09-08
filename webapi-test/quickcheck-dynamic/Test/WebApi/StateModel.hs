@@ -28,6 +28,7 @@ module Test.WebApi.StateModel
   , ContextSwitch (..)
   , ApiAction (..)
   , mkApiAction
+  , withRequest
   , runApiAction
   , Refinement (..)
   , refinementNames
@@ -1051,6 +1052,16 @@ defaultActionConfig = ActionConfig
 -- ('withContract').
 data ApiAction c xstate apps meth route a = ApiAction
   { buildAction :: forall s m. HasApiStateM m s c xstate apps => ActionConfig m s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a)
+  , requestDefaults :: Maybe (ClientRequestVal meth route)
+    -- ^ the request the action builds, declared statically ('withRequest';
+    -- design "Typed Bindings and Unset Fields", D5): what a check pass
+    -- reads the action's holes off — the unset leaves a script must
+    -- supply, minus what a filler supplies ('requestFills'). 'Nothing'
+    -- for an action that declares none: no holes are foreseen for it.
+  , requestFills :: [(Text, Text)]
+    -- ^ the request fields a filler supplies when nobody else does, as
+    -- (part, field) — the empty field for a whole part ('fills',
+    -- 'fillsPart', and through them 'classAt' \/ 'classAtPart')
   , requestFillers :: [RequestFiller c xstate apps meth route]
   , actionRefinements :: [Refinement meth route a]
   , contracts :: [RefinementId]
@@ -1104,8 +1115,9 @@ classAtPart part rid act = case fillsPart part (entityFiller rid) act of
 
 -- | Fill a whole part when nobody supplied it ('Unset'); a supplied one stays.
 fillsPart :: forall t c xstate apps meth route a. Part meth route t -> Filler c xstate apps t -> ApiAction c xstate apps meth route a -> ApiAction c xstate apps meth route a
-fillsPart part (Filler make) ApiAction {requestFillers, ..} = ApiAction
+fillsPart part (Filler make) ApiAction {requestFillers, requestFills, ..} = ApiAction
   { requestFillers = requestFillers ++ [RequestFiller (overPart part (\v -> case v of Unset _ -> make; _ -> pure v))]
+  , requestFills = requestFills ++ [(partName part, "")]
   , ..
   }
 
@@ -1126,7 +1138,13 @@ classOf rid@(RefinementId klass) ApiAction {resultClasses, ..} = ApiAction
 newtype RequestFiller c xstate apps meth route = RequestFiller (forall s m. HasApiStateM m s c xstate apps => ClientRequestVal meth route -> m (ClientRequestVal meth route))
 
 mkApiAction :: (forall s m. HasApiStateM m s c xstate apps => ActionConfig m s c xstate apps meth route a -> m (Action (ApiState s c xstate apps) a)) -> ApiAction c xstate apps meth route a
-mkApiAction f = ApiAction { buildAction = f, requestFillers = [], actionRefinements = [], contracts = [], refutations = [], requestClasses = [], resultClasses = [] }
+mkApiAction f = ApiAction { buildAction = f, requestDefaults = Nothing, requestFills = [], requestFillers = [], actionRefinements = [], contracts = [], refutations = [], requestClasses = [], resultClasses = [] }
+
+-- | Declare the request the action builds — the same value its build
+-- hands to @requestMod@ — so a check pass can read what a script must
+-- supply before anything runs (design D5).
+withRequest :: ClientRequestVal meth route -> ApiAction c xstate apps meth route a -> ApiAction c xstate apps meth route a
+withRequest r ApiAction {..} = ApiAction {requestDefaults = Just r, ..}
 
 -- | A class of an action's values decided by a predicate — a named,
 -- stackable postcondition: a value is in it when the predicate holds and
@@ -1297,10 +1315,11 @@ overPart part f ClientRequestVal {..} = case part of
 
 -- | Declare a filler for a field of a request part: what the field gets
 -- when neither the action's default nor a script supplied it.
-fills :: forall name x t c xstate apps meth route a. (Generic t, GValRep (Rep t), GGetField name x (Rep t), GSetField name x (Rep t))
+fills :: forall name x t c xstate apps meth route a. (KnownSymbol name, Generic t, GValRep (Rep t), GGetField name x (Rep t), GSetField name x (Rep t))
   => Part meth route t -> Filler c xstate apps x -> ApiAction c xstate apps meth route a -> ApiAction c xstate apps meth route a
-fills part (Filler make) ApiAction {requestFillers, ..} = ApiAction
+fills part (Filler make) ApiAction {requestFillers, requestFills, ..} = ApiAction
   { requestFillers = requestFillers ++ [RequestFiller (overPart part (fillField @name make))]
+  , requestFills = requestFills ++ [(partName part, T.pack (symbolVal (Proxy @name)))]
   , ..
   }
 
