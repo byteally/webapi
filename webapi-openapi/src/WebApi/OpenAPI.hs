@@ -1072,7 +1072,14 @@ concreteRegistryText appName modName typeSynName schemaNames modelSt synSt route
 -- type. Shared by the legacy and modular registries.
 registrationExpr :: Text -> (Text, Text, Text, OpMeta) -> Text
 registrationExpr appName (synName, methName, outT, om) =
-    "addConcreteOp (opIdOf \"" <> registryOpUuid appName synName methName om <> "\") (mkFqn \"" <> finalOpName synName methName om <> "\") (ConcreteOp ((concreteBinding (Right . getSuccessOut)) { cbSummary = Just \"" <> registryEscape (fromMaybe (finalOpName synName methName om) (omSummary om)) <> "\"" <> registryDefaultsField om <> " } :: ConcreteBinding apps " <> methName <> " " <> appName <> " " <> synName <> "Path (" <> TQ.replace "\n" " " outT <> ")))"
+    registrationExprWith appName "Right . getSuccessOut" outT "" (synName, methName, om)
+
+-- | A registration with its own result reader and result type (the
+-- modular layout unwraps a response envelope) and further binding fields
+-- (its classes), each rendered @, cbField = …@.
+registrationExprWith :: Text -> Text -> Text -> Text -> (Text, Text, OpMeta) -> Text
+registrationExprWith appName reader resultT extraFields (synName, methName, om) =
+    "addConcreteOp (opIdOf \"" <> registryOpUuid appName synName methName om <> "\") (mkFqn \"" <> finalOpName synName methName om <> "\") (ConcreteOp ((concreteBinding (" <> reader <> ")) { cbSummary = Just \"" <> registryEscape (fromMaybe (finalOpName synName methName om) (omSummary om)) <> "\"" <> registryDefaultsField om <> extraFields <> " } :: ConcreteBinding apps " <> methName <> " " <> appName <> " " <> synName <> "Path (" <> TQ.replace "\n" " " resultT <> ")))"
 
 -- curated defaults ride in on the binding's typed request (design D1):
 -- one setter per part over emptyRequest, one setField per curated
@@ -1591,11 +1598,6 @@ mkSumType dName isReq x isTopLevel generateInstance instanceType compSchemas = d
                                       (createHsType isReq vName)
                                       (oneOfTyp : Prelude.concat childTypes)
                                        encodeDecodeInstances
-
-f :: Monad m => Text -> [HsDecl'] -> m ()
-f a xs = do
-    traceM $ "Trace Message : " ++ show a
-    mapM_ (\(!_x) -> pure ()) xs
 
 createInstancesSumType ::
     MonadState ModelGenState m =>

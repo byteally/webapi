@@ -32,7 +32,7 @@ module WebApi.OpenAPI.Modular
   ) where
 
 import Control.Exception (SomeException, catch)
-import Control.Monad (forM, forM_, unless, when)
+import Control.Monad (forM, forM_, guard, unless, when)
 import Control.Monad.State.Class (modify)
 import Control.Monad.State.Lazy (runState)
 import Data.Aeson (FromJSON (..), Value (..), eitherDecode, encode, object, withObject, (.!=), (.:), (.:?), (.=))
@@ -41,7 +41,7 @@ import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.HashMap.Strict as HM
 import qualified Data.HashMap.Strict.InsOrd as HMO
-import Data.List (nub, sort)
+import Data.List (nub, sort, sortOn)
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.OpenApi
   ( AdditionalProperties (..)
@@ -81,7 +81,29 @@ data GenConfig = GenConfig
   , gcGhcOptions :: [Text]       -- ^ for every generated component
   , gcCabalExtra :: Text         -- ^ the package's hand-written stanzas, appended verbatim
   , gcConnectionParams :: [Text] -- ^ query parameters the connection sets, not the operation
+  , gcEnvelope :: [Text]         -- ^ a response's envelope fields (Zoho's code, message): a
+                                 --   response of one resource beside them binds as the resource
+  , gcClasses :: [(Text, ClassSpec)] -- ^ the identity classes, reviewed (bindings/classes.yaml)
   }
+
+-- | One identity class: its Haskell type, the result fields that record a
+-- value of it (by operation name), and the request fields that take one
+-- (@path@ for a lone path capture, @part.field@ otherwise). A class nothing
+-- records is external: only a plan input supplies it.
+data ClassSpec = ClassSpec
+  { csType :: Text
+  , csRecords :: [(Text, Text)]
+  , csWants :: [(Text, [Text])]
+  , csExternal :: Bool
+  }
+
+instance FromJSON ClassSpec where
+  parseJSON = withObject "ClassSpec" $ \o -> do
+    csType <- o .:? "type" .!= "Text"
+    csRecords <- HM.toList <$> o .:? "records" .!= HM.empty
+    csWants <- HM.toList <$> o .:? "wants" .!= HM.empty
+    csExternal <- o .:? "external" .!= False
+    pure ClassSpec {..}
 
 instance FromJSON GenConfig where
   parseJSON = withObject "GenConfig" $ \o -> do
@@ -101,6 +123,8 @@ instance FromJSON GenConfig where
     gcGhcOptions <- o .:? "ghcOptions" .!= ["-O0"]
     gcCabalExtra <- o .:? "cabalExtra" .!= ""
     gcConnectionParams <- o .:? "connectionParams" .!= []
+    gcEnvelope <- o .:? "envelope" .!= []
+    gcClasses <- HM.toList <$> o .:? "classes" .!= HM.empty
     pure GenConfig {..}
 
 -- | The @x-zb@ object: modules, and the module of every component schema
@@ -230,6 +254,21 @@ generateModular cfg@GenConfig {..} = do
   unless (null dups) $ fail ("op names collide after resolution (curate the naming map): " <> show dups)
   unless (null unmatched) $ hPutStrLn stderr ("[openapi] naming-map keys matching no operation: " <> show unmatched)
 
+  -- the classes: every operation they name must exist
+  let opNames = S.fromList (map snd finalOps)
+      classOps = [ (k, n) | (k, cs) <- gcClasses, n <- map fst (csRecords cs) ++ map fst (csWants cs) ]
+      unknownOps = [ k <> ": " <> n | (k, n) <- classOps, not (n `S.member` opNames) ]
+  unless (null unknownOps) $
+    fail ("the classes name operations that do not exist:\n  " <> T.unpack (T.intercalate "\n  " unknownOps))
+  let recordsOf n = [ (fld, k) | (k, cs) <- gcClasses, (n', fld) <- csRecords cs, n' == n ]
+      wantsOf n = [ (part, fld, k) | (k, cs) <- gcClasses, (n', ws) <- csWants cs, n' == n, w <- ws
+                  , let (part, rest) = T.breakOn "." w, let fld = T.drop 1 rest ]
+      classFields n =
+        (if null (recordsOf n) then "" else ", cbResultClasses = " <> hsList [ "(" <> quoted f <> ", " <> quoted k <> ")" | (f, k) <- recordsOf n ])
+          <> (if null (wantsOf n) then "" else ", cbRequestClasses = " <> hsList [ "(" <> quoted pt <> ", " <> quoted f <> ", " <> quoted k <> ")" | (pt, f, k) <- wantsOf n ])
+      quoted t = "\"" <> t <> "\""
+      hsList xs = "[" <> T.intercalate ", " xs <> "]"
+
   -- where every declaration and instance goes
   let enums = enumTypes st2
       homeFor def ct = if ctName ct `S.member` enums then HModel commonM else def
@@ -277,8 +316,33 @@ generateModular cfg@GenConfig {..} = do
       -- instances; an array body gets a whole-value override (dhall-do-api
       -- has no OverrideType for Vector yet — ENG-4) when its element is ours
       throughSyn ns = S.union ns (S.fromList [ r | n <- S.toList ns, Just r <- [HM.lookup n synRhs], r `S.member` dataTypes ])
+      -- a response that is an envelope around one resource ({code,
+      -- message, contact}) binds as the resource: the binding's result is
+      -- the contact, so its fields (contact_id) are what a class records and
+      -- a later step reads. Lists (a resource beside page_context) and bare
+      -- acknowledgements ({code, message}) keep their envelope.
+      compOfType = HM.fromList [ (hs, c) | (c, hs) <- HM.toList names ]
+      fieldHs f = avoidKeywords (removeUnsupportedSymbols (lowerFirstChar f)) (S.fromList haskellKeywords)
+      unwrapOf outT = do
+        guard (not (null gcEnvelope))
+        c <- HM.lookup outT compOfType
+        sch <- HMO.lookup c compSchemas
+        [(f, Ref (Reference r))] <- pure [ pr | pr@(f', _) <- HMO.toList (_schemaProperties sch), f' `notElem` gcEnvelope ]
+        innerT <- HM.lookup r names
+        guard (innerT `S.member` dataTypes)
+        let req = f `elem` _schemaRequired sch
+            pat = outT <> " {" <> fieldHs f <> " = " <> (if req then "v" else "Just v") <> "}"
+            reader = "\\s -> case getSuccessOut s of { " <> pat <> " -> Right v; _ -> Left \"the response carries no " <> f <> "\" }"
+        pure (innerT, reader, f)
+      -- the type a binding returns: the resource, or the whole response
+      bindingResultOf o = case unwrapOf . renderHsType =<< o of
+        Just (t, _, _) -> Just t
+        Nothing -> renderHsType <$> o
+      unwrapped = S.fromList
+        [ innerT | (_, ri, _, _, _) <- pathOuts, (_, ms) <- ri, (_, (_h,_q,_c,_b,Just o,_e,_ho,_om)) <- ms
+                 , Just (innerT, _, _) <- [unwrapOf (renderHsType o)] ]
       requestSide = throughSyn (S.union (paramRecords st2) (bodyTypes st2))
-      resultSide = throughSyn (resultTypes st2)
+      resultSide = throughSyn (S.union (resultTypes st2) unwrapped)
       vectorBodies = nub
         [ (r, e) | n <- S.toList (S.union (paramRecords st2) (bodyTypes st2)), Just r <- [HM.lookup n synRhs]
                  , Just e <- [stripParens <$> T.stripPrefix "Vector " r], e `S.member` dataTypes ]
@@ -468,7 +532,12 @@ generateModular cfg@GenConfig {..} = do
   forM_ opModules $ \m -> do
     let ops = [ (syn, meth, maybe "()" renderHsType outInfo, om)
               | (syn, ms) <- routeInfoOf m, (meth, (_h,_q,_c,_b,outInfo,_e,_ho,om)) <- ms ]
-        regLines = [ "    " <> (if i == 0 then "  " else ". ") <> registrationExpr gcApp op' | (i, op') <- zip [0 :: Int ..] ops ]
+        regOf (syn, meth, outT, om) =
+          let n = finalOpName syn meth om
+          in case unwrapOf outT of
+               Just (innerT, reader, _) -> registrationExprWith gcApp reader innerT (classFields n) (syn, meth, om)
+               Nothing -> registrationExprWith gcApp "Right . getSuccessOut" outT (classFields n) (syn, meth, om)
+        regLines = [ "    " <> (if i == 0 then "  " else ". ") <> regOf op' | (i, op') <- zip [0 :: Int ..] ops ]
     write (srcFile "registry" (opsMod m)) $ T.unlines $
       [ "{-# LANGUAGE DataKinds #-}"
       , "{-# LANGUAGE DisambiguateRecordFields #-}"
@@ -507,12 +576,16 @@ generateModular cfg@GenConfig {..} = do
 
   -- registry: the whole
   write (srcFile "registry" registryTop) $ T.unlines $
-    [ "{-# LANGUAGE ScopedTypeVariables #-}"
+    [ "{-# LANGUAGE OverloadedStrings #-}"
+    , "{-# LANGUAGE ScopedTypeVariables #-}"
+    , "{-# LANGUAGE TypeApplications #-}"
+    , "{-# OPTIONS_GHC -Wno-unused-imports #-}"
     , ""
     , "-- Generated by openapi-model-generator: every " <> gcApp <> " operation. Do not edit."
     , "module " <> registryTop <> " (" <> gcOpsName <> ") where"
     , ""
-    , "import Dhall.Do.Api.WebApi.Concrete.Binding (ConcreteActions)"
+    , "import Data.Text (Text)"
+    , "import Dhall.Do.Api.WebApi.Concrete.Binding (ConcreteActions, externalClassC, recordsClassC)"
     , "import WebApi.Client.Session (AppIsElem)"
     , "import " <> appMod
     ]
@@ -520,8 +593,17 @@ generateModular cfg@GenConfig {..} = do
       ++ [ ""
          , "-- | Every operation " <> gcApp <> " serves, added to a registry."
          , gcOpsName <> " :: forall apps. AppIsElem " <> gcApp <> " apps => ConcreteActions apps -> ConcreteActions apps"
-         , gcOpsName <> " = " <> (if null opModules then "id" else T.intercalate " . " (map opsFn opModules))
+         , gcOpsName <> " = " <> T.intercalate " . " (["classes" | not (null gcClasses)] ++ (if null opModules then ["id"] else map opsFn opModules))
          ]
+      ++ (if null gcClasses then [] else
+           [ ""
+           , "-- | The identity classes (bindings/classes.yaml): what a result records and a request takes."
+           , "classes :: ConcreteActions apps -> ConcreteActions apps"
+           , "classes ="
+           ]
+           ++ [ "    " <> (if i == 0 then "  " else ". ")
+                  <> (if csExternal cs then "externalClassC \"" <> k <> "\"" else "recordsClassC @" <> csType cs <> " \"" <> k <> "\"")
+              | (i, (k, cs)) <- zip [0 :: Int ..] (sortOn fst gcClasses) ])
 
   -- the package
   let modelLibs = [ "model-" <> m | m <- modelModules ]
@@ -598,6 +680,10 @@ generateModular cfg@GenConfig {..} = do
             , "header" .= fmap renderHsType h
             , "body" .= fmap (unList . renderHsType) b
             , "result" .= fmap renderHsType o
+            , "resource" .= ((\(_, _, f) -> f) <$> (unwrapOf . renderHsType =<< o))
+            , "bodyComponent" .= (b >>= \x -> HM.lookup (unList (renderHsType x)) compOfType)
+            , "resultComponent" .= (bindingResultOf o >>= \t -> HM.lookup t compOfType)
+            , "bindingResult" .= bindingResultOf o
             , "error" .= fmap renderHsType e
             , "summary" .= omSummary om
             , "scopes" .= scopesOf (field "security" rawOperation)
