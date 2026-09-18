@@ -35,7 +35,7 @@ import Control.Exception (SomeException, catch)
 import Control.Monad (forM, forM_, unless, when)
 import Control.Monad.State.Class (modify)
 import Control.Monad.State.Lazy (runState)
-import Data.Aeson (FromJSON (..), Value (..), eitherDecode, withObject, (.!=), (.:), (.:?))
+import Data.Aeson (FromJSON (..), Value (..), eitherDecode, encode, object, withObject, (.!=), (.:), (.:?), (.=))
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
@@ -80,6 +80,7 @@ data GenConfig = GenConfig
   , gcFormat :: Bool             -- ^ run the formatter over every module
   , gcGhcOptions :: [Text]       -- ^ for every generated component
   , gcCabalExtra :: Text         -- ^ the package's hand-written stanzas, appended verbatim
+  , gcConnectionParams :: [Text] -- ^ query parameters the connection sets, not the operation
   }
 
 instance FromJSON GenConfig where
@@ -99,6 +100,7 @@ instance FromJSON GenConfig where
     gcFormat <- o .:? "format" .!= True
     gcGhcOptions <- o .:? "ghcOptions" .!= ["-O0"]
     gcCabalExtra <- o .:? "cabalExtra" .!= ""
+    gcConnectionParams <- o .:? "connectionParams" .!= []
     pure GenConfig {..}
 
 -- | The @x-zb@ object: modules, and the module of every component schema
@@ -200,6 +202,7 @@ generateModular cfg@GenConfig {..} = do
               , compNames = names
               , inlinePrefix = "Obj"
               , seenVars = S.fromList (reserved ++ HM.elems names)
+              , connectionParams = S.fromList gcConnectionParams
               }
 
       -- the models pass: every component, in its module
@@ -564,6 +567,48 @@ generateModular cfg@GenConfig {..} = do
       then cabal
       else cabal <> "-- The package's hand-written stanzas (zbc.yaml: cabal).\n" <> gcCabalExtra
 
+  -- every operation as data: what tests, the ledger and the docs read
+  let rawOp opPath meth = case raw of
+        Object o
+          | Just (Object ps) <- KM.lookup "paths" o
+          , Just (Object item) <- KM.lookup (K.fromText opPath) ps ->
+              (KM.lookup (K.fromText (T.toLower meth)) item, KM.lookup "x-mcp-group" item)
+        _ -> (Nothing, Nothing)
+      field k = \case
+        Just (Object o) -> KM.lookup k o
+        _ -> Nothing
+      scopesOf = \case
+        Just (Array reqs) -> nub [ sc | Object req <- foldr (:) [] reqs, (_, Array scs) <- KM.toList req, String sc <- foldr (:) [] scs ]
+        _ -> []
+      strs = \case
+        Just (Array a) -> [ t | String t <- foldr (:) [] a ]
+        _ -> []
+      opRecords =
+        [ object
+            [ "name" .= finalOpName syn meth om
+            , "id" .= registryOpUuid gcApp syn meth om
+            , "operationId" .= maybe Null id (field "operationId" rawOperation)
+            , "method" .= meth
+            , "path" .= T.drop (T.length meth + 1) (omKey om)
+            , "module" .= m
+            , "route" .= syn
+            , "pathParam" .= fmap renderHsType (omPathParam om)
+            , "connection" .= omConnParams om
+            , "query" .= fmap renderHsType q
+            , "header" .= fmap renderHsType h
+            , "body" .= fmap (unList . renderHsType) b
+            , "result" .= fmap renderHsType o
+            , "error" .= fmap renderHsType e
+            , "summary" .= omSummary om
+            , "scopes" .= scopesOf (field "security" rawOperation)
+            , "tags" .= strs (field "tags" rawOperation)
+            , "group" .= strs grp
+            ]
+        | m <- opModules, (syn, ms) <- routeInfoOf m, (meth, (h,q,_c,b,o,e,_ho,om)) <- ms
+        , let (rawOperation, grp) = rawOp (T.drop (T.length meth + 1) (omKey om)) meth ]
+  BL.writeFile (genDir </> "operations.json") $
+    "[\n" <> BL.intercalate ",\n" (map encode opRecords) <> "\n]\n"
+
   -- what the generator could not type, for review beside the code
   let ws = sort (nub (warnings st2))
   T.writeFile (genDir </> "warnings.txt") (T.unlines ws)
@@ -624,6 +669,10 @@ generateModular cfg@GenConfig {..} = do
       , "  overrideDefault = optionalOverrideDefault @Opaque"
       , ""
       ]
+
+-- | A request body's type-level list, @'[T]@, as @T@.
+unList :: Text -> Text
+unList t = fromMaybe t (T.stripPrefix "'[" t >>= T.stripSuffix "]")
 
 -- | Write one generated module, formatted when the config asks.
 writeGenerated :: GenConfig -> FilePath -> Text -> IO ()

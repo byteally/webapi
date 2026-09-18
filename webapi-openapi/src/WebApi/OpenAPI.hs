@@ -141,6 +141,10 @@ data ModelGenState =
                   , curModule :: Text
                   , inlinePrefix :: Text
                   , warnings :: [Text]
+                  , connectionParams :: Set Text
+                    -- ^ modular: query parameters the connection sets on
+                    -- every request (a tenant's organization, a shop), left
+                    -- out of each operation's own parameters
                   }
 
 -- | The state both passes start from; the legacy layout keeps every
@@ -165,6 +169,7 @@ initState sumEnums reserved =
                   , curModule = ""
                   , inlinePrefix = "NsObj"
                   , warnings = []
+                  , connectionParams = S.empty
                   }
 
 haskellKeywords :: [Text]
@@ -245,12 +250,15 @@ data OpMeta =
              -- ^ modular: a named record for a route with several
              -- captures (webapi's default is a tuple, which dhall-do's
              -- bridge has no instances for, and which names nothing)
+           , omConnParams :: [Text]
+             -- ^ modular: the connection parameters the operation takes,
+             -- which the connection supplies instead of the operation
            }
 
 resolveOpMeta :: NamingMap -> FilePath -> Text -> Operation -> OpMeta
 resolveOpMeta namingMap path method oper =
     OpMeta { omKey = key, omName = name, omUuid = uuid, omSummary = summ
-           , omDefaults = neDefaults =<< curated, omPathParam = Nothing }
+           , omDefaults = neDefaults =<< curated, omPathParam = Nothing, omConnParams = [] }
     where key = method <> " " <> T.pack path
           curated = HM.lookup key namingMap
           name = (neName <$> curated) <|> (sanitizeOpName <$> _operationOperationId oper)
@@ -490,8 +498,12 @@ createApiContractInsData ::
     (Text,Operation) ->
     m (HashMap Text OpSlot,[ChildType],[Instance])
 createApiContractInsData namingMap fp compSchemas compsParam compsReqBodies compResponses compHeaders commonParamMap (opName,operationData) = do
+    ModelGenState { connectionParams = connParams } <- get
     let opParamsMap = refParamsToParams compsParam (_operationParameters operationData)
-        overrideParams = HM.toList $ opParamsMap `union` commonParamMap
+        allParams = HM.toList $ opParamsMap `union` commonParamMap
+        isConn (n, (_, prm)) = _paramIn prm == ParamQuery && n `S.member` connParams
+        overrideParams = filter (not . isConn) allParams
+        connTaken = Data.List.sort [ n | x@(n, _) <- allParams, isConn x ]
         opReqBody = _operationRequestBody operationData
         opResponses = _responsesResponses . _operationResponses $ operationData
         responseList = fmap (refValToVal compResponses) <$> HMO.toList opResponses
@@ -525,7 +537,7 @@ createApiContractInsData namingMap fp compSchemas compsParam compsReqBodies comp
                             defaultResponse
     (apiErrType,ct6,ci6) <- createApiErr compSchemas compResponses defaultResponse (HMO.toList(findResponseApiErr opResponses))
     (headerOutType,ct7) <- createHeaderOut compSchemas headerOutSchemas
-    return ( HM.singleton opName (headtypTuple,querytypTuple,cookietypTuple,reqBody,apiOutType,apiErrType,headerOutType,opMeta { omPathParam = pathTyp })
+    return ( HM.singleton opName (headtypTuple,querytypTuple,cookietypTuple,reqBody,apiOutType,apiErrType,headerOutType,opMeta { omPathParam = pathTyp, omConnParams = connTaken })
            , ct0 ++ ct1 ++ ct2 ++ ct3 ++ ct4 ++ ct5 ++ ct6 ++ ct7
            , ci0 ++ ci1 ++ ci2 ++ ci3' ++ ci4 ++ ci5 ++ ci6
            )
