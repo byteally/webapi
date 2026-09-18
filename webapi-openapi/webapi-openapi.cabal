@@ -18,6 +18,7 @@ source-repository head
 library
   exposed-modules:
       WebApi.OpenAPI
+      WebApi.OpenAPI.Modular
   hs-source-dirs:
       src
   build-depends:
@@ -56,3 +57,19 @@ executable openapi-model-generator
 
   default-language:    Haskell2010
   ghc-options: -Wall -Werror -O2 -threaded -rtsopts -with-rtsopts=-N
+
+-- Golden output: the generator over test/fixtures, compared file by file
+-- with test/golden (GOLDEN_ACCEPT=1 rewrites them). Run from this directory.
+test-suite golden
+  type:                exitcode-stdio-1.0
+  main-is:             Golden.hs
+  hs-source-dirs:      test
+  build-depends:       base >= 4.9 && < 5
+                     , webapi-openapi
+                     , aeson
+                     , bytestring
+                     , directory
+                     , filepath
+                     , unordered-containers
+  default-language:    Haskell2010
+  ghc-options: -Wall -Werror

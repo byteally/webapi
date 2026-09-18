@@ -26,7 +26,7 @@ import Data.OpenApi
       Definitions,
       Param(_paramName, _paramSchema, _paramIn, _paramRequired),
       Operation(_operationParameters, _operationRequestBody, _operationResponses, _operationSummary, _operationOperationId),
-      ParamLocation(ParamHeader, ParamCookie, ParamQuery),
+      ParamLocation(ParamHeader, ParamCookie, ParamQuery, ParamPath),
       Info(_infoTitle),
       RequestBody(_requestBodyContent),
       MediaTypeObject(_mediaTypeObjectSchema),
@@ -70,7 +70,7 @@ import GHC.SourceGen
       tuple,
       as'
     )
-import Data.HashMap.Strict.InsOrd as HMO (toList,lookup, empty, fromList, delete)
+import Data.HashMap.Strict.InsOrd as HMO (toList,lookup, empty, fromList, delete, null)
 import Data.Text as T ( unpack, Text, append, splitAt, toUpper, take, pack, dropEnd, concat, split, toLower, breakOnEnd, isPrefixOf)
 import Data.Text.IO as T (writeFile)
 import qualified Data.Text.Encoding as TE
@@ -96,6 +96,7 @@ import System.FilePath.Posix
     ( (<.>), (</>), dropExtension, takeFileName, splitDirectories )
 import System.Directory ( createDirectoryIfMissing )
 import Data.Char (isAlphaNum)
+import qualified Data.Char
 import Data.List as L (delete, nub)
 import qualified Data.List
 import qualified Crypto.Hash.SHA256 as SHA256
@@ -109,7 +110,7 @@ import Data.Maybe ( fromMaybe, catMaybes )
 import Control.Monad(when, unless)
 import Control.Applicative ((<|>))
 import Control.Exception (SomeException, catch)
-import Debug.Trace(trace, traceM)
+import Debug.Trace(traceM)
 
 data ModelGenState =
     ModelGenState { seenVars :: Set Text
@@ -131,7 +132,75 @@ data ModelGenState =
                   -- alone (two {refName,id} objects with different id
                   -- enums must not alias — M10c-4 bug fix)
                   , inlineShapes :: HashMap Text [([(Text, Text)], Text)]
+                  -- the modular layout (a generator config): component
+                  -- names resolved once to Haskell names, the module whose
+                  -- declarations are being generated, and the behaviours
+                  -- the legacy single-module output keeps as they were
+                  , modular :: Bool
+                  , compNames :: HashMap Text Text
+                  , curModule :: Text
+                  , inlinePrefix :: Text
+                  , warnings :: [Text]
                   }
+
+-- | The state both passes start from; the legacy layout keeps every
+-- behaviour its golden output pins.
+initState :: Bool -> [Text] -> ModelGenState
+initState sumEnums reserved =
+    ModelGenState { seenVars = S.fromList reserved
+                  , imports = S.empty
+                  , keywordsToAvoid = S.fromList haskellKeywords
+                  , createdSums = HM.empty
+                  , jsonInstances = S.empty
+                  , inlineRecords = S.empty
+                  , paramRecords = S.empty
+                  , bodyTypes = S.empty
+                  , resultTypes = S.empty
+                  , enumsAsSums = sumEnums
+                  , enumSums = HM.empty
+                  , enumTypes = S.empty
+                  , inlineShapes = HM.empty
+                  , modular = False
+                  , compNames = HM.empty
+                  , curModule = ""
+                  , inlinePrefix = "NsObj"
+                  , warnings = []
+                  }
+
+haskellKeywords :: [Text]
+haskellKeywords = [ "case","class","data","default","deriving","do","else"
+                  , "foreign","if","import","in","infix","infixl","infixr"
+                  , "instance","let","module","newtype","of","then","type"
+                  , "where","forall" ]
+
+warn :: MonadState ModelGenState m => Text -> m ()
+warn w = modify (\st -> st { warnings = w : warnings st })
+
+-- | The Haskell type a component reference names. Legacy: the component
+-- name, capitalised and stripped. Modular: the name resolved up front for
+-- every component (so a declaration and every reference to it agree), and
+-- "Opaque" where a schema is missing.
+refName :: ModelGenState -> Text -> Text
+refName st x
+  | modular st = case HM.lookup x (compNames st) of
+                   Just n -> n
+                   Nothing | x == "Untyped" -> "Opaque"
+                           | otherwise -> pascalName x
+  | otherwise = removeUnsupportedSymbols (upperFirstChar x)
+
+-- | The name a component's own declaration takes.
+componentDeclName :: MonadState ModelGenState m => Text -> m Text
+componentDeclName dName = do
+  st <- get
+  if modular st then pure (refName st dName) else mkUnseenVar (upperFirstChar dName)
+
+-- | kebab-case, snake_case and dotted names as one PascalCase identifier.
+pascalName :: Text -> Text
+pascalName t =
+  case T.concat (upperFirstChar <$> filter (not . TQ.null) (TQ.split (\c -> not (isAlphaNum c)) t)) of
+    n | TQ.null n -> "T"
+      | Data.Char.isDigit (TQ.head n) -> T.append "T" n
+      | otherwise -> n
 
 data PkgConfig =
     PkgConfig { authorName :: Text
@@ -172,12 +241,16 @@ data OpMeta =
            , omUuid :: Maybe Text   -- ^ curated uuid pin only
            , omSummary :: Maybe Text
            , omDefaults :: Maybe (HM.HashMap Text (HM.HashMap Text Text))
+           , omPathParam :: Maybe HsType'
+             -- ^ modular: a named record for a route with several
+             -- captures (webapi's default is a tuple, which dhall-do's
+             -- bridge has no instances for, and which names nothing)
            }
 
 resolveOpMeta :: NamingMap -> FilePath -> Text -> Operation -> OpMeta
 resolveOpMeta namingMap path method oper =
     OpMeta { omKey = key, omName = name, omUuid = uuid, omSummary = summ
-           , omDefaults = neDefaults =<< curated }
+           , omDefaults = neDefaults =<< curated, omPathParam = Nothing }
     where key = method <> " " <> T.pack path
           curated = HM.lookup key namingMap
           name = (neName <$> curated) <|> (sanitizeOpName <$> _operationOperationId oper)
@@ -206,8 +279,17 @@ type OpSlot =
     ( Maybe HsType', Maybe HsType', Maybe HsType', Maybe HsType'
     , Maybe HsType', Maybe HsType', Maybe HsType', OpMeta )
 
-newtype ChildType = ChildType HsDecl'
-newtype Instance = Instance HsDecl'
+-- | A generated declaration, with the name it declares: the modular
+-- layout routes each to its module by that name, and emits the registry's
+-- bridge instances only for data types, never for synonyms.
+data DeclKind = DataDecl | SynDecl deriving (Eq, Show)
+data ChildType = ChildType { ctName :: Text, ctKind :: DeclKind, ctDecl :: HsDecl' }
+-- | A generated instance, with the type it is for (it lives beside it).
+data Instance = Instance { instFor :: Text, instDecl :: HsDecl' }
+
+dataCT, synCT :: Text -> HsDecl' -> ChildType
+dataCT n = ChildType n DataDecl
+synCT n = ChildType n SynDecl
 
 data DataTypeInfo =
     DataTypeInfo {
@@ -239,17 +321,17 @@ generateModels fp destFp reqPrefix namingMap sumEnums = do
         appName = removeUnsupportedSymbols (upperFirstChar oApiName)
         (modelList, modelSt) = runState
                         (mapM (\(x,y) -> createModelData (_schemaType y) compSchemas (x,y)) (HMO.toList compSchemas))
-                        (ModelGenState S.empty S.empty (S.fromList keywords) HM.empty (S.fromList seenVariables) S.empty S.empty S.empty S.empty sumEnums HM.empty S.empty HM.empty)
+                        ((initState sumEnums seenVariables) { seenVars = S.empty, jsonInstances = S.fromList seenVariables })
         hsModuleModel = module' (Just modName) Nothing impsModel
                           (concatMap (\(cts, insts) -> rmChildTypeLayer cts ++ rmInstanceLayer insts) modelList)
         -- the contract pass continues the models pass's state: name and
         -- instance dedup must be global or the two modules would emit
         -- duplicate decls/instances (and GHC would refuse the package)
         ((routeInfo,typeSynList,instances), synSt) =
-                                   (\(rs, st) -> ((\(a,b,c) -> (Prelude.concat a,Prelude.concat b,Prelude.concat c)) (unzip3 rs), st))
+                                   (\(rs, st) -> ((\(a,b,c) -> (Prelude.concat a,Prelude.concat b,Prelude.concat c)) (unzip3 [ (w, x ++ y, z) | (w, x, y, z) <- rs ]), st))
                                    (runState
                                         (mapM (createTypeSynData namingMap appName compSchemas compParams compReqBodies compResponses compHeaders) (filter (T.isPrefixOf (T.pack reqPrefix) . T.pack . fst) (HMO.toList . _openApiPaths $ oApi)))
-                                        (ModelGenState (seenVars modelSt) S.empty (S.fromList keywords) (createdSums modelSt) (jsonInstances modelSt) (inlineRecords modelSt) S.empty S.empty S.empty sumEnums (enumSums modelSt) (enumTypes modelSt) (inlineShapes modelSt)))
+                                        (modelSt { imports = S.empty, paramRecords = S.empty, bodyTypes = S.empty, resultTypes = S.empty }))
 
     -- M10: resolved op names are identities (the FQN and the type-level
     -- OperationId) — they must be catalog-unique after sanitizing, and a
@@ -296,10 +378,6 @@ generateModels fp destFp reqPrefix namingMap sumEnums = do
 
           es = [TypeOperators,KindSignatures,DataKinds,DuplicateRecordFields,DeriveGeneric,OverloadedStrings]
           es2 = [DataKinds,TypeOperators,TypeSynonymInstances,FlexibleInstances,MultiParamTypeClasses,TypeFamilies, OverloadedStrings,DeriveGeneric,DuplicateRecordFields]
-          keywords = [ "case","class","data","default","deriving","do","else"
-                     , "foreign","if","import","in","infix","infixl","infixr"
-                     , "instance","let","module","newtype","of","then","type"
-                     , "where","forall" ]
           seenVariables = ["Untyped"]
           pkgName = T.unpack . flip T.append "-models" . T.pack . dropExtension . takeFileName $ fp
           pkgHome = destFp </> pkgName
@@ -311,8 +389,8 @@ generateModels fp destFp reqPrefix namingMap sumEnums = do
                                               [tyFamInst "Apis" [var $ textToRdrNameStr a] (listPromotedTy (oneRoute <$> b))]]
           oneRoute (tName,methList) = var "Route" @@ listPromotedTy (var . textToRdrNameStr <$> methList) @@ var  (textToRdrNameStr tName)
           untypedDef = data' "Untyped" [] [prefixCon "Maybe" [field (var "Text")]] []
-          rmChildTypeLayer = fmap (\(ChildType x) -> x)
-          rmInstanceLayer = fmap (\(Instance x) -> x)
+          rmChildTypeLayer = fmap ctDecl
+          rmInstanceLayer = fmap instDecl
 
 mkApiContractInstances ::
     Text ->
@@ -323,7 +401,8 @@ mkApiContractInstances oApiName (typName,instanceInfo) =
     where mkOneInstance (methName,(headInfo,queryInfo,cookieInfo,reqBodyInfo,apiOutInfo,apiErrInfo,headerOutInfo,om)) =
                 instance' (var "ApiContract" @@ var (textToRdrNameStr oApiName) @@ var (textToRdrNameStr methName) @@ var (textToRdrNameStr typName))
                           (opIdSyn methName om :
-                           Prelude.concat (mkTypeSyns methName <$> [("HeaderIn",headInfo)
+                           Prelude.concat (mkTypeSyns methName <$> [("PathParam",omPathParam om)
+                                                                   ,("HeaderIn",headInfo)
                                                                    ,("QueryParam",queryInfo)
                                                                    ,("CookieIn",cookieInfo)
                                                                    ,("RequestBody",reqBodyInfo)
@@ -357,7 +436,7 @@ createTypeSynData ::
     Definitions Response ->
     Definitions Header ->
     (FilePath,PathItem) ->
-    m ([(Text, [(Text, OpSlot)])],[ChildType],[Instance])
+    m ([(Text, [(Text, OpSlot)])],[ChildType],[ChildType],[Instance])
 createTypeSynData namingMap appName compSchemas compsParam compReqBodies compResponses compHeaders (fp,PathItem _ _ piGet piPut piPost piDelete piOptions piHead piPatch piTrace _ piParams) = do
     let paramsMap = refParamsToParams compsParam piParams
         commonParams =
@@ -378,7 +457,8 @@ createTypeSynData namingMap appName compSchemas compsParam compReqBodies compRes
                                  return [((a,S.toList diff),c)]
     (apiConInsData,ct3,ci3) <-  unzip3 <$> mapM (createApiContractInsData namingMap fp compSchemas compsParam compReqBodies compResponses compHeaders paramsMap) opList
     return ((fmap . fmap) (applyApiContractInfo (unions apiConInsData)) <$> commonTypSyn ++ typSyns
-           , Prelude.concat ct1 ++ Prelude.concat ct2 ++ Prelude.concat ct3
+           , Prelude.concat ct1 ++ Prelude.concat ct2   -- the route synonyms
+           , Prelude.concat ct3                         -- the contract's own types
            , Prelude.concat ci3)
     where pairLisToSet = S.fromList . fmap fst
           applyApiContractInfo apiInfoMap a =
@@ -420,20 +500,34 @@ createApiContractInsData namingMap fp compSchemas compsParam compsReqBodies comp
                                                     (responseToHeader <$> ( case defaultResponse of
                                                                         Nothing -> responseList
                                                                         (Just x) -> (0,refValToVal compResponses x):responseList))
+    -- modular: several captures make a named path record, in path order
+    ModelGenState { modular = isModularOp } <- get
+    let captures = [ c | Right c <- parseFilePath fp ]
+        byName = HM.fromList overrideParams
+        pathParams = [ (c, p') | c <- captures, Just p' <- [HM.lookup c byName] ]
+    (pathTyp,ct0,ci0) <- if isModularOp && Prelude.length captures >= 2 && Prelude.length pathParams == Prelude.length captures
+                         then mkParamRecord ParamPath pathParams
+                         else return (Nothing,[],[])
     (headtypTuple,ct1,ci1)  <- createType ParamHeader overrideParams
     (querytypTuple,ct2,ci2)  <- createType ParamQuery  overrideParams
     (cookietypTuple,ct3,ci3') <- createType ParamCookie overrideParams
     (reqBody,ct4,ci4) <- createReqBody compSchemas compsReqBodies opReqBody
+    ModelGenState { modular = isModular } <- get
+    apiOutResp <- case catMaybes [HMO.lookup x opResponses | x <- [200..299]] of
+                    (x : _ : _) | isModular -> do
+                      warn (opName <> " " <> T.pack fp <> ": several 2xx responses; the lowest is ApiOut")
+                      pure (Just x)
+                    _ -> pure (findResponseApiOut opResponses)
     (apiOutType,ct5,ci5) <- createApiOut
                             compSchemas
                             compResponses
-                            (findResponseApiOut opResponses)
+                            apiOutResp
                             defaultResponse
     (apiErrType,ct6,ci6) <- createApiErr compSchemas compResponses defaultResponse (HMO.toList(findResponseApiErr opResponses))
     (headerOutType,ct7) <- createHeaderOut compSchemas headerOutSchemas
-    return ( HM.singleton opName (headtypTuple,querytypTuple,cookietypTuple,reqBody,apiOutType,apiErrType,headerOutType,opMeta)
-           , ct1 ++ ct2 ++ ct3 ++ ct4 ++ ct5 ++ ct6 ++ ct7
-           , ci1 ++ ci2 ++ ci3' ++ ci4 ++ ci5 ++ ci6
+    return ( HM.singleton opName (headtypTuple,querytypTuple,cookietypTuple,reqBody,apiOutType,apiErrType,headerOutType,opMeta { omPathParam = pathTyp })
+           , ct0 ++ ct1 ++ ct2 ++ ct3 ++ ct4 ++ ct5 ++ ct6 ++ ct7
+           , ci0 ++ ci1 ++ ci2 ++ ci3' ++ ci4 ++ ci5 ++ ci6
            )
     where opMeta = resolveOpMeta namingMap fp opName operationData
           -- param records are named after the op when it has a name —
@@ -448,15 +542,20 @@ createApiContractInsData namingMap fp compSchemas compsParam compsReqBodies comp
           -- vocabulary. Recorded as a spike finding.
           createType ParamHeader b = do
               let hs = fst <$> mFilter ParamHeader b
+              ModelGenState { modular = isModular } <- get
               when (not (Prelude.null hs)) $
-                traceM ("[openapi] " <> T.unpack opName <> ": dropping header params " <> show hs)
+                if isModular
+                then warn (fromMaybe opName (omName opMeta) <> ": header parameters " <> TQ.intercalate ", " hs <> " left out (GEN-5)")
+                else traceM ("[openapi] " <> T.unpack opName <> ": dropping header params " <> show hs)
               return (Nothing,[],[])
           createType a b = mkParamRecord a (mFilter a b)
           partLabel ParamQuery = "Q"
           partLabel ParamCookie = "C"
+          partLabel ParamPath = "P"
           partLabel _ = "X"
           promotedPart ParamQuery = "'QueryParam"
           promotedPart ParamCookie = "'Cookie"
+          promotedPart ParamPath = "'PathParam"
           promotedPart _ = "'QueryParam"
           -- a named record per (operation, part): nominal Generic records
           -- are what both webapi's param codecs and the Dhall bridge walk
@@ -470,13 +569,19 @@ createApiContractInsData namingMap fp compSchemas compsParam compsReqBodies comp
                                                             False Nothing compSchemas) ps
               let (schemaList,childTypes) = unzip $ (\(DataTypeInfo a b c _) -> ((a,b),c) ) <$> dataTypeInfoList
                   wireUnsafe = [x | (x,_) <- schemaList, removeUnsupportedSymbols x /= x]
+              ModelGenState { modular = isModular } <- get
               when (not (Prelude.null wireUnsafe)) $
-                traceM ("[openapi] " <> T.unpack opName <> ": param wire names change under sanitizing: " <> show wireUnsafe)
+                if isModular
+                then warn (fromMaybe opName (omName opMeta) <> ": parameter names change under sanitizing: " <> TQ.intercalate ", " wireUnsafe)
+                else traceM ("[openapi] " <> T.unpack opName <> ": param wire names change under sanitizing: " <> show wireUnsafe)
               ModelGenState { keywordsToAvoid } <- get
               let mkFld (x,y) = (textToOccNameStr (avoidKeywords (removeUnsupportedSymbols (lowerFirstChar x)) keywordsToAvoid), field y)
-                  decl = ChildType $ data' (textToOccNameStr vName) [] [recordCon (textToOccNameStr vName) (mkFld <$> schemaList)] stdDeriving
-                  pInsts = [ Instance $ instance' (var "ToParam" @@ var (fromString (promotedPart loc)) @@ var (textToRdrNameStr vName)) []
-                           , Instance $ instance' (var "FromParam" @@ var (fromString (promotedPart loc)) @@ var (textToRdrNameStr vName)) [] ]
+                  decl = dataCT vName $ data' (textToOccNameStr vName) [] [recordCon (textToOccNameStr vName) (mkFld <$> schemaList)] stdDeriving
+                  -- a path record is only ever encoded (a client's); webapi
+                  -- decodes paths in its router, with no FromParam 'PathParam
+                  pInsts = Instance vName (instance' (var "ToParam" @@ var (fromString (promotedPart loc)) @@ var (textToRdrNameStr vName)) [])
+                         : [ Instance vName $ instance' (var "FromParam" @@ var (fromString (promotedPart loc)) @@ var (textToRdrNameStr vName)) []
+                           | loc /= ParamPath ]
               return (Just (var (textToRdrNameStr vName)), decl : Prelude.concat childTypes, pInsts)
           responseToHeader (_,res) = fmap (_headerSchema . refValToVal compHeaders) <$> (HMO.toList . _responseHeaders $ res)
           findResponseApiOut hMap = case catMaybes [HMO.lookup x hMap | x <- [200..299]] of
@@ -518,10 +623,13 @@ createApiOut compSchemas hMap (Just res) defRes = do
             Nothing -> createApiOut compSchemas hMap Nothing Nothing
             x -> createApiOut compSchemas hMap x Nothing
     else do
-        let (cType,maySchema) =  mediaTypeObjToSchema mediaTypList
+        ModelGenState { modular = isModular } <- get
+        (cType,maySchema) <- if isModular
+                             then fromMaybe (JSON, Nothing) <$> pickMedia "a response" mediaTypList
+                             else pure (mediaTypeObjToSchema mediaTypList)
         case maySchema of
           Just (Ref (Reference x)) ->
-            modify (\st -> st { resultTypes = S.insert (removeUnsupportedSymbols (upperFirstChar x)) (resultTypes st) })
+            modify (\st -> st { resultTypes = S.insert (refName st x) (resultTypes st) })
           _ -> return ()
         DataTypeInfo {typ,child_types,child_instances} <- mayBeSchemaToHsType ("ApiOutType",maySchema) True (Just cType) compSchemas
         return (Just typ,child_types, child_instances)
@@ -543,7 +651,11 @@ createApiErr compSchemas hMap defRes resList = do
     if Prelude.null (Prelude.concat mediaTypList)
     then createApiErr compSchemas hMap Nothing []
     else do
-        let (cType,neMediaTypList) = unzip $ second maySchemaToSchema . mediaTypeObjToSchema <$> filter (not . Prelude.null) mediaTypList
+        ModelGenState { modular = isModular } <- get
+        picked <- if isModular
+                  then catMaybes <$> mapM (pickMedia "an error response") (filter (not . Prelude.null) mediaTypList)
+                  else pure (mediaTypeObjToSchema <$> filter (not . Prelude.null) mediaTypList)
+        let (cType,neMediaTypList) = unzip $ second maySchemaToSchema <$> picked
             ctype' = case nub cType of
                         [a] -> a
                         _ -> error "Conflicting ApiErr Type"
@@ -581,16 +693,47 @@ createReqBody ::
 createReqBody _ _ Nothing = return (Nothing,[],[])
 createReqBody compSchemas compReqBodies (Just refReqBody) = do
     let reqBody = refValToVal compReqBodies refReqBody
-    let (typName,maySchema) = mediaTypeObjToSchema . HMO.toList . _requestBodyContent $ reqBody
+    ModelGenState { modular = isModular } <- get
+    picked <- if isModular
+              then pickMedia "a request body" (HMO.toList (_requestBodyContent reqBody))
+              else pure (Just (mediaTypeObjToSchema . HMO.toList . _requestBodyContent $ reqBody))
+    case picked of
+      Just (JSON, _) -> reqBodyOf picked
+      Just (other, _) | isModular -> do
+        -- form and multipart bodies wait for FormParam/FileParam emission
+        warn ("a " <> T.pack (show other) <> " request body is not generated yet; left out")
+        return (Nothing, [], [])
+      _ | isModular -> return (Nothing, [], [])
+        | otherwise -> reqBodyOf picked
+  where
+   reqBodyOf picked = do
+    let (typName,maySchema) = fromMaybe (error "no request body media type") picked
     case maySchema of
       Just (Ref (Reference x)) ->
-        modify (\st -> st { bodyTypes = S.insert (removeUnsupportedSymbols (upperFirstChar x)) (bodyTypes st) })
+        modify (\st -> st { bodyTypes = S.insert (refName st x) (bodyTypes st) })
       _ -> return ()
     DataTypeInfo {typ,child_types,child_instances} <- mayBeSchemaToHsType ("requestBody",maySchema) True (Just typName) compSchemas
     let finalType = if typName == JSON
                     then listPromotedTy [typ]
                     else listPromotedTy [var "Content" @@ listPromotedTy [var $ textToRdrNameStr (T.pack . show $ typName)] @@ typ]
     return (Just finalType,child_types, child_instances)
+
+-- | The modular layout's choice among an operation's media types: JSON
+-- when there is one (a vendor that also offers PDF or an image keeps its
+-- JSON contract), else the one it knows; what it drops is a warning.
+pickMedia :: MonadState ModelGenState m => Text -> [(MediaType, MediaTypeObject)] -> m (Maybe (ContentTypesOApi, Maybe (Referenced Schema)))
+pickMedia ctx mts = do
+    let known = [ (ct, _mediaTypeObjectSchema o, mt) | (mt, o) <- mts, Just ct <- [HM.lookup mt mediaTypeMap] ]
+        isJsonish mt = TQ.isSuffixOf "json" (T.pack (show mt))
+        jsonish = [ (JSON, _mediaTypeObjectSchema o, mt) | (mt, o) <- mts, isJsonish mt ]
+        chosen = case [ k | k@(JSON, _, _) <- known ] ++ jsonish ++ known of
+                   (c : _) -> Just c
+                   [] -> Nothing
+        dropped = [ T.pack (show mt) | (mt, _) <- mts, Just mt /= fmap (\(_, _, m) -> m) chosen ]
+    unless (Prelude.null dropped) $
+      warn (ctx <> ": media types " <> TQ.intercalate ", " dropped <> " left out"
+              <> maybe " (no media type it knows; left out)" (\(_, _, m) -> "; kept " <> T.pack (show m)) chosen)
+    pure ((\(c, sch, _) -> (c, sch)) <$> chosen)
 
 mediaTypeObjToSchema :: [(MediaType, MediaTypeObject)] -> (ContentTypesOApi, Maybe (Referenced Schema))
 mediaTypeObjToSchema [(mediaTyp,mediaTypObj)] =
@@ -631,11 +774,11 @@ createTypSynonym appName compSchemas(oName,params) = do
     let rpathE = case typInfo of
           [x] -> x
           _ -> foldr1 (`op` ":/") typInfo
-    return ((varName, [oName]), ChildType (
+    return ((varName, [oName]), synCT varName (
                                   type' (textToOccNameStr varName)
                                         []
                                         (op (var (textToRdrNameStr appName)) "://" rpathE))
-                              : ChildType (type' (textToOccNameStr (T.append varName "Path")) [] rpathE)
+                              : synCT (T.append varName "Path") (type' (textToOccNameStr (T.append varName "Path")) [] rpathE)
                               : Prelude.concat childTypes)
 
 parseTypeSynInfo ::
@@ -805,13 +948,13 @@ concreteRegistryText appName modName typeSynName schemaNames modelSt synSt route
   , "import qualified Data.UUID.Types as UUID"
   , "import GHC.Stack (HasCallStack)"
   , ""
-  , "import WebApi.Contract"
+  , "import WebApi.Contract hiding (OperationId)"
   , "import WebApi.Client.Session (AppIsElem, getSuccessOut)"
   , ""
   , "import Data.Vector (Vector)"
   , ""
   , "import Dhall.Do.Api.Bridge"
-  , "import Dhall.Do.Api.Id (DLActionId, FQN (..), mkDLActionId)"
+  , "import Dhall.Do.Api.Id (OperationId, FQN (..), mkOperationId)"
   , "import Dhall.Do.Api.WebApi.Concrete.Binding"
   , ""
   , "import " <> T.pack modName
@@ -823,8 +966,8 @@ concreteRegistryText appName modName typeSynName schemaNames modelSt synSt route
      , "_unusedVectorAnchor :: Maybe (Vector ()) "
      , "_unusedVectorAnchor = Nothing"
      , ""
-     , "opIdOf :: HasCallStack => Text -> DLActionId"
-     , "opIdOf t = mkDLActionId (fromMaybe (error (\"bad uuid literal: \" <> T.unpack t)) (UUID.fromText t))"
+     , "opIdOf :: HasCallStack => Text -> OperationId"
+     , "opIdOf t = mkOperationId (fromMaybe (error (\"bad uuid literal: \" <> T.unpack t)) (UUID.fromText t))"
      , ""
      , "mkFqn :: Text -> FQN"
      , "mkFqn n = FQN { qualifier = \"" <> nsQualifier <> "\" :| [], name = n }"
@@ -845,6 +988,12 @@ concreteRegistryText appName modName typeSynName schemaNames modelSt synSt route
       , enumTypes modelSt, enumTypes synSt
       ]
     requestSide = SetQ.union (paramRecords synSt) (bodyTypes synSt)
+    -- every named ApiErr type; () and Text carry ErrorText already
+    errorTypes = S.fromList
+      [ t | (_, methodInfos) <- routeInfo
+          , (_, (_h,_q,_c,_b,_o,Just errT,_ho,_om)) <- methodInfos
+          , let t = renderHsType errT
+          , t `Prelude.notElem` ["()", "Text"] ]
     resultSide = resultTypes synSt
     -- OverrideType/HsSelect have no generic sum story (Override.hs /
     -- Select.hs carry no :+: instance) — suppress their emission for
@@ -862,6 +1011,9 @@ concreteRegistryText appName modName typeSynName schemaNames modelSt synSt route
       ]
       <> [ "instance OverrideType " <> n | n `S.member` requestSide, not (n `S.member` sumLike) ]
       <> [ "instance HsSelect " <> n | n `S.member` resultSide, not (n `S.member` sumLike) ]
+      -- a run's failure line renders the error body (dhall-do-api's
+      -- ErrorText; the class default goes through ToJSON)
+      <> [ "instance ErrorText " <> n | n `S.member` errorTypes ]
       <> [ "" ]
 
     ops = [ (synName, methName, outT, om)
@@ -871,25 +1023,34 @@ concreteRegistryText appName modName typeSynName schemaNames modelSt synSt route
           ]
 
     registrationLines =
-      [ "    " <> (if i == 0 then "  " else ". ")
-          <> "addConcreteOp (opIdOf \"" <> opUuid synName methName om <> "\") (mkFqn \"" <> finalOpName synName methName om <> "\") (ConcreteOp ((concreteBinding (Right . getSuccessOut)) { cbSummary = Just \"" <> escape (fromMaybe (finalOpName synName methName om) (omSummary om)) <> "\"" <> defaultsField om <> " } :: ConcreteBinding apps " <> methName <> " " <> appName <> " " <> synName <> "Path (" <> TQ.replace "\n" " " outT <> ")))"
-      | (i, (synName, methName, outT, om)) <- zip [0 :: Int ..] ops
+      [ "    " <> (if i == 0 then "  " else ". ") <> registrationExpr appName op'
+      | (i, op') <- zip [0 :: Int ..] ops
       ]
 
-    -- curated defaults ride in on the binding's typed request (design D1):
-    -- one setter per part over emptyRequest, one setField per curated
-    -- field over unsetRecord — every name GHC-checked against the record
-    defaultsField om = case omDefaults om of
-      Nothing -> ""
-      Just parts ->
-        ", cbRequest = "
-          <> foldr
-               (\(part, flds) inner ->
-                  partSetter part <> " ("
-                    <> TQ.concat [ "setField @\"" <> fld <> "\" (Const (" <> expr <> ")) " | (fld, expr) <- HMQ.toList flds ]
-                    <> "unsetRecord) (" <> inner <> ")")
-               "emptyRequest"
-               (HMQ.toList parts)
+
+-- | One operation's registration: its id (curated, or the sha of its final
+-- name), FQN, summary and curated request defaults, ascribed its binding
+-- type. Shared by the legacy and modular registries.
+registrationExpr :: Text -> (Text, Text, Text, OpMeta) -> Text
+registrationExpr appName (synName, methName, outT, om) =
+    "addConcreteOp (opIdOf \"" <> registryOpUuid appName synName methName om <> "\") (mkFqn \"" <> finalOpName synName methName om <> "\") (ConcreteOp ((concreteBinding (Right . getSuccessOut)) { cbSummary = Just \"" <> registryEscape (fromMaybe (finalOpName synName methName om) (omSummary om)) <> "\"" <> registryDefaultsField om <> " } :: ConcreteBinding apps " <> methName <> " " <> appName <> " " <> synName <> "Path (" <> TQ.replace "\n" " " outT <> ")))"
+
+-- curated defaults ride in on the binding's typed request (design D1):
+-- one setter per part over emptyRequest, one setField per curated
+-- field over unsetRecord — every name GHC-checked against the record
+registryDefaultsField :: OpMeta -> Text
+registryDefaultsField om = case omDefaults om of
+    Nothing -> ""
+    Just parts ->
+      ", cbRequest = "
+        <> foldr
+             (\(part, flds) inner ->
+                partSetter part <> " ("
+                  <> TQ.concat [ "setField @\"" <> fld <> "\" (Const (" <> expr <> ")) " | (fld, expr) <- HMQ.toList flds ]
+                  <> "unsetRecord) (" <> inner <> ")")
+             "emptyRequest"
+             (HMQ.toList parts)
+  where
     partSetter = \case
       "query" -> "setQuery"
       "form" -> "setForm"
@@ -899,19 +1060,27 @@ concreteRegistryText appName modName typeSynName schemaNames modelSt synSt route
       "file" -> "setFile"
       other -> error ("naming map: unknown request part " <> T.unpack other)
 
-    -- a curated uuid pins the action id (published corpora reference
-    -- it); otherwise the deterministic sha of the final name
-    opUuid synName methName om =
-      fromMaybe (asUuid ("dhall-do-connector|" <> appName <> "|" <> finalOpName synName methName om)) (omUuid om)
+-- a curated uuid pins the action id (published corpora reference
+-- it); otherwise the deterministic sha of the final name
+registryOpUuid :: Text -> Text -> Text -> OpMeta -> Text
+registryOpUuid appName synName methName om =
+    fromMaybe (uuidFromSeed ("dhall-do-connector|" <> appName <> "|" <> finalOpName synName methName om)) (omUuid om)
 
-    -- a deterministic 32-hex identity for the seed, laid out as a UUID
-    asUuid seed =
-      let hexed = T.pack (concatMap byteHex (BSS.unpack (SHA256.hash (TE.encodeUtf8 seed))))
-          h a b = TQ.take b (TQ.drop a hexed)
-      in TQ.intercalate "-" [h 0 8, h 8 4, h 12 4, h 16 4, h 20 12]
-    byteHex b = let d k = "0123456789abcdef" !! fromIntegral k in [d (b `div` 16), d (b `mod` 16)]
+-- a deterministic 32-hex identity for the seed, laid out as a UUID
+uuidFromSeed :: Text -> Text
+uuidFromSeed seed =
+    let hexed = T.pack (concatMap byteHex (BSS.unpack (SHA256.hash (TE.encodeUtf8 seed))))
+        h a b = TQ.take b (TQ.drop a hexed)
+    in TQ.intercalate "-" [h 0 8, h 8 4, h 12 4, h 16 4, h 20 12]
+  where byteHex b = let d k = "0123456789abcdef" !! fromIntegral k in [d (b `div` 16), d (b `mod` 16)]
 
-    escape = TQ.replace "\"" "'" . TQ.replace "\\" "/"
+registryEscape :: Text -> Text
+registryEscape = TQ.replace "\"" "'" . TQ.replace "\\" "/"
+
+-- | A declaration as source text (the modular layout writes module
+-- headers itself and renders each declaration).
+renderDecl :: HsDecl' -> Text
+renderDecl d = T.pack (renderWithContext defaultSDocContext (ppr d))
 
 -- Written directly rather than shelled out to @cabal init@: init's
 -- @--overwrite@ moves an existing src/ aside, clobbering the modules
@@ -960,9 +1129,11 @@ ppExtension e = "{-# LANGUAGE " <> show e <> " #-}\n"
 createModelData ::
     (MonadState ModelGenState m) =>
     Maybe OpenApiType -> Definitions Schema -> (Text,Schema) -> m ([ChildType],[Instance])
+createModelData (Just OpenApiObject) _ (dName,dSchema)
+  | HMO.null (_schemaProperties dSchema) = opaqueComponent dName "an object with no properties"
 createModelData (Just OpenApiObject) compSchemas (dName,dSchema) = do
     let reqParams =  _schemaRequired dSchema
-    unseenVar <- mkUnseenVar (upperFirstChar dName)
+    unseenVar <- componentDeclName dName
     dataTypeInfoList <- mapM (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams) True (Just JSON) compSchemas)  (HMO.toList . _schemaProperties $ dSchema)
     let (rFields,childTypes,childInsts) = unzip3 $ (\(DataTypeInfo a b c d) -> ((a,b),c,d)) <$> dataTypeInfoList
     ModelGenState { keywordsToAvoid } <- get
@@ -977,56 +1148,104 @@ createModelData (Just OpenApiObject) compSchemas (dName,dSchema) = do
                    tj <- createToJsonInstancesRecord unseenVar dSchema
                    return [fj, tj]
     return ( Prelude.concat childTypes ++
-             [ChildType $ data' (textToOccNameStr unseenVar) [] [recordCon (textToOccNameStr unseenVar) frFields] stdDeriving]
+             [dataCT unseenVar $ data' (textToOccNameStr unseenVar) [] [recordCon (textToOccNameStr unseenVar) frFields] stdDeriving]
            , Prelude.concat childInsts ++ ownInsts )
 createModelData Nothing compSchemas (dName,dSchema) =
     case _schemaOneOf dSchema of
-        Nothing -> error "Unexpected Schema type"
-        Just [] -> error "Bad OneOf Specification"
-        Just [_x] -> error "Bad OneOf Specification"
-        Just x -> do
+        Just x@(_ : _ : _) -> do
             DataTypeInfo {child_types, child_instances} <- mkSumType dName True x True True (Just JSON) compSchemas
             return (child_types, child_instances)
+        Just [_] -> legacyOr (error "Bad OneOf Specification") (opaqueComponent dName "a oneOf of one")
+        Just [] -> legacyOr (error "Bad OneOf Specification") (opaqueComponent dName "an empty oneOf")
+        Nothing
+          | not (HMO.null (_schemaProperties dSchema)) ->
+              createModelData (Just OpenApiObject) compSchemas (dName,dSchema)
+          | otherwise -> legacyOr (error "Unexpected Schema type") (opaqueComponent dName "no type")
 createModelData (Just OpenApiArray) compSchemas (dName,dSchema) =
     case _schemaItems dSchema of
-        Nothing -> error "No _schemaItems value for Array"
-        Just (OpenApiItemsArray _) -> error "OpenApiItemsArray Array type"
         Just (OpenApiItemsObject sch) -> do
-            unseenVar <- mkUnseenVar (upperFirstChar dName)
+            unseenVar <- componentDeclName dName
             let occUnseenVar = textToOccNameStr unseenVar
             DataTypeInfo {typ,child_types,child_instances} <- parseRecordFields (dName,sch) True True (Just JSON) compSchemas
             let toptype = type' occUnseenVar [] (var "Vector" @@ typ)
-            return (ChildType toptype:child_types, child_instances)
+            return (synCT unseenVar toptype:child_types, child_instances)
+        Nothing -> legacyOr (error "No _schemaItems value for Array") (opaqueArrayComponent dName "an array with no items")
+        Just (OpenApiItemsArray _) -> legacyOr (error "OpenApiItemsArray Array type") (opaqueArrayComponent dName "a tuple array")
 
 createModelData (Just OpenApiString) _ (dName,dSchema)
-    | Just vals@(_ : _) <- _schemaEnum dSchema = do
-        ModelGenState { enumsAsSums, enumSums } <- get
+    | Just vals@(_ : _) <- _schemaEnum dSchema, all isStringValue vals = do
+        ModelGenState { enumsAsSums, enumSums, modular = isModular } <- get
         if not enumsAsSums
         then do
-          unseenVar <- mkUnseenVar (upperFirstChar dName)
-          return (mkTopLevelBaseType "Text" (textToOccNameStr unseenVar), [])
+          unseenVar <- componentDeclName dName
+          return (mkTopLevelBaseType "Text" unseenVar, [])
+        else if isModular
+        then do
+          -- the enum is interned by value set (shared across modules, so it
+          -- lands in the common module); the component is a synonym for it
+          declName <- componentDeclName dName
+          DataTypeInfo {typ, child_types, child_instances} <-
+            mkEnumType (T.append declName "E") dName vals True True
+          return (synCT declName (type' (textToOccNameStr declName) [] typ) : child_types, child_instances)
         else case HMQ.lookup (enumKey vals) enumSums of
           -- the set is already a type under another name: alias to it
           Just existing -> do
             unseenVar <- mkUnseenVar (upperFirstChar dName)
-            return (mkTopLevelBaseType existing (textToOccNameStr unseenVar), [])
+            return (mkTopLevelBaseType existing unseenVar, [])
           Nothing -> do
             DataTypeInfo {child_types, child_instances} <-
               mkEnumType (upperFirstChar dName) dName vals True True
             return (child_types, child_instances)
+createModelData (Just OpenApiNull) _ (dName,_) =
+    legacyOr (error "Top Level Schema Type: Null") (opaqueComponent dName "the null type")
 createModelData (Just a) _ (dName,dSchema) = do
-    unseenVar <- mkUnseenVar (upperFirstChar dName)
-    let occUnseenVar = textToOccNameStr unseenVar
-    return (mkTopLevelBaseType (findTopType a) occUnseenVar, [])
-    where findTopType OpenApiString = "Text"
-          findTopType OpenApiNumber = "Double"
-          findTopType OpenApiInteger = parseIntegerFld (_schemaFormat dSchema)
-          findTopType OpenApiBoolean = "Bool"
-          findTopType OpenApiNull = error "Top Level Schema Type: Null"
+    unseenVar <- componentDeclName dName
+    topType <- findTopType a
+    return (mkTopLevelBaseType topType unseenVar, [])
+    where findTopType OpenApiString = pure "Text"
+          findTopType OpenApiNumber = pure "Double"
+          findTopType OpenApiInteger = integerType dName (_schemaFormat dSchema)
+          findTopType OpenApiBoolean = pure "Bool"
           findTopType _ = error "Top Level Schema : Invalid State"
 
-mkTopLevelBaseType :: Text -> OccNameStr -> [ChildType]
-mkTopLevelBaseType x occ = [ChildType $ type' occ []  (var $ textToRdrNameStr x)]
+-- | The legacy layout's behaviour, or the modular layout's.
+legacyOr :: MonadState ModelGenState m => m a -> m a -> m a
+legacyOr legacy modern = do
+    ModelGenState { modular = isModular } <- get
+    if isModular then modern else legacy
+
+-- | A component the generator cannot type: the JSON it carries, kept whole.
+opaqueComponent :: MonadState ModelGenState m => Text -> Text -> m ([ChildType],[Instance])
+opaqueComponent dName why = do
+    n <- componentDeclName dName
+    warn ("component " <> dName <> ": " <> why <> "; typed as Opaque")
+    return (mkTopLevelBaseType "Opaque" n, [])
+
+opaqueArrayComponent :: MonadState ModelGenState m => Text -> Text -> m ([ChildType],[Instance])
+opaqueArrayComponent dName why = do
+    n <- componentDeclName dName
+    warn ("component " <> dName <> ": " <> why <> "; typed as Vector Opaque")
+    return ([synCT n (type' (textToOccNameStr n) [] (var "Vector" @@ var "Opaque"))], [])
+
+isStringValue :: Value -> Bool
+isStringValue = \case
+    String _ -> True
+    _ -> False
+
+-- | An integer format as its Haskell type; an unknown format is Int.
+integerType :: MonadState ModelGenState m => Text -> Maybe Text -> m Text
+integerType ctx fmt = do
+    ModelGenState { modular = isModular } <- get
+    case fmt of
+      Just x | T.take 3 (upperFirstChar x) == "Int" -> pure (upperFirstChar x)
+             | isModular -> do
+                 warn (ctx <> ": integer format " <> x <> " is not intN; typed as Int")
+                 pure "Int"
+             | otherwise -> error "Invalid Integer Format"
+      Nothing -> pure "Int"
+
+mkTopLevelBaseType :: Text -> Text -> [ChildType]
+mkTopLevelBaseType x n = [synCT n $ type' (textToOccNameStr n) []  (var $ textToRdrNameStr x)]
 
 avoidKeywords :: Text -> Set Text -> Text
 avoidKeywords x keywordsToAvoid = if member x keywordsToAvoid
@@ -1047,7 +1266,8 @@ parseRecordFields ::
 -- inline child DECLS while registering their names, losing the decl for
 -- good (found by the M10 relocation). So a Ref is only ever a name.
 parseRecordFields (dName,Ref (Reference x)) isReq _generateInstance _instanceType _compSchemas = do
-    let sName = removeUnsupportedSymbols . upperFirstChar $ x
+    st <- get
+    let sName = refName st x
     return $ DataTypeInfo dName (createHsType isReq sName) [] []
 parseRecordFields (dName,Inline dSchema) isReq generateInstance instanceType compSchemas =
     parseInlineFields (_schemaType dSchema) dName dSchema isReq generateInstance instanceType compSchemas
@@ -1100,7 +1320,7 @@ createFromJsonInstancesRecord dName schemaVal compSchemas = do
                                                   "$"
                                                   (lambda [conP_ "v"] fromjsonExpr)
                                               )]
-    return $ Instance fromjsonInst
+    return $ Instance dName fromjsonInst
 
 createFromJsonFieldExpr ::
     (MonadState ModelGenState m) =>
@@ -1110,11 +1330,12 @@ createFromJsonFieldExpr ::
     [(Text,Referenced Schema)] ->
     m HsExpr'
 createFromJsonFieldExpr compSchemas dName reqParams schemaProps = do
-    ModelGenState {keywordsToAvoid} <- get
+    ModelGenState {keywordsToAvoid, modular = isModular} <- get
     let _unused = keywordsToAvoid
         -- the JSON key is the wire name, verbatim; sanitizing is only
-        -- for the Haskell field/constructor side
-        fieldExpr (x,y) = if _schemaType (refValToVal compSchemas y) == Just OpenApiArray && notElem x reqParams
+        -- for the Haskell field/constructor side. Legacy reads an absent
+        -- array as empty; modular reads every optional field as Maybe.
+        fieldExpr (x,y) = if not isModular && _schemaType (refValToVal compSchemas y) == Just OpenApiArray && notElem x reqParams
                                then op (op (var "v")
                                            (findSeparatorSymbol False)
                                            (string . T.unpack $ x))
@@ -1136,7 +1357,11 @@ createToJsonInstancesRecord ::
     Schema ->
     m Instance
 createToJsonInstancesRecord schemaName schemaVal = do
-    ModelGenState {keywordsToAvoid} <- get
+    ModelGenState {keywordsToAvoid, modular = isModular} <- get
+    pure (if isModular then modularToJson schemaName schemaVal else legacyToJson keywordsToAvoid schemaName schemaVal)
+
+legacyToJson :: Set Text -> Text -> Schema -> Instance
+legacyToJson keywordsToAvoid schemaName schemaVal =
     let schemaProperties = HMO.toList . _schemaProperties $ schemaVal
         -- pattern variables are the sanitized field names; the JSON key
         -- stays the wire name
@@ -1144,9 +1369,26 @@ createToJsonInstancesRecord schemaName schemaVal = do
         wireFields = fst <$> schemaProperties
         rFieldList = bvar . textToOccNameStr . sanitize <$> wireFields
         associationList = list $ (\x -> op (string . T.unpack $ x) ".=" (var . textToRdrNameStr . sanitize $ x)) <$> wireFields
-    let toJsonInst = instance' (var "ToJSON" @@ var (textToRdrNameStr schemaName))
+        toJsonInst = instance' (var "ToJSON" @@ var (textToRdrNameStr schemaName))
                                [funBind "toJSON" (match [conP (textToRdrNameStr schemaName) rFieldList] (var "object" @@ associationList) ) ]
-    return $ Instance toJsonInst
+    in Instance schemaName toJsonInst
+
+-- | The modular layout's ToJSON: an absent optional field is left out of
+-- the object (not sent as null), so an update touches only what it names;
+-- pattern variables are positional, so a field called @object@ cannot
+-- shadow the function that builds the object.
+modularToJson :: Text -> Schema -> Instance
+modularToJson schemaName schemaVal =
+    Instance schemaName $
+      instance' (var "ToJSON" @@ var (textToRdrNameStr schemaName))
+        [funBind "toJSON" (match [conP (textToRdrNameStr schemaName) (bvar . fromString . fst <$> vars)]
+                                 (var "object" @@ (var "catMaybes" @@ list (pair <$> vars))))]
+    where props = fst <$> HMO.toList (_schemaProperties schemaVal)
+          reqs = _schemaRequired schemaVal
+          vars = [ ("v" <> show i, p) | (i, p) <- zip [1 :: Int ..] props ]
+          pair (v, p)
+            | p `elem` reqs = var "Just" @@ op (string (T.unpack p)) ".=" (var (fromString v))
+            | otherwise = var "fmap" @@ lambda [bvar "x"] (op (string (T.unpack p)) ".=" (var "x")) @@ var (fromString v)
 
 createHsType :: Bool -> Text -> HsType'
 createHsType isReq x =
@@ -1170,25 +1412,36 @@ parseInlineFields (Just OpenApiString) dName dSchema isReq generateInstance inst
     case _schemaEnum dSchema of
       -- sums only in JSON contexts: param records keep Text (their
       -- Encode/DecodeParam story is a documented cut line)
-      Just vals@(_ : _) | enumsAsSums && instanceType == Just JSON ->
+      Just vals@(_ : _) | enumsAsSums && instanceType == Just JSON && all isStringValue vals ->
         mkEnumType (T.append (upperFirstChar dName) "E") dName vals isReq generateInstance
       _ -> return $ DataTypeInfo dName (createHsType isReq "Text") [] []
 parseInlineFields (Just OpenApiNumber ) dName _dSchema isReq _ _ _=
     return $ DataTypeInfo dName (createHsType isReq "Double") [] []
-parseInlineFields (Just OpenApiInteger) dName dSchema isReq _ _ _=
+parseInlineFields (Just OpenApiInteger) dName dSchema isReq _ _ _= do
+    parsedInt <- integerType dName (_schemaFormat dSchema)
     return $ DataTypeInfo dName (createHsType isReq parsedInt) [] []
-    where parsedInt = parseIntegerFld (_schemaFormat dSchema)
 parseInlineFields (Just OpenApiBoolean) dName _dSchema isReq _ _ _=
     return $ DataTypeInfo dName (createHsType isReq "Bool") [] []
-parseInlineFields (Just OpenApiArray ) dName dSchema _isReq generateInstance instanceType compSchemas=
+parseInlineFields (Just OpenApiArray ) dName dSchema isReq generateInstance instanceType compSchemas = do
+    ModelGenState { modular = isModular } <- get
+    -- legacy: an array is never Maybe (absent reads as empty); modular: an
+    -- optional array is Maybe, so an update can leave a list alone rather
+    -- than send [] and clear it
+    let wrap t = if isModular && not isReq then var "Maybe" @@ t else t
     case _schemaItems dSchema of
-        Nothing -> error "No _schemaItems value for Array"
         Just (OpenApiItemsObject sch) -> do
             DataTypeInfo {..} <- parseRecordFields (dName,sch) True generateInstance instanceType compSchemas
-            return $ DataTypeInfo pName (var "Vector" @@ typ) child_types child_instances
-        Just (OpenApiItemsArray _) -> error "OpenApiItemsArray Array type"
-parseInlineFields (Just OpenApiNull ) _dName _dSchema _isReq _ _ _=
-    error "Null OpenApi Type"
+            return $ DataTypeInfo pName (wrap (var "Vector" @@ typ)) child_types child_instances
+        Nothing -> legacyOr (error "No _schemaItems value for Array") (opaqueField wrap "an array with no items")
+        Just (OpenApiItemsArray _) -> legacyOr (error "OpenApiItemsArray Array type") (opaqueField wrap "a tuple array")
+    where opaqueField wrap why = do
+            warn (dName <> ": " <> why <> "; typed as Vector Opaque")
+            return $ DataTypeInfo dName (wrap (var "Vector" @@ var "Opaque")) [] []
+parseInlineFields (Just OpenApiNull ) dName _dSchema isReq _ _ _=
+    legacyOr (error "Null OpenApi Type") $ do
+      warn (dName <> ": the null type; typed as Opaque")
+      return $ DataTypeInfo dName (createHsType isReq "Opaque") [] []
+
 -- An inline object becomes a named record rather than an anonymous
 -- @Rec@: the Dhall bridge's generic walks (and webapi's param codecs)
 -- work over nominal 'Generic' records. The name is a pure function of
@@ -1196,46 +1449,55 @@ parseInlineFields (Just OpenApiNull ) _dName _dSchema _isReq _ _ _=
 -- agree on it without sharing state, and NetSuite's ubiquitous
 -- @{id, refName}@ reference idiom collapses to one shared type.
 parseInlineFields (Just OpenApiObject ) dName dSchema isReq generateInstance instanceType compSchemas = do
-    dataTypeInfoList <- mapM (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams) generateInstance instanceType compSchemas) (HMO.toList . _schemaProperties $ dSchema)
-    let (childInlines,childTypes,childInstances) = unzip3 $ (\(DataTypeInfo a b c d) -> ((a,b),c,d)) <$> dataTypeInfoList
-        baseName = T.append "NsObj" (T.concat (upperFirstChar . removeUnsupportedSymbols . fst <$> childInlines))
-        -- the SHAPE, not just the field names: two {refName,id} objects
-        -- whose id fields carry different enums are different types —
-        -- the old names-only key silently aliased them (first won)
-        shape = [ (fn, renderHsType ft) | (fn, ft) <- childInlines ]
-    -- seenVars BEFORE interning: a freshly minted variant name is put
-    -- into seenVars by mkUnseenVar itself, and must still get its decl
-    ModelGenState { seenVars = seenBefore } <- get
-    (vName, isNewName) <- internInlineShape baseName shape
-    let objType = var (textToRdrNameStr vName)
-    ModelGenState { keywordsToAvoid } <- get
-    let mkFld (x,y) = (textToOccNameStr (avoidKeywords (removeUnsupportedSymbols (lowerFirstChar x)) keywordsToAvoid), field y)
-        objDecl = ChildType $ data' (textToOccNameStr vName) [] [recordCon (textToOccNameStr vName) (mkFld <$> childInlines)] stdDeriving
-        newDecls = if isNewName && not (member vName seenBefore) then [objDecl] else []
-    modify (updateSeenVars vName)
-    modify (\st -> st { inlineRecords = S.insert vName (inlineRecords st) })
-    jsonInsts <- if generateInstance
-                 then do
-                    ModelGenState { jsonInstances } <- get
-                    if member vName jsonInstances
-                    then return []
-                    else do
-                       modify (updateJsonInstances vName)
-                       fj <- createFromJsonInstancesRecord vName dSchema compSchemas
-                       tj <- createToJsonInstancesRecord vName dSchema
-                       return [fj, tj]
-                 else return []
-    return $ DataTypeInfo dName
-                          (if isReq then objType else var "Maybe" @@ objType)
-                          (Prelude.concat childTypes ++ newDecls)
-                          (Prelude.concat childInstances ++ jsonInsts)
-    where reqParams =  _schemaRequired dSchema
+  ModelGenState { modular = isModular } <- get
+  if isModular && HMO.null (_schemaProperties dSchema)
+  then do
+    warn (dName <> ": an object with no properties; typed as Opaque")
+    return $ DataTypeInfo dName (createHsType isReq "Opaque") [] []
+  else do
+      dataTypeInfoList <- mapM (\(x,y) -> parseRecordFields (x,y) (x `elem` reqParams) generateInstance instanceType compSchemas) (HMO.toList . _schemaProperties $ dSchema)
+      let (childInlines,childTypes,childInstances) = unzip3 $ (\(DataTypeInfo a b c d) -> ((a,b),c,d)) <$> dataTypeInfoList
+      ModelGenState { inlinePrefix = objPrefix } <- get
+      let baseName = T.append objPrefix (T.concat (upperFirstChar . removeUnsupportedSymbols . fst <$> childInlines))
+          -- the SHAPE, not just the field names: two {refName,id} objects
+          -- whose id fields carry different enums are different types —
+          -- the old names-only key silently aliased them (first won)
+          shape = [ (fn, renderHsType ft) | (fn, ft) <- childInlines ]
+      -- seenVars BEFORE interning: a freshly minted variant name is put
+      -- into seenVars by mkUnseenVar itself, and must still get its decl
+      ModelGenState { seenVars = seenBefore } <- get
+      (vName, isNewName) <- internInlineShape baseName shape
+      let objType = var (textToRdrNameStr vName)
+      ModelGenState { keywordsToAvoid } <- get
+      let mkFld (x,y) = (textToOccNameStr (avoidKeywords (removeUnsupportedSymbols (lowerFirstChar x)) keywordsToAvoid), field y)
+          objDecl = dataCT vName $ data' (textToOccNameStr vName) [] [recordCon (textToOccNameStr vName) (mkFld <$> childInlines)] stdDeriving
+          newDecls = if isNewName && not (member vName seenBefore) then [objDecl] else []
+      modify (updateSeenVars vName)
+      modify (\st -> st { inlineRecords = S.insert vName (inlineRecords st) })
+      jsonInsts <- if generateInstance
+                   then do
+                      ModelGenState { jsonInstances } <- get
+                      if member vName jsonInstances
+                      then return []
+                      else do
+                         modify (updateJsonInstances vName)
+                         fj <- createFromJsonInstancesRecord vName dSchema compSchemas
+                         tj <- createToJsonInstancesRecord vName dSchema
+                         return [fj, tj]
+                   else return []
+      return $ DataTypeInfo dName
+                            (if isReq then objType else var "Maybe" @@ objType)
+                            (Prelude.concat childTypes ++ newDecls)
+                            (Prelude.concat childInstances ++ jsonInsts)
+  where reqParams =  _schemaRequired dSchema
 
 
 parseInlineFields Nothing dName dSchema isReq generateInstance instanceType compSchemas=
     case _schemaOneOf dSchema of
         Nothing -> if Prelude.null (_schemaProperties dSchema)
-                   then error "Unexpected Schema type"
+                   then legacyOr (error "Unexpected Schema type") $ do
+                          warn (dName <> ": no type; typed as Opaque")
+                          return $ DataTypeInfo dName (createHsType isReq "Opaque") [] []
                    else parseInlineFields (Just OpenApiObject) dName dSchema isReq generateInstance instanceType compSchemas
         Just x -> mkSumType dName isReq x False generateInstance instanceType compSchemas
 
@@ -1244,8 +1506,11 @@ parseInlineFields Nothing dName dSchema isReq generateInstance instanceType comp
 internInlineShape ::
     (MonadState ModelGenState m) => Text -> [(Text, Text)] -> m (Text, Bool)
 internInlineShape baseName shape = do
-    ModelGenState { inlineShapes = shapeTbl } <- get
-    let entries = fromMaybe [] (HMQ.lookup baseName shapeTbl)
+    ModelGenState { inlineShapes = shapeTbl, modular = isModular, curModule = m } <- get
+    -- modular: a shape is shared within its module only, so no module
+    -- depends on a sibling for an inline record
+    let key = if isModular then T.concat [m, "/", baseName] else baseName
+        entries = fromMaybe [] (HMQ.lookup key shapeTbl)
     case Prelude.lookup shape entries of
       Just name -> return (name, False)
       Nothing -> do
@@ -1253,7 +1518,7 @@ internInlineShape baseName shape = do
                 then return baseName
                 else mkUnseenVar (T.append baseName "V")
         modify (\st -> st { inlineShapes =
-          HMQ.insertWith (++) baseName [(shape, name)] (inlineShapes st) })
+          HMQ.insertWith (++) key [(shape, name)] (inlineShapes st) })
         return (name, True)
 
 mkSumType ::
@@ -1282,7 +1547,7 @@ mkSumType dName isReq x isTopLevel generateInstance instanceType compSchemas = d
             if isReg
             then return $ DataTypeInfo dName (createHsType isReq vName) [] encodeDecodeInstances
             else do
-                let oneOfTyp = ChildType $ data' (textToOccNameStr vName) [] ((\(a,b) -> prefixCon (textToOccNameStr a) [field b]) <$> typList) stdDeriving
+                let oneOfTyp = dataCT vName $ data' (textToOccNameStr vName) [] ((\(a,b) -> prefixCon (textToOccNameStr a) [field b]) <$> typList) stdDeriving
                 return $ DataTypeInfo dName
                                       (createHsType isReq vName)
                                       (oneOfTyp : Prelude.concat childTypes)
@@ -1305,7 +1570,6 @@ createInstancesSumType (Just JSON) tName consList = do
     then return []
     else do
         modify (updateJsonInstances tName)
-        when (tName == "ItemSumType") $ trace "ItemType" (return ())
         let fromJsonInst = createFromJsonInstanceSumType tName consList
             toJsonInst = createToJsonInstanceSumType tName consList
         return [fromJsonInst,toJsonInst]
@@ -1315,7 +1579,7 @@ createFromJsonInstanceSumType ::
     Text ->
     [Text] ->
     Instance
-createFromJsonInstanceSumType tName consList = Instance $
+createFromJsonInstanceSumType tName consList = Instance tName $
     instance' (var "FromJSON" @@ var (textToRdrNameStr tName))
               [funBind "parseJSON" $ match [bvar "v"] fieldInfo]
     where fieldInfo = foldl1 (`op` "<|>") $ (\x -> op (var (textToRdrNameStr x)) "<$>" (var "parseJSON" @@ var "v")) <$> consList
@@ -1325,7 +1589,7 @@ createToJsonInstanceSumType ::
     Text ->
     [Text] ->
     Instance
-createToJsonInstanceSumType tName consList = Instance $
+createToJsonInstanceSumType tName consList = Instance tName $
     instance' (var "ToJSON" @@ var (textToRdrNameStr tName))
               [funBinds "toJSON" matchList]
     where matchList = (`match` (var "toJSON" @@ var "x")) . (\x -> [conP x [bvar "x"]]) . textToRdrNameStr <$> consList
@@ -1394,7 +1658,7 @@ mkEnumType nameHint dName vals isReq generateInstance = do
         tyName <- mkUnseenVar nameHint
         modify (\st -> st { enumSums = HMQ.insert key tyName (enumSums st)
                           , enumTypes = S.insert tyName (enumTypes st) })
-        let decl = ChildType (data' (textToOccNameStr tyName) []
+        let decl = dataCT tyName (data' (textToOccNameStr tyName) []
                      [ prefixCon (textToOccNameStr c) [] | (c, _) <- enumCtors tyName key ]
                      stdDeriving)
         insts <- emitEnumInstancesOnce tyName key generateInstance
@@ -1427,11 +1691,11 @@ emitEnumInstancesOnce tyName key generateInstance = do
     else do
       modify (updateJsonInstances tyName)
       let pairs = enumCtors tyName key
-          toJ = Instance (instance' (var "ToJSON" @@ var (textToRdrNameStr tyName))
+          toJ = Instance tyName (instance' (var "ToJSON" @@ var (textToRdrNameStr tyName))
                   [funBinds "toJSON"
                      [ match [conP (textToRdrNameStr c) []] (var "String" @@ string (T.unpack w))
                      | (c, w) <- pairs ]])
-          fromJ = Instance (instance' (var "FromJSON" @@ var (textToRdrNameStr tyName))
+          fromJ = Instance tyName (instance' (var "FromJSON" @@ var (textToRdrNameStr tyName))
                   [valBind "parseJSON"
                      (op (var "withText" @@ string (T.unpack tyName)) "$"
                         (lambda [conP_ "t"]

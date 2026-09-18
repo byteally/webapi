@@ -1,0 +1,47 @@
+{
+  "GET /currency": {
+    "name": "listCurrencies",
+    "uuid": "0d1e2f30-1111-4a01-8001-000000000001",
+    "summary": "the currencies as NetSuite lists them"
+  },
+  "GET /currency/{id}": {
+    "name": "getCurrency",
+    "uuid": "0d1e2f30-1111-4a01-8001-000000000002",
+    "summary": "one currency by internal id (request.path)"
+  },
+  "POST /currency": {
+    "name": "postCurrency",
+    "uuid": "0d1e2f30-1111-4a01-8001-000000000003",
+    "summary": "insert a currency (the body names it)",
+    "defaults": {
+      "body": {
+        "links": "mempty :: Vector NsLink"
+      }
+    }
+  },
+  "PUT /currency/{id}": {
+    "name": "putCurrency",
+    "uuid": "0d1e2f30-1111-4a01-8001-000000000004",
+    "summary": "upsert a currency by external id (request.path)",
+    "defaults": {
+      "body": {
+        "links": "mempty :: Vector NsLink"
+      }
+    }
+  },
+  "PATCH /currency/{id}": {
+    "name": "patchCurrency",
+    "uuid": "0d1e2f30-1111-4a01-8001-000000000005",
+    "summary": "update a currency by internal id (request.path)",
+    "defaults": {
+      "body": {
+        "links": "mempty :: Vector NsLink"
+      }
+    }
+  },
+  "DELETE /currency/{id}": {
+    "name": "deleteCurrency",
+    "uuid": "0d1e2f30-1111-4a01-8001-000000000006",
+    "summary": "remove a currency by internal id (request.path)"
+  }
+}
