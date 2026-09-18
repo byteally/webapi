@@ -269,6 +269,67 @@ generateModular cfg@GenConfig {..} = do
       quoted t = "\"" <> t <> "\""
       hsList xs = "[" <> T.intercalate ", " xs <> "]"
 
+  -- request refinements from what the document declares about a field:
+  -- maxLength, minLength, an allowed-value list (x-zb-allowed, or a query
+  -- parameter's enum, which stays Text). Top-level fields of the body and
+  -- query parts; an optional field is held only when present.
+  let compOfType = HM.fromList [ (hs, c) | (c, hs) <- HM.toList names ]
+      fieldHs f = avoidKeywords (removeUnsupportedSymbols (lowerFirstChar f)) (S.fromList haskellKeywords)
+      rawObj k v = case v of
+        Object o -> KM.lookup k o
+        _ -> Nothing
+      rawComps kind = case rawObj "components" raw >>= rawObj kind of
+        Just (Object o) -> o
+        _ -> KM.empty
+      rawSchemas = rawComps "schemas"
+      rawParams = rawComps "parameters"
+      follow depth v
+        | depth > (20 :: Int) = v
+        | Just (String r) <- rawObj "$ref" v = maybe v (follow (depth + 1)) (KM.lookup (K.fromText (T.takeWhileEnd (/= '/') r)) rawSchemas)
+        | otherwise = v
+      int k v = case rawObj k v of
+        Just (Number n) -> Just (round n :: Integer)
+        _ -> Nothing
+      texts k v = case rawObj k v of
+        Just (Array a) -> [ t | String t <- foldr (:) [] a ]
+        _ -> []
+      isText v = rawObj "type" v == Just (String "string")
+      consOf allowEnum v0 =
+        let v = follow 0 v0
+        in if not (isText v) then [] else
+             [ ("max-length", \x -> "Natural/lessThanEqual (Text/length " <> x <> ") " <> tshow n) | Just n <- [int "maxLength" v] ]
+               ++ [ ("min-length", \x -> "Natural/lessThanEqual " <> tshow n <> " (Text/length " <> x <> ")") | Just n <- [int "minLength" v], n > 0 ]
+               ++ [ ("allowed", \x -> T.intercalate " || " [ "Text/equal " <> x <> " " <> dhallText a | a <- as ])
+                  | let as = texts "x-zb-allowed" v ++ (if allowEnum then texts "enum" v else []), not (null as) ]
+      predicate optional body
+        | optional = "\\(o : Field) -> merge { None = True, Some = \\(v : Text) -> " <> body "v" <> " } o"
+        | otherwise = "\\(v : Field) -> " <> body "v"
+      bodyRefinements comp = case KM.lookup (K.fromText comp) rawSchemas of
+        Just sch ->
+          let req = texts "required" sch
+          in [ ("body", fieldHs f, kind, predicate (f `notElem` req) body)
+             | Just (Object props) <- [rawObj "properties" sch], (fk, node) <- KM.toList props, let f = K.toText fk
+             , (kind, body) <- consOf False node ]
+        Nothing -> []
+      queryRefinements opPath meth =
+        let item = rawObj "paths" raw >>= rawObj (K.fromText opPath)
+            params = [ p' | Just (Array a) <- [item >>= rawObj "parameters", item >>= rawObj (K.fromText (T.toLower meth)) >>= rawObj "parameters"]
+                          , p <- foldr (:) [] a
+                          , let p' = case rawObj "$ref" p of
+                                       Just (String r) -> fromMaybe p (KM.lookup (K.fromText (T.takeWhileEnd (/= '/') r)) rawParams)
+                                       _ -> p ]
+        in [ ("query", fieldHs n, kind, predicate (rawObj "required" p /= Just (Bool True)) body)
+           | p <- params, rawObj "in" p == Just (String "query")
+           , Just (String n) <- [rawObj "name" p], n `notElem` gcConnectionParams
+           , Just sch <- [rawObj "schema" p], (kind, body) <- consOf True sch ]
+      refinementsOf syn meth om b =
+        let opPath = T.drop (T.length meth + 1) (omKey om)
+            bodyComp = b >>= \x -> HM.lookup (unList (renderHsType x)) compOfType
+            rs = maybe [] bodyRefinements bodyComp ++ queryRefinements opPath meth
+        in [ "requestRefinementC (opIdOf \"" <> registryOpUuid gcApp syn meth om <> "\") " <> hsText part <> " " <> hsText fld
+               <> " " <> hsText (fld <> "-" <> kind) <> " " <> hsText src
+           | (part, fld, kind, src) <- rs ]
+
   -- where every declaration and instance goes
   let enums = enumTypes st2
       homeFor def ct = if ctName ct `S.member` enums then HModel commonM else def
@@ -321,8 +382,6 @@ generateModular cfg@GenConfig {..} = do
       -- the contact, so its fields (contact_id) are what a class records and
       -- a later step reads. Lists (a resource beside page_context) and bare
       -- acknowledgements ({code, message}) keep their envelope.
-      compOfType = HM.fromList [ (hs, c) | (c, hs) <- HM.toList names ]
-      fieldHs f = avoidKeywords (removeUnsupportedSymbols (lowerFirstChar f)) (S.fromList haskellKeywords)
       unwrapOf outT = do
         guard (not (null gcEnvelope))
         c <- HM.lookup outT compOfType
@@ -537,7 +596,10 @@ generateModular cfg@GenConfig {..} = do
           in case unwrapOf outT of
                Just (innerT, reader, _) -> registrationExprWith gcApp reader innerT (classFields n) (syn, meth, om)
                Nothing -> registrationExprWith gcApp "Right . getSuccessOut" outT (classFields n) (syn, meth, om)
-        regLines = [ "    " <> (if i == 0 then "  " else ". ") <> regOf op' | (i, op') <- zip [0 :: Int ..] ops ]
+        refLines = concat [ refinementsOf syn meth om b | (syn, ms) <- routeInfoOf m, (meth, (_h,_q,_c,b,_o,_e,_ho,om)) <- ms ]
+        -- a declaration is composed above what it names: refinements first
+        chain = refLines ++ map regOf ops
+        regLines = [ "    " <> (if i == 0 then "  " else ". ") <> l | (i, l) <- zip [0 :: Int ..] chain ]
     write (srcFile "registry" (opsMod m)) $ T.unlines $
       [ "{-# LANGUAGE DataKinds #-}"
       , "{-# LANGUAGE DisambiguateRecordFields #-}"
@@ -755,6 +817,27 @@ generateModular cfg@GenConfig {..} = do
       , "  overrideDefault = optionalOverrideDefault @Opaque"
       , ""
       ]
+
+tshow :: Show a => a -> Text
+tshow = T.pack . show
+
+-- | A Dhall text literal.
+dhallText :: Text -> Text
+dhallText t = "\"" <> T.concatMap esc t <> "\""
+  where esc = \case
+          '"' -> "\\\""
+          '\\' -> "\\\\"
+          '$' -> "\\u0024"
+          c -> T.singleton c
+
+-- | A Haskell string literal.
+hsText :: Text -> Text
+hsText t = "\"" <> T.concatMap esc t <> "\""
+  where esc = \case
+          '"' -> "\\\""
+          '\\' -> "\\\\"
+          '\n' -> "\\n"
+          c -> T.singleton c
 
 -- | A request body's type-level list, @'[T]@, as @T@.
 unList :: Text -> Text
