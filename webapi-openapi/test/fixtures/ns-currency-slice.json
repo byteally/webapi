@@ -1,0 +1,1060 @@
+{
+ "components": {
+  "schemas": {
+   "currency": {
+    "properties": {
+     "currencyPrecision": {
+      "description": "Displays the precision of the currency, which designates the number of digits to the right of the decimal point used in currency transactions. Precision can be zero or two. The level of decimal precision indicated is used for inventory costing calculations to maintains consistency between inventory costing and reporting. Values in report results are rounded to the base currency precision. This rounding applies to currency values and non-currency values, including formula column values. To change this read-only field to a dropdown list through which you can change the precision from zero or two, contact NetSuite Technical Support.",
+      "format": "int64",
+      "title": "Currency Precision",
+      "type": "integer"
+     },
+     "displaySymbol": {
+      "description": "Enter the currency symbol and text to use for this currency. Include spaces if you want to separate the symbol from the currency value. For example, $ USD or $CAD.",
+      "title": "Symbol",
+      "type": "string"
+     },
+     "exchangeRate": {
+      "description": "Enter an exchange rate for this currency against the base currency of this company, or if you use OneWorld, for this currency against the base currency of the root parent subsidiary. The exchange rate is equal to the base currency amount divided by the foreign currency amount. For example, if your company is located in Canada (base currency) and you are defining the U.S. dollar (foreign currency), and the current exchange rate is 1.02 Canadian dollars to 1.00 U.S. dollar, the Default Exchange Rate for the U.S. dollar is 1.02/1.00, or 1.02. This rate is the basis for rates in the Currency Exchange Rates table that are used in foreign currency transactions. If you use OneWorld, this rate also is the basis for rates in the Consolidated Exchange Rates table that are used in consolidated financials. For more information, see the help topic Currency Exchange Rates.",
+      "format": "double",
+      "title": "Default Exchange Rate",
+      "type": "number"
+     },
+     "externalId": {
+      "title": "External ID",
+      "type": "string"
+     },
+     "formatSample": {
+      "description": "This field displays a sample of how currency amounts display for the selected format. The decimal precision shown cannot be changed. Note: The decimal precision shown is the precision used for both inventory reporting and for costing calculations.",
+      "title": "Format Sample",
+      "type": "string"
+     },
+     "fxRateUpdateTimezone": {
+      "properties": {
+       "id": {
+        "enum": [
+         "1",
+         "2",
+         "3",
+         "4"
+        ],
+        "title": "Internal identifier",
+        "type": "string"
+       },
+       "refName": {
+        "title": "Reference Name",
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "id": {
+      "title": "Internal ID",
+      "type": "string"
+     },
+     "includeInFxRateUpdates": {
+      "description": "Check this box to update currency exchange rates daily.",
+      "title": "Automatic Update",
+      "type": "boolean"
+     },
+     "isAnchorCurrency": {
+      "description": "A check in this box indicates that the currency has been selected as an anchor currency in the accounting preferences. To clear the box, change the selection in the accounting preference under Use Triangulation Calculation by NetSuite. If this currency is a designated anchor currency and has been used in an exchange rate calculation, you cannot delete this currency. For more information about triangulation and anchor currencies, see the help topics Methods for Obtaining Exchange Rates andAnchor Currencies.",
+      "title": "Is Anchor Currency",
+      "type": "boolean"
+     },
+     "isBaseCurrency": {
+      "description": "Indicates that this currency is the company's base currency or in OneWorld accounts, the base currency for a subsidiary. Note: After you have entered transactions in foreign currencies, you cannot change a base currency.",
+      "title": "Is Base Currency",
+      "type": "boolean"
+     },
+     "isInactive": {
+      "description": "Check this box to make the currency record is inactive, or clear it to make the record active. You cannot make a currency inactive if any open transactions exist in that currency.",
+      "title": "Inactive",
+      "type": "boolean"
+     },
+     "lastModifiedDate": {
+      "format": "date-time",
+      "title": "Last Modified Date",
+      "type": "string"
+     },
+     "links": {
+      "items": {
+       "$ref": "#/components/schemas/nsLink"
+      },
+      "readOnly": true,
+      "title": "Links",
+      "type": "array"
+     },
+     "locale": {
+      "properties": {
+       "id": {
+        "enum": [
+         "it_CH",
+         "af_ZA",
+         "en_TC",
+         "es_EA",
+         "es_EC",
+         "pt_BR",
+         "en_CY",
+         "fr_LU",
+         "nl_AN",
+         "es_UY",
+         "en_TT",
+         "es_ES",
+         "pt_ST",
+         "en_DM",
+         "en_TZ",
+         "es_ES_EURO",
+         "fr_ML",
+         "de_DE_onLQA",
+         "es_VE",
+         "nl_BE",
+         "da_DK",
+         "pt_AO",
+         "to_TO",
+         "en_UG",
+         "am_ET",
+         "ss_SZ",
+         "nl_BQ",
+         "pt_AW",
+         "ar",
+         "ko_KR",
+         "en_US",
+         "ko_KP",
+         "fr_BE_EURO",
+         "si_AQ",
+         "fr_MG",
+         "el_GR",
+         "be_BY",
+         "en_AU",
+         "he_IL",
+         "en_AW",
+         "es_SV",
+         "en_BB",
+         "ar_YE",
+         "es_CO",
+         "es_CL",
+         "en_BM",
+         "pa_IN",
+         "en_SC",
+         "es_CR",
+         "en_BS",
+         "sm_WS",
+         "fr_KM",
+         "es_CU",
+         "en_SB",
+         "it_IT_EURO",
+         "en_SG",
+         "en_SH",
+         "en_BW",
+         "en_BZ",
+         "en_SL",
+         "az_AZ",
+         "fi_FI",
+         "en_SS",
+         "sr_YU",
+         "en_CD",
+         "ka_GE",
+         "en_CA",
+         "lv_LV",
+         "uk_UA",
+         "ur_PK",
+         "es_DO",
+         "ar_IQ",
+         "fr_LU_EURO",
+         "pt_PT",
+         "fr_FR_EURO",
+         "en_PH",
+         "th_TH",
+         "bn_BD",
+         "si_LK",
+         "en_PG",
+         "hu_HU",
+         "ar_SA",
+         "ar_SD",
+         "ru_KZ",
+         "ar_BH",
+         "nl_BE_EURO",
+         "ro_MD",
+         "en_QA",
+         "ru_KG",
+         "es_AR",
+         "ta_IN",
+         "sr_RS",
+         "aa_ER",
+         "en",
+         "de_DE_EURO",
+         "zh_MO",
+         "en_AE",
+         "ar_SY",
+         "es_BO",
+         "en_AI",
+         "no_NO",
+         "en_AG",
+         "nl_SR",
+         "fr_VU",
+         "en_MW",
+         "gu_AQ",
+         "ar_TN",
+         "nl_SX",
+         "hi_IN",
+         "en_NA",
+         "mn_MN",
+         "en_NG",
+         "fr_FR",
+         "ms_MY",
+         "nl_CW",
+         "uz_UZ",
+         "ar_DJ",
+         "sr_CS",
+         "de_AT_EURO",
+         "en_NZ",
+         "es_PE",
+         "es_PA",
+         "fa_IR",
+         "fr_GN",
+         "ar_DZ",
+         "lb_LU",
+         "pt_CV",
+         "sh_RS",
+         "xx_US",
+         "fr_WF",
+         "ht_HT",
+         "es_AR_onLQA",
+         "es_PR",
+         "ar_EG",
+         "es_PY",
+         "fr_GA",
+         "en_KW",
+         "de_AT",
+         "ro_RO",
+         "en_KY",
+         "fr_FR_onLQA",
+         "fr_DJ",
+         "ca_ES_EURO",
+         "cs_CZ",
+         "pl_AQ",
+         "en_LC",
+         "fr_TD",
+         "fr_TG",
+         "sv_AX",
+         "es_MX",
+         "sk_SK",
+         "en_LR",
+         "en_LS",
+         "ar_OM",
+         "dz_BT",
+         "te_IN",
+         "de_LU_EURO",
+         "sq_AL",
+         "sv_SE",
+         "sn_ZW",
+         "es_NI",
+         "my_MM",
+         "en_IE_EURO",
+         "en_MF",
+         "en_MU",
+         "it_IT",
+         "pl_PL",
+         "fr_BE",
+         "fr_BF",
+         "fr_BI",
+         "tr_TR",
+         "fr_BJ",
+         "id_ID",
+         "fr_RW",
+         "en_ZM",
+         "km_KH",
+         "ja_JP",
+         "fr_BL",
+         "de_DE",
+         "tg_TJ",
+         "ar_QA",
+         "de_CH",
+         "zh_HK",
+         "pt_PT_EURO",
+         "en_JO",
+         "en_JM",
+         "fr_CA",
+         "nl_NL_EURO",
+         "fr_CF",
+         "fr_CG",
+         "fr_CD",
+         "pa_AQ",
+         "xx_US_wthId",
+         "fr_CH",
+         "fr_CI",
+         "pt_GW",
+         "vi_VN",
+         "ru_MD",
+         "fr_CM",
+         "fr_SC",
+         "en_KE",
+         "bs_BA",
+         "ne_NP",
+         "sl_SI",
+         "en_KN",
+         "fr_SN",
+         "ar_AE",
+         "en_GY",
+         "tl_PH",
+         "es_IC",
+         "ca_ES",
+         "lo_LA",
+         "kn_IN",
+         "so_SO",
+         "fr_PF",
+         "ar_JO",
+         "nl_NL",
+         "is_IS",
+         "fi_FI_EURO",
+         "pt_MZ",
+         "sk_SK_EURO",
+         "sl_SI_EURO",
+         "ms_BN",
+         "en_IE",
+         "hr_HR",
+         "ar_KW",
+         "de_LU",
+         "lt_LT",
+         "en_IN",
+         "ps_AF",
+         "en_ZA",
+         "en_VC",
+         "ru_RU",
+         "sh_YU",
+         "ar_LB",
+         "mr_IN",
+         "dv_MV",
+         "fj_FJ",
+         "zh_TW",
+         "tk_TM",
+         "en_VU",
+         "ar_LY",
+         "fr_NE",
+         "en_FK",
+         "fr_NC",
+         "es_GT",
+         "es_GQ",
+         "fa_AF",
+         "bg_BG",
+         "hy_AM",
+         "en_CY_EURO",
+         "mk_MK",
+         "ar_MA",
+         "en_GD",
+         "en_GB",
+         "es_HN",
+         "gu_IN",
+         "en_GH",
+         "et_EE",
+         "en_GI",
+         "zh_CN",
+         "en_GM",
+         "ar_MR"
+        ],
+        "title": "Internal identifier",
+        "type": "string"
+       },
+       "refName": {
+        "title": "Reference Name",
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "name": {
+      "description": "Enter a unique name for the currency. Because many countries use the same name for their currencies, you should use a combined name that includes the country name or abbreviation as well as the name of the currency. For example, pesos are the currency in the Philippines, Uruguay, and Mexico. In the Name field, you might enter \u201cMexican peso.\u201d This name appears in the Currency field on records and transactions.",
+      "title": "Name",
+      "type": "string"
+     },
+     "overrideCurrencyFormat": {
+      "description": "Check this box to customize the currency format.",
+      "title": "Override Currency Format",
+      "type": "boolean"
+     },
+     "refName": {
+      "title": "Reference Name",
+      "type": "string"
+     },
+     "symbol": {
+      "description": "Enter the three-letter International Standards Organization (ISO) code for this currency. For example, you would use PHP for Philippines pesos, UYU for Uruguayan pesos, and MXN for Mexican pesos.",
+      "title": "ISO Code",
+      "type": "string"
+     },
+     "symbolPlacement": {
+      "properties": {
+       "id": {
+        "enum": [
+         "1",
+         "2"
+        ],
+        "title": "Internal identifier",
+        "type": "string"
+       },
+       "refName": {
+        "title": "Reference Name",
+        "type": "string"
+       }
+      },
+      "type": "object"
+     }
+    },
+    "type": "object"
+   },
+   "currencyCollection": {
+    "properties": {
+     "count": {
+      "format": "int64",
+      "readOnly": true,
+      "title": "Count",
+      "type": "integer"
+     },
+     "hasMore": {
+      "readOnly": true,
+      "title": "Has More Results",
+      "type": "boolean"
+     },
+     "items": {
+      "description": "An array field that represents a collection of elements, for example, sublist lines, multiselect items, or search results.",
+      "items": {
+       "$ref": "#/components/schemas/currency"
+      },
+      "title": "Items",
+      "type": "array"
+     },
+     "links": {
+      "items": {
+       "$ref": "#/components/schemas/nsLink"
+      },
+      "readOnly": true,
+      "title": "Links",
+      "type": "array"
+     },
+     "offset": {
+      "format": "int64",
+      "readOnly": true,
+      "title": "Query Offset",
+      "type": "integer"
+     },
+     "totalResults": {
+      "format": "int64",
+      "readOnly": true,
+      "title": "Total Results",
+      "type": "integer"
+     }
+    },
+    "type": "object"
+   },
+   "nsError": {
+    "properties": {
+     "o-errorDetails": {
+      "description": "An array containing one or more problem types.",
+      "items": {
+       "properties": {
+        "detail": {
+         "description": "A detailed, human-readable description of the problem occurrence.",
+         "readOnly": true,
+         "title": "Detail",
+         "type": "string"
+        },
+        "o-errorCode": {
+         "description": "The application-specific error code. Similar problem types are grouped together.",
+         "readOnly": true,
+         "title": "Error Code",
+         "type": "string"
+        },
+        "o-errorHeader": {
+         "description": "The name of the HTTP header where the problem occurs.",
+         "readOnly": true,
+         "title": "Error Header",
+         "type": "string"
+        },
+        "o-errorPath": {
+         "description": "The JSON path that indicates where the problem occurs within the request body.",
+         "format": "JSONPath",
+         "readOnly": true,
+         "title": "Error Path",
+         "type": "string"
+        },
+        "o-errorQueryParam": {
+         "description": "The name of the query parameter where the problem occurs.",
+         "readOnly": true,
+         "title": "Error Query Parameter",
+         "type": "string"
+        },
+        "o-errorUrl": {
+         "description": "The URI of the first element in the request URL where the problem occurs.",
+         "format": "URI",
+         "readOnly": true,
+         "title": "Error URL",
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "readOnly": true,
+      "type": "array"
+     },
+     "status": {
+      "description": "The HTTP status code generated by the server the request originates from.",
+      "format": "int32",
+      "readOnly": true,
+      "title": "Status",
+      "type": "integer"
+     },
+     "title": {
+      "description": "A human-readable description of the problem type.",
+      "readOnly": true,
+      "title": "Title",
+      "type": "string"
+     },
+     "type": {
+      "description": "A URI reference to the documentation about the problem type.",
+      "format": "URI",
+      "readOnly": true,
+      "title": "Type",
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "nsLink": {
+    "properties": {
+     "href": {
+      "readOnly": true,
+      "title": "Hypertext Reference",
+      "type": "string"
+     },
+     "rel": {
+      "readOnly": true,
+      "title": "Relationship",
+      "type": "string"
+     }
+    },
+    "type": "object"
+   }
+  }
+ },
+ "info": {
+  "description": "Reconstructed from Oracle's official REST API Browser (system.netsuite.com, Record API 2025.1).",
+  "title": "NetSuite",
+  "version": "2025.1"
+ },
+ "openapi": "3.0.3",
+ "paths": {
+  "/currency": {
+   "get": {
+    "operationId": "currency-get",
+    "parameters": [
+     {
+      "description": "The server behavior requested by the client. Use 'respond-async' to execute the request asynchronously. If the request is executed asynchronously, 'Preference-applied: respond-async' is returned in the response.",
+      "in": "header",
+      "name": "Prefer",
+      "schema": {
+       "enum": [
+        "respond-async"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "A user-defined unique idempotency key that is applied to every asynchronous requests to ensure that the request is executed only once. Only one request can be executed with every unique idempotency key. Use UUID in string format as defined by RFC 4122. If the request is executed synchronously, this value is ignored.",
+      "in": "header",
+      "name": "X-NetSuite-Idempotency-Key",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "The search query that is used to filter results.",
+      "in": "query",
+      "name": "q",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "The limit used to specify the number of results on a single page.",
+      "in": "query",
+      "name": "limit",
+      "schema": {
+       "format": "int32",
+       "type": "integer"
+      }
+     },
+     {
+      "description": "The offset used for selecting a specific page of results.",
+      "in": "query",
+      "name": "offset",
+      "schema": {
+       "format": "int32",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/currencyCollection"
+        }
+       }
+      },
+      "description": "List of records."
+     },
+     "default": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/nsError"
+        }
+       }
+      },
+      "description": "Error response."
+     }
+    },
+    "summary": "Get list of records.",
+    "tags": [
+     "currency"
+    ]
+   },
+   "post": {
+    "operationId": "currency-post",
+    "parameters": [
+     {
+      "description": "The server behavior requested by the client. Use 'respond-async' to execute the request asynchronously. If the request is executed asynchronously, 'Preference-applied: respond-async' is returned in the response.",
+      "in": "header",
+      "name": "Prefer",
+      "schema": {
+       "enum": [
+        "respond-async"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "A user-defined unique idempotency key that is applied to every asynchronous requests to ensure that the request is executed only once. Only one request can be executed with every unique idempotency key. Use UUID in string format as defined by RFC 4122. If the request is executed synchronously, this value is ignored.",
+      "in": "header",
+      "name": "X-NetSuite-Idempotency-Key",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "The names of sublists on this record. All sublist lines will be replaced with lines specified in the request. The names are delimited by comma.",
+      "in": "query",
+      "name": "replace",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Sets the strictness of property name validation.",
+      "in": "header",
+      "name": "X-NetSuite-PropertyNameValidation",
+      "schema": {
+       "enum": [
+        "Error",
+        "Warning",
+        "Ignore"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "Sets the strictness of property value validation.",
+      "in": "header",
+      "name": "X-NetSuite-PropertyValueValidation",
+      "schema": {
+       "enum": [
+        "Error",
+        "Warning",
+        "Ignore"
+       ],
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/currency"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "204": {
+      "description": "Inserted record."
+     },
+     "default": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/nsError"
+        }
+       }
+      },
+      "description": "Error response."
+     }
+    },
+    "summary": "Insert record.",
+    "tags": [
+     "currency"
+    ]
+   }
+  },
+  "/currency/{id}": {
+   "delete": {
+    "operationId": "currency-id-delete",
+    "parameters": [
+     {
+      "description": "The server behavior requested by the client. Use 'respond-async' to execute the request asynchronously. If the request is executed asynchronously, 'Preference-applied: respond-async' is returned in the response.",
+      "in": "header",
+      "name": "Prefer",
+      "schema": {
+       "enum": [
+        "respond-async"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "A user-defined unique idempotency key that is applied to every asynchronous requests to ensure that the request is executed only once. Only one request can be executed with every unique idempotency key. Use UUID in string format as defined by RFC 4122. If the request is executed synchronously, this value is ignored.",
+      "in": "header",
+      "name": "X-NetSuite-Idempotency-Key",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Internal identifier.",
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+       "format": "int32",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Removed record."
+     },
+     "default": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/nsError"
+        }
+       }
+      },
+      "description": "Error response."
+     }
+    },
+    "summary": "Remove record.",
+    "tags": [
+     "currency"
+    ]
+   },
+   "get": {
+    "operationId": "currency-id-get",
+    "parameters": [
+     {
+      "description": "The server behavior requested by the client. Use 'respond-async' to execute the request asynchronously. If the request is executed asynchronously, 'Preference-applied: respond-async' is returned in the response.",
+      "in": "header",
+      "name": "Prefer",
+      "schema": {
+       "enum": [
+        "respond-async"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "A user-defined unique idempotency key that is applied to every asynchronous requests to ensure that the request is executed only once. Only one request can be executed with every unique idempotency key. Use UUID in string format as defined by RFC 4122. If the request is executed synchronously, this value is ignored.",
+      "in": "header",
+      "name": "X-NetSuite-Idempotency-Key",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Internal identifier.",
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+       "format": "int32",
+       "type": "integer"
+      }
+     },
+     {
+      "description": "Set to 'true' to automatically expand all sublists, sublist lines, and subrecords on this record.",
+      "in": "query",
+      "name": "expandSubResources",
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     {
+      "description": "Set to true to return enumeration values in a format that only shows the internal ID value.",
+      "in": "query",
+      "name": "simpleEnumFormat",
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     {
+      "description": "The names of the fields and sublists on the record. Only the selected fields and sublists will be returned in the response.",
+      "in": "query",
+      "name": "fields",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/currency"
+        }
+       }
+      },
+      "description": "Retrieved record."
+     },
+     "default": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/nsError"
+        }
+       }
+      },
+      "description": "Error response."
+     }
+    },
+    "summary": "Get record.",
+    "tags": [
+     "currency"
+    ]
+   },
+   "patch": {
+    "operationId": "currency-id-patch",
+    "parameters": [
+     {
+      "description": "The server behavior requested by the client. Use 'respond-async' to execute the request asynchronously. If the request is executed asynchronously, 'Preference-applied: respond-async' is returned in the response.",
+      "in": "header",
+      "name": "Prefer",
+      "schema": {
+       "enum": [
+        "respond-async"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "A user-defined unique idempotency key that is applied to every asynchronous requests to ensure that the request is executed only once. Only one request can be executed with every unique idempotency key. Use UUID in string format as defined by RFC 4122. If the request is executed synchronously, this value is ignored.",
+      "in": "header",
+      "name": "X-NetSuite-Idempotency-Key",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Internal identifier.",
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+       "format": "int32",
+       "type": "integer"
+      }
+     },
+     {
+      "description": "Sets the strictness of property name validation.",
+      "in": "header",
+      "name": "X-NetSuite-PropertyNameValidation",
+      "schema": {
+       "enum": [
+        "Error",
+        "Warning",
+        "Ignore"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "Sets the strictness of property value validation.",
+      "in": "header",
+      "name": "X-NetSuite-PropertyValueValidation",
+      "schema": {
+       "enum": [
+        "Error",
+        "Warning",
+        "Ignore"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "The names of sublists on this record. All sublist lines will be replaced with lines specified in the request. The names are delimited by comma.",
+      "in": "query",
+      "name": "replace",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "If set to 'true', all fields that should be deleted in the update request, including body fields, must be included in the 'replace' query parameter.",
+      "in": "query",
+      "name": "replaceSelectedFields",
+      "schema": {
+       "type": "boolean"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/currency"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "204": {
+      "description": "Updated record."
+     },
+     "default": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/nsError"
+        }
+       }
+      },
+      "description": "Error response."
+     }
+    },
+    "summary": "Update record.",
+    "tags": [
+     "currency"
+    ]
+   },
+   "put": {
+    "operationId": "currency-id-put",
+    "parameters": [
+     {
+      "description": "The server behavior requested by the client. Use 'respond-async' to execute the request asynchronously. If the request is executed asynchronously, 'Preference-applied: respond-async' is returned in the response.",
+      "in": "header",
+      "name": "Prefer",
+      "schema": {
+       "enum": [
+        "respond-async"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "A user-defined unique idempotency key that is applied to every asynchronous requests to ensure that the request is executed only once. Only one request can be executed with every unique idempotency key. Use UUID in string format as defined by RFC 4122. If the request is executed synchronously, this value is ignored.",
+      "in": "header",
+      "name": "X-NetSuite-Idempotency-Key",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "External identifier.",
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Sets the strictness of property name validation.",
+      "in": "header",
+      "name": "X-NetSuite-PropertyNameValidation",
+      "schema": {
+       "enum": [
+        "Error",
+        "Warning",
+        "Ignore"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "Sets the strictness of property value validation.",
+      "in": "header",
+      "name": "X-NetSuite-PropertyValueValidation",
+      "schema": {
+       "enum": [
+        "Error",
+        "Warning",
+        "Ignore"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "The names of sublists on this record. All sublist lines will be replaced with lines specified in the request. The names are delimited by comma.",
+      "in": "query",
+      "name": "replace",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "If set to 'true', all fields that should be deleted in the update request, including body fields, must be included in the 'replace' query parameter.",
+      "in": "query",
+      "name": "replaceSelectedFields",
+      "schema": {
+       "type": "boolean"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/currency"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "204": {
+      "description": "Upserted record."
+     },
+     "default": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/nsError"
+        }
+       }
+      },
+      "description": "Error response."
+     }
+    },
+    "summary": "Insert or update record.",
+    "tags": [
+     "currency"
+    ]
+   }
+  }
+ }
+}

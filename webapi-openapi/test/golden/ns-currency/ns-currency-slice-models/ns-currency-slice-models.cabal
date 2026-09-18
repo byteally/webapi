@@ -1,0 +1,23 @@
+cabal-version:      3.0
+name:               ns-currency-slice-models
+version:            0.1.0.0
+synopsis:           Generated webapi contract (openapi-model-generator)
+author:             "Pankaj Singh Sijwali"
+maintainer:         pankajsijwali1@gmail.com
+build-type:         Simple
+
+library
+    exposed-modules:  OpenApiModels, WebApiInstances
+    hs-source-dirs:   src
+    default-language: Haskell2010
+    build-depends:    base, text, vector, aeson, webapi-contract
+
+-- the concrete registry (M9): the instance layer + registrations
+-- a connector mounts; kept a sublibrary so the contract itself
+-- stays free of the executor's closure
+library registry
+    visibility:       public
+    exposed-modules:  ConcreteRegistry
+    hs-source-dirs:   src-registry
+    default-language: Haskell2010
+    build-depends:    base, text, vector, aeson, webapi-contract, ns-currency-slice-models, uuid-types, webapi-session, dhall, dhall-do-api, dhall-do-api-webapi
