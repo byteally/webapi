@@ -22,9 +22,12 @@
   * `NoFieldSelectors`, and positional pattern variables in `ToJSON`;
   * a route with several captures gets a named path record (`<Op>PP`)
     instead of webapi's tuple, which dhall-do's bridge has no instances for;
+  * header parameters are a record whose fields are the header names in
+    snake case, with a ToHeader that sends each under its wire name and
+    leaves an absent optional header out;
   * of several media types, JSON is kept; of several 2xx responses, the
-    lowest; form and multipart bodies and header parameters are left out
-    with a warning until they are generated;
+    lowest; form and multipart bodies are left out with a warning until a
+    plan can carry a file;
   * array request bodies of generated types get a whole-value
     `OverrideType` (until dhall-do-api has one for `Vector`).
 * The legacy single-module layout (the flags) is unchanged; a golden test

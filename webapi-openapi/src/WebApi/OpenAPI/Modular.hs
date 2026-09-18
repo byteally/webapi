@@ -410,7 +410,7 @@ generateModular cfg@GenConfig {..} = do
       , ""
       ]
         ++ modelImports
-        ++ [ "import WebApi.Contract", "import WebApi.Param", "import " <> appMod, "import " <> contractTop <> " ()", "import " <> routesMod m ]
+        ++ [ "import Data.CaseInsensitive (mk)", "import WebApi.Contract", "import WebApi.Param", "import " <> appMod, "import " <> contractTop <> " ()", "import " <> routesMod m ]
         ++ [ "import " <> modelMod d | d <- modelModules ]
         ++ [ "" ]
         ++ map (renderDecl . ctDecl) (declsAt h)
@@ -554,7 +554,7 @@ generateModular cfg@GenConfig {..} = do
             | m <- modelModules ]
           ++ stanza "library" False "contract"
                ([appMod, contractTop] ++ map routesMod opModules ++ map contractMod opModules)
-               (["base", "text", "vector", "aeson", "webapi-contract"] ++ [ pkg <> ":" <> l | l <- modelLibs ])
+               (["base", "text", "vector", "aeson", "case-insensitive", "webapi-contract"] ++ [ pkg <> ":" <> l | l <- modelLibs ])
           ++ stanza "library registry" True "registry"
                ([registryTop, supportMod] ++ map instancesMod modelModules ++ map opsMod opModules)
                (["base", "text", "vector", "aeson", "bytestring", "uuid-types", "webapi-contract", "webapi-session", "dhall", "dhall-do-api", "dhall-do-api-webapi", pkg]

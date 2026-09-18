@@ -543,11 +543,12 @@ createApiContractInsData namingMap fp compSchemas compsParam compsReqBodies comp
           createType ParamHeader b = do
               let hs = fst <$> mFilter ParamHeader b
               ModelGenState { modular = isModular } <- get
-              when (not (Prelude.null hs)) $
-                if isModular
-                then warn (fromMaybe opName (omName opMeta) <> ": header parameters " <> TQ.intercalate ", " hs <> " left out (GEN-5)")
-                else traceM ("[openapi] " <> T.unpack opName <> ": dropping header params " <> show hs)
-              return (Nothing,[],[])
+              if isModular && not (Prelude.null hs)
+              then mkHeaderRecord (mFilter ParamHeader b)
+              else do
+                when (not (Prelude.null hs)) $
+                  traceM ("[openapi] " <> T.unpack opName <> ": dropping header params " <> show hs)
+                return (Nothing,[],[])
           createType a b = mkParamRecord a (mFilter a b)
           partLabel ParamQuery = "Q"
           partLabel ParamCookie = "C"
@@ -583,6 +584,32 @@ createApiContractInsData namingMap fp compSchemas compsParam compsReqBodies comp
                          : [ Instance vName $ instance' (var "FromParam" @@ var (fromString (promotedPart loc)) @@ var (textToRdrNameStr vName)) []
                            | loc /= ParamPath ]
               return (Just (var (textToRdrNameStr vName)), decl : Prelude.concat childTypes, pInsts)
+          -- modular: header parameters as a record whose fields are the
+          -- header names in snake case (X-Upsert -> x_upsert), and a
+          -- ToHeader that sends each under its wire name, an absent
+          -- optional header left out (webapi's generic ToHeader would send
+          -- the field names themselves)
+          mkHeaderRecord ps = do
+              vName <- mkUnseenVar (T.concat [upperFirstChar pBase, "HP"])
+              modify (\st -> st { paramRecords = S.insert vName (paramRecords st) })
+              let fieldOf wire = T.toLower (TQ.replace "-" "_" wire)
+              dataTypeInfoList <- mapM (\(pname,(_,param)) ->
+                                          parseRecordFields (fieldOf pname, maySchemaToSchema (_paramSchema param))
+                                                            (fromMaybe False (_paramRequired param))
+                                                            False Nothing compSchemas) ps
+              let (schemaList,childTypes) = unzip $ (\(DataTypeInfo a b c _) -> ((a,b),c) ) <$> dataTypeInfoList
+              ModelGenState { keywordsToAvoid } <- get
+              let mkFld (x,y) = (textToOccNameStr (avoidKeywords x keywordsToAvoid), field y)
+                  decl = dataCT vName $ data' (textToOccNameStr vName) [] [recordCon (textToOccNameStr vName) (mkFld <$> schemaList)] stdDeriving
+                  hvars = [ ("v" <> show i, pname, fromMaybe False (_paramRequired param)) | (i, (pname, (_, param))) <- zip [1 :: Int ..] ps ]
+                  pairE wire x = tuple [var "mk" @@ string (T.unpack wire), var "encodeParam" @@ var x]
+                  entry (v, wire, isReq')
+                    | isReq' = var "Just" @@ pairE wire (fromString v)
+                    | otherwise = var "fmap" @@ lambda [bvar "x"] (pairE wire "x") @@ var (fromString v)
+                  inst = Instance vName $ instance' (var "ToHeader" @@ var (textToRdrNameStr vName))
+                           [funBind "toHeader" (match [conP (textToRdrNameStr vName) ((\(v,_,_) -> bvar (fromString v)) <$> hvars)]
+                                                      (var "catMaybes" @@ list (entry <$> hvars)))]
+              return (Just (var (textToRdrNameStr vName)), decl : Prelude.concat childTypes, [inst])
           responseToHeader (_,res) = fmap (_headerSchema . refValToVal compHeaders) <$> (HMO.toList . _responseHeaders $ res)
           findResponseApiOut hMap = case catMaybes [HMO.lookup x hMap | x <- [200..299]] of
                                         [] -> Nothing
