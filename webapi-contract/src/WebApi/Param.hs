@@ -1506,7 +1506,7 @@ instance FromParam par a => FromParam par (Maybe a) where
     False -> case (fromParam pt key kvs' :: Validation [ParamErr] a) of
       Validation (Right val) -> Validation $ Right $ Just val
       Validation (Left errs) -> Validation $ Left errs
-    where kvs' = submap key kvs
+    where kvs' = subParams key kvs
 
 instance (FromParam par a, FromParam par b) => FromParam par (Either a b) where
   fromParam pt key kvs = case Trie.null kvsL of
@@ -1514,8 +1514,8 @@ instance (FromParam par a, FromParam par b) => FromParam par (Either a b) where
       True -> Validation $ Left [ParseErr key "Unable to cast to Either"]
       False -> Right <$> fromParam pt keyR kvsR
     False -> Left <$> fromParam pt keyL kvsL
-    where kvsL = submap keyL kvs
-          kvsR = submap keyR kvs
+    where kvsL = subParams keyL kvs
+          kvsR = subParams keyR kvs
           keyL = (key `nest` "Left")
           keyR = (key `nest` "Right")
 
@@ -1588,10 +1588,10 @@ instance (FromParam par a) => FromParam par [a] where
     False ->
       let pars = Prelude.map (\(nkey, kv) -> fromParam pt nkey kv :: Validation [ParamErr] a) kvitems
       in catValidations pars
-    where kvs' = submap key kvs
+    where kvs' = subParams key kvs
           kvitems = Prelude.takeWhile (not . Prelude.null . snd)  (Prelude.map (\ix ->
             let ixkey = key `nest` (ASCII.pack $ show ix)
-            in (ixkey, submap ixkey kvs')) [(0 :: Word) .. 2000])
+            in (ixkey, subParams ixkey kvs')) [(0 :: Word) .. 2000])
 
 instance KnownSymbol s => FromParam 'QueryParam (Choice s) where
   fromParam pt key kvs = case lookupParam pt key kvs of
@@ -1631,22 +1631,22 @@ fromParamToSetLike key kvs' =
   in catValidations pars
 
 instance (DecodeParam a, Ord a) => FromParam 'QueryParam (Set a) where
-  fromParam _ key kvs = Set.fromList <$> fromParamToSetLike key (catMaybes $ Trie.elems $ submap key kvs)
+  fromParam _ key kvs = Set.fromList <$> fromParamToSetLike key (catMaybes $ Trie.elems $ subParams key kvs)
 
 instance (DecodeParam a, Ord a) => FromParam 'FormParam (Set a) where
-  fromParam _ key kvs = Set.fromList <$> fromParamToSetLike key (Trie.elems $ submap key kvs)
+  fromParam _ key kvs = Set.fromList <$> fromParamToSetLike key (Trie.elems $ subParams key kvs)
 
 instance (DecodeParam a, Ord a) => FromParam 'Cookie (Set a) where
-  fromParam _ key kvs = Set.fromList <$> fromParamToSetLike key (Trie.elems $ submap key kvs)
+  fromParam _ key kvs = Set.fromList <$> fromParamToSetLike key (Trie.elems $ subParams key kvs)
 
 instance (DecodeParam a, Ord a) => FromParam 'QueryParam (MultiSet a) where
-  fromParam _ key kvs = (MultiSet . MultiSet.fromList) <$> fromParamToSetLike key (catMaybes $ Trie.elems $ submap key kvs)
+  fromParam _ key kvs = (MultiSet . MultiSet.fromList) <$> fromParamToSetLike key (catMaybes $ Trie.elems $ subParams key kvs)
 
 instance (DecodeParam a, Ord a) => FromParam 'FormParam (MultiSet a) where
-  fromParam _ key kvs = (MultiSet . MultiSet.fromList) <$> fromParamToSetLike key (Trie.elems $ submap key kvs)
+  fromParam _ key kvs = (MultiSet . MultiSet.fromList) <$> fromParamToSetLike key (Trie.elems $ subParams key kvs)
 
 instance (DecodeParam a, Ord a) => FromParam 'Cookie (MultiSet a) where
-  fromParam _ key kvs = (MultiSet . MultiSet.fromList) <$> fromParamToSetLike key (Trie.elems $ submap key kvs)
+  fromParam _ key kvs = (MultiSet . MultiSet.fromList) <$> fromParamToSetLike key (Trie.elems $ subParams key kvs)
 
 instance (DecodeParam a) => FromParam 'QueryParam (OptValue a) where
   fromParam pt key kvs = case lookupParam pt key kvs of
@@ -1935,6 +1935,17 @@ nest s1 s2 | SB.null s1 = s2
 lookupParam :: Proxy (parK :: ParamK) -> ByteString -> Trie (DeSerializedData parK) -> Maybe (DeSerializedData parK)
 lookupParam _ key kvs = Trie.lookup key kvs
 
+-- | The params of the given key: the key itself and the keys nested under
+-- it ('nest'), never a sibling key it merely prefixes — @page@'s params do
+-- not include @pageSize@. The empty key (the top level) is every param.
+--
+-- > subParams "page" [("page", 1), ("page.x", 2), ("pageSize", 3)] == [("page", 1), ("page.x", 2)]
+subParams :: ByteString -> Trie a -> Trie a
+subParams key kvs
+  | SB.null key = kvs
+  | otherwise   = maybe nested (\v -> Trie.insert key v nested) (Trie.lookup key kvs)
+  where nested = submap (key <> ".") kvs
+
 data ParamAcc = ParamAcc { index :: Int, isSum :: Bool }
               deriving (Show, Eq)
 
@@ -2055,7 +2066,7 @@ instance (GFromParam f parK, Constructor t) => GFromParam (M1 C t f) parK where
   gfromParam pt pfx pa psett kvs =
     let conN = ASCII.pack (conName (undefined :: (M1 C t f) a))
     in case isSum pa of
-      True -> case Trie.null $ submap (pfx `nest` conN) kvs of
+      True -> case Trie.null $ subParams (pfx `nest` conN) kvs of
         False  -> M1 <$> gfromParam pt (pfx `nest` conN) pa psett kvs
         True -> Validation $ Left []
       False -> M1 <$> gfromParam pt pfx pa psett kvs
