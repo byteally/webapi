@@ -22,6 +22,8 @@ module WebApi.Client.Session
   , modifyClientCookies
   , beginStep
   , setStepHeaders
+  , getLastResponse
+
   , freshToken
   , freshTokens
   , setClientCookie
@@ -315,13 +317,39 @@ testClientWith :: forall meth r app.
   [H.Header]
   -> ClientRequest meth r
   -> WebApiSession app (Response meth r)
-testClientWith extras (MKClientRequest creq) = do
+testClientWith extras creq = fst <$> testClientRawWith extras creq
+
+-- | 'testClientWith', answering the wire's status and headers as received
+-- beside the typed response.
+testClientRawWith :: forall meth r app.
+  ( WebApi app
+  , app ~ NamespaceOf r
+  , SingMethod meth
+  , ToParam 'PathParam (PathParam meth r)
+  , ToParam 'QueryParam (QueryParam meth r)
+  , ToParam 'FormParam (FormParam meth r)
+  , ToParam 'FileParam (FileParam meth r)
+  , ToHeader (HeaderIn meth r)
+  , FromHeader (HeaderOut meth r)
+  , FromParam Cookie (CookieOut meth r)
+  , Decodings (ContentTypes meth r) (ApiOut meth r)
+  , Decodings (ContentTypes meth r) (ApiErr meth r)
+  , PartEncodings (RequestBody meth r)
+  , ToHListRecTuple (StripContents (RequestBody meth r))
+  , MkPathFormatString r
+  ) =>
+  [H.Header]
+  -> ClientRequest meth r
+  -> WebApiSession app (Response meth r, (H.Status, [H.Header]))
+testClientRawWith extras (MKClientRequest creq) = do
   waiReq0 <- liftIO $ toWaiRequest creq
   let waiReq = case extras of
         [] -> waiReq0
         _ -> waiReq0 { requestHeaders = extras ++ requestHeaders waiReq0 }
-  sresp <- WebApiSession $ request waiReq
-  WebApiSession $ fromResponse sresp
+  sresp@SResponse {simpleStatus = status, simpleHeaders = hdrs} <- WebApiSession $ request waiReq
+  resp <- WebApiSession $ fromResponse sresp
+  pure (resp, (status, hdrs))
+
 
 runWebApi :: forall app a.
   WebApiSession app a
@@ -329,15 +357,23 @@ runWebApi :: forall app a.
   -> IO a
 runWebApi (WebApiSession sess) app = runSession sess app
 
--- | The per-app client states (cookies), the supply of fresh tokens, and
--- the headers the current step asked to ride on its wire request.
+-- | The per-app client states (cookies), the supply of fresh tokens, the
+-- headers the current step asked to ride on its wire request, and the
+-- wire's last answer as received.
 data ClientsState = ClientsState
   { clientStates :: Map TypeRep WaiInt.ClientState
   , freshSupply :: FreshSupply
   , stepHeaders :: [H.Header]
     -- ^ merged into the next requests sent this step (an idempotency key,
     -- say); cleared by 'beginStep' like the fresh tokens
+  , lastResponse :: Maybe (H.Status, [H.Header])
+    -- ^ the status and every header of the last response, as the wire
+    -- handed them over and before the contract typed them — for a caller
+    -- that reads a header the contract does not declare (an error id a
+    -- failure names, say). 'Nothing' until a call answers, after a
+    -- transport failure, and at 'beginStep'
   }
+
 
 -- | Tokens made up as steps run ('freshToken'): a nonce chosen when the
 -- sessions start and a counter, so no two executions make the same one;
@@ -353,26 +389,35 @@ initFreshSupply :: FreshSupply
 initFreshSupply = FreshSupply { nonce = "", next = 0, current = mempty }
 
 -- | Start a step: the tokens made for the previous one are forgotten,
--- and so are its headers.
+-- and so are its headers and the answer it last saw.
 beginStep :: WebApiSessions apps ()
 beginStep = modify' $ \ClientsState {clientStates, freshSupply = FreshSupply {nonce, next}} ->
-  ClientsState {clientStates, freshSupply = FreshSupply {nonce, next, current = mempty}, stepHeaders = []}
+  ClientsState {clientStates, freshSupply = FreshSupply {nonce, next, current = mempty}, stepHeaders = [], lastResponse = Nothing}
 
 -- | Headers the step being run wants on its wire requests — set after
 -- 'beginStep', merged in front by both transports, gone at the next step.
 setStepHeaders :: [H.Header] -> WebApiSessions apps ()
 setStepHeaders hs = modify' $ \st -> st {stepHeaders = hs}
 
+-- | The wire's last answer, raw: the status and the headers as received,
+-- whether the contract then read the response as a success or a failure.
+-- 'Nothing' before the step's first call, and after a transport failure
+-- (no answer came).
+getLastResponse :: WebApiSessions apps (Maybe (H.Status, [H.Header]))
+getLastResponse = gets $ \ClientsState {lastResponse} -> lastResponse
+
+
 -- | The token for a label in the step being run: made once per step (the
 -- same label asks again and gets the same one), never twice in a run.
 freshToken :: Text -> WebApiSessions apps Text
 freshToken label = do
-  ClientsState {clientStates, freshSupply = FreshSupply {nonce, next, current}, stepHeaders} <- get
+  ClientsState {clientStates, freshSupply = FreshSupply {nonce, next, current}, stepHeaders, lastResponse} <- get
   case M.lookup label current of
     Just t -> pure t
     Nothing -> do
       let t = nonce <> "n" <> T.pack (show next)
-      put ClientsState {clientStates, freshSupply = FreshSupply {nonce, next = next + 1, current = M.insert label t current}, stepHeaders}
+      put ClientsState {clientStates, freshSupply = FreshSupply {nonce, next = next + 1, current = M.insert label t current}, stepHeaders, lastResponse}
+
       pure t
 
 -- | The tokens made for the step being run, by label.
@@ -414,7 +459,8 @@ initApps = Applications
   }
 
 initClientsState :: ClientsState
-initClientsState = ClientsState { clientStates = mempty, freshSupply = initFreshSupply, stepHeaders = [] }
+initClientsState = ClientsState { clientStates = mempty, freshSupply = initFreshSupply, stepHeaders = [], lastResponse = Nothing }
+
 
 newtype WebApiSessions (apps :: [Type]) a = WebApiSessions (ReaderT Applications (StateT ClientsState IO) a)
   deriving (Functor, Applicative, Monad, MonadIO, MonadReader Applications, MonadState ClientsState)
@@ -454,22 +500,27 @@ testClients creq = do
       case M.lookup appRep css of
         Nothing -> error $ "Panic: app not found for: " <> show appRep
         Just cstate -> do
-          (a, s) <- liftIO $ runStateT (runReaderT (runWebApiSession $ testClientWith extras creq) app) cstate
-          modify' $ \st@ClientsState {clientStates = css'} -> st {clientStates = M.insert appRep s css'}
+          ((a, raw), s) <- liftIO $ runStateT (runReaderT (runWebApiSession $ testClientRawWith extras creq) app) cstate
+          modify' $ \st@ClientsState {clientStates = css'} -> st {clientStates = M.insert appRep s css', lastResponse = Just raw}
           pure a
+
     Nothing -> case M.lookup appRep external of
       Just ext -> do
         ClientsState {clientStates = css, stepHeaders = extras} <- get
         let cstate = M.findWithDefault WaiInt.initState appRep css
-        (a, s) <- liftIO $ externalClient extras ext cstate (fromClientRequest creq)
-        modify' $ \st@ClientsState {clientStates = css'} -> st {clientStates = M.insert appRep s css'}
+        (a, raw, s) <- liftIO $ externalClient extras ext cstate (fromClientRequest creq)
+        modify' $ \st@ClientsState {clientStates = css'} -> st {clientStates = M.insert appRep s css', lastResponse = raw}
         pure a
+
       Nothing -> error $ "Panic: app not found for: " <> show appRep
 
 -- | One request to an external app: cookies in from the app's jar, no redirect
 -- following (the model asserts on 3xx + Location, exactly as wai-test does),
 -- cookies out merged back into the jar. Transport failures surface as
--- 'OtherError' rather than exceptions so the model can judge them.
+-- 'OtherError' rather than exceptions so the model can judge them. The
+-- raw status and headers come back beside the typed response (none after
+-- a transport failure).
+
 externalClient :: forall meth r.
   ( ToParam 'PathParam (PathParam meth r)
   , ToParam 'QueryParam (QueryParam meth r)
@@ -484,7 +535,8 @@ externalClient :: forall meth r.
   , ToHListRecTuple (StripContents (RequestBody meth r))
   , MkPathFormatString r
   , SingMethod meth
-  ) => [H.Header] -> ExternalApp -> WaiInt.ClientState -> Request meth r -> IO (Response meth r, WaiInt.ClientState)
+  ) => [H.Header] -> ExternalApp -> WaiInt.ClientState -> Request meth r -> IO (Response meth r, Maybe (H.Status, [H.Header]), WaiInt.ClientState)
+
 externalClient extras ExternalApp {baseRequest, manager} cstate req = do
   now <- getCurrentTime
   let RequestParts {uriPath, meth, qitms, hdrs, formPar, filePar, bodyPart} = requestParts (HC.path baseRequest) [] req
@@ -513,7 +565,8 @@ externalClient extras ExternalApp {baseRequest, manager} cstate req = do
   res <- try (HC.httpLbs hreq manager)
   case res of
     Left (e :: SomeException) ->
-      pure (Failure $ Right $ OtherError e, cstate)
+      pure (Failure $ Right $ OtherError e, Nothing, cstate)
+
     Right hresp -> do
       let cooks = M.fromList
             [ (HC.cookie_name c, cookieToSetCookie c) | c <- HC.destroyCookieJar (HC.responseCookieJar hresp) ]
@@ -524,7 +577,8 @@ externalClient extras ExternalApp {baseRequest, manager} cstate req = do
                 (HC.responseHeaders hresp)
                 (M.toList $ fmap renderSetCookieBS cooks)
                 (HC.responseBody hresp)
-      pure (resp, cstate')
+      pure (resp, Just (HC.responseStatus hresp, HC.responseHeaders hresp), cstate')
+
 
 -- | A stored 'SetCookie' as an http-client cookie for @host@. A cookie without
 -- a Domain is host-only (what a browser would do); a session cookie gets a
@@ -583,10 +637,10 @@ addApp waapp WebApiSessionsConfig {applications, clientsState} =
     app = getWaiApp waapp
     appRep = typeRep (Proxy @app)
     Applications {native, external} = applications
-    ClientsState {clientStates = cstate, freshSupply, stepHeaders} = clientsState
+    ClientsState {clientStates = cstate, freshSupply, stepHeaders, lastResponse} = clientsState
   in WebApiSessionsConfig
      { applications = Applications { native = M.insert appRep app native, external}
-     , clientsState = ClientsState { clientStates = M.insert appRep WaiInt.initState cstate, freshSupply, stepHeaders }
+     , clientsState = ClientsState { clientStates = M.insert appRep WaiInt.initState cstate, freshSupply, stepHeaders, lastResponse }
      }
 
 -- | Register an app reached over HTTP. @base@ is the parsed base request —
@@ -597,10 +651,10 @@ addExternalApp base mgr WebApiSessionsConfig {applications, clientsState} =
   let
     appRep = typeRep (Proxy @app)
     Applications {native, external} = applications
-    ClientsState {clientStates = cstate, freshSupply, stepHeaders} = clientsState
+    ClientsState {clientStates = cstate, freshSupply, stepHeaders, lastResponse} = clientsState
   in WebApiSessionsConfig
      { applications = Applications { native, external = M.insert appRep (ExternalApp base mgr) external }
-     , clientsState = ClientsState { clientStates = M.insert appRep WaiInt.initState cstate, freshSupply, stepHeaders }
+     , clientsState = ClientsState { clientStates = M.insert appRep WaiInt.initState cstate, freshSupply, stepHeaders, lastResponse }
      }
 
 -- | Run the sessions; each run gets its own nonce for fresh tokens.
@@ -611,8 +665,9 @@ runWebApis' :: WebApiSessionsConfig apps -> WebApiSessions apps a -> IO (a, WebA
 runWebApis' WebApiSessionsConfig {applications, clientsState} (WebApiSessions sess) = do
   n <- newNonce
   let
-    ClientsState {clientStates, freshSupply = FreshSupply {next, current}, stepHeaders} = clientsState
-    st0 = ClientsState {clientStates, freshSupply = FreshSupply {nonce = n, next, current}, stepHeaders}
+    ClientsState {clientStates, freshSupply = FreshSupply {next, current}, stepHeaders, lastResponse} = clientsState
+    st0 = ClientsState {clientStates, freshSupply = FreshSupply {nonce = n, next, current}, stepHeaders, lastResponse}
+
   (a, clientsStateNew) <- runStateT (runReaderT sess applications) st0
   pure (a, WebApiSessionsConfig {applications, clientsState = clientsStateNew})
 
