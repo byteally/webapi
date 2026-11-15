@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               webapi-session
-version:            0.1.0.0
+version:            0.1.1.0
 synopsis:           The concrete session client over webapi contracts
 -- Moved out of webapi-test (M8a): multi-app routing, wai + http-client
 -- transports, cookie jars, fresh values. Test-named packages never
