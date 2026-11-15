@@ -38,12 +38,20 @@ module Test.WebApi.Trace
   , LabelCount (..)
   , MoveCount (..)
   , RunTrace (..)
+  , ReplayOutcome (..)
+  , ReplayRecord (..)
+  , kindText
     -- * Recording
   , Recorder
   , newRecorder
+  , newRecorderFor
   , recordedProperty
   , readRunTrace
   , beginCase
+  , beginCaseWith
+  , takeSteps
+  , noteReplay
+  , stepsFailure
   , pushStep
   , amendStep
   , afterStep
@@ -67,6 +75,7 @@ import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import           Test.QuickCheck (Property)
+import           Test.WebApi.Case (CaseItem, CaseRecord (..), caseFormat)
 import qualified Test.QuickCheck.Property as P
 
 -- ---------------------------------------------------------------------------
@@ -233,6 +242,30 @@ data TrySummary = TrySummary
 data CaseTrace = CaseTrace
   { from :: Text
   , steps :: [StepRecord]
+  , replayable :: Maybe CaseRecord
+    -- ^ the case written out to be replayed ("Test.WebApi.Case"), when the
+    -- property was played through a recording runner
+  }
+  deriving (Eq, Show)
+
+-- | How a regression case fared when a run played it first.
+data ReplayOutcome
+  = ReplayPassed
+  | ReplayFailed
+  | CantReplay
+    -- ^ the program no longer plays it (a move removed, a pick of another
+    -- type, …); 'why' says what
+  deriving (Eq, Show)
+
+data ReplayRecord = ReplayRecord
+  { caseNumber :: Int
+    -- ^ its place in the run's cases, from 1
+  , replayOutcome :: ReplayOutcome
+  , replayAt :: Maybe Int
+    -- ^ the move it failed at
+  , replayWhy :: Maybe Text
+  , replaySteps :: [StepRecord]
+    -- ^ every move it played, in full
   }
   deriving (Eq, Show)
 
@@ -262,6 +295,8 @@ data RunTrace = RunTrace
   , narrowed :: Maybe CaseTrace
   , labels :: [LabelCount]
   , moves :: [MoveCount]
+  , replays :: [ReplayRecord]
+    -- ^ the regression cases the run played first, before it drew any
   }
   deriving (Eq, Show)
 
@@ -336,7 +371,17 @@ instance ToJSON TrySummary where
     , "at" .= at, "why" .= why, "taken" .= taken ]
 
 instance ToJSON CaseTrace where
-  toJSON CaseTrace {..} = object ["from" .= from, "moves" .= steps]
+  toJSON CaseTrace {..} = object ["from" .= from, "moves" .= steps, "case" .= replayable]
+
+instance ToJSON ReplayOutcome where
+  toJSON = String . \case
+    ReplayPassed -> "passed"
+    ReplayFailed -> "failed"
+    CantReplay -> "cant_replay"
+
+instance ToJSON ReplayRecord where
+  toJSON ReplayRecord {..} = object
+    [ "case" .= caseNumber, "outcome" .= replayOutcome, "at" .= replayAt, "why" .= replayWhy, "moves" .= replaySteps ]
 
 instance ToJSON LabelCount where
   toJSON LabelCount {..} = object ["label" .= label, "cases" .= cases, "of" .= outOf]
@@ -353,6 +398,7 @@ instance ToJSON RunTrace where
     , "narrowed" .= narrowed
     , "labels" .= labels
     , "moves" .= moves
+    , "replays" .= replays
     ]
 
 -- ---------------------------------------------------------------------------
@@ -379,8 +425,14 @@ bodyText k bs
 -- gathered so far.
 data Recorder = Recorder
   { current :: IORef (Seq StepRecord)
+  , currentCase :: IORef (Maybe (Int, [CaseItem]))
+    -- ^ the case being played, as a regression case would keep it (its
+    -- size and items), when the runner records it
   , gathered :: IORef Gathered
   , declared :: [Text]
+  , origin :: (Text, Text)
+    -- ^ the program's version and the property's name, for the cases it
+    -- writes out
   }
 
 data Gathered = Gathered
@@ -396,13 +448,20 @@ data Gathered = Gathered
   , countedCases :: Int
   , labelCounts :: M.Map Text Int
   , moveCounts :: M.Map Text Int
+  , replayLines :: Seq ReplayRecord
   }
 
 -- | A recorder for one property, given the labels its steps declare (a
 -- declared label no case reaches reads 0, not absent).
 newRecorder :: [Text] -> IO Recorder
-newRecorder declaredLabels = do
+newRecorder = newRecorderFor "" ""
+
+-- | A recorder whose cases can be written out to be replayed: the
+-- program's version (the runner's hash of it) and the property's name.
+newRecorderFor :: Text -> Text -> [Text] -> IO Recorder
+newRecorderFor scenarioHash propertyName declaredLabels = do
   cur <- newIORef Seq.empty
+  curCase <- newIORef Nothing
   g <- newIORef Gathered
     { narrowingStarted = False
     , caseCount = 0
@@ -416,12 +475,28 @@ newRecorder declaredLabels = do
     , countedCases = 0
     , labelCounts = M.empty
     , moveCounts = M.empty
+    , replayLines = Seq.empty
     }
-  pure Recorder {current = cur, gathered = g, declared = declaredLabels}
+  pure Recorder {current = cur, currentCase = curCase, gathered = g, declared = declaredLabels, origin = (scenarioHash, propertyName)}
 
 -- | A case starts: whatever an interrupted one left is dropped.
 beginCase :: Recorder -> IO ()
 beginCase Recorder {current} = writeIORef current Seq.empty
+
+-- | A case starts, and this is how a regression case would keep it.
+beginCaseWith :: Recorder -> Maybe (Int, [CaseItem]) -> IO ()
+beginCaseWith rec@Recorder {currentCase} c = beginCase rec >> writeIORef currentCase c
+
+-- | The steps played so far, taken (a replay's, which the runner closes
+-- itself).
+takeSteps :: Recorder -> IO [StepRecord]
+takeSteps Recorder {current, currentCase} = do
+  writeIORef currentCase Nothing
+  toList <$> atomicModifyIORef' current (\s -> (Seq.empty, s))
+
+-- | A regression case was played: how it fared.
+noteReplay :: Recorder -> ReplayRecord -> IO ()
+noteReplay Recorder {gathered} r = modifyIORef' gathered $ \g@Gathered {replayLines} -> g {replayLines = replayLines |> r}
 
 -- | A step ran: append it, numbered.
 pushStep :: Recorder -> StepRecord -> IO ()
@@ -454,8 +529,9 @@ recordedProperty rec =
     . P.callback (P.PostTest P.NotCounterexample (\_ res -> closeCase rec res))
 
 closeCase :: Recorder -> P.Result -> IO ()
-closeCase Recorder {current, gathered} res = do
+closeCase Recorder {current, currentCase, gathered, origin = (scenarioHash, propertyName)} res = do
   stepList <- toList <$> atomicModifyIORef' current (\s -> (Seq.empty, s))
+  caseKept <- atomicModifyIORef' currentCase (\c -> (Nothing, c))
   let
     outcome = case P.ok res of
       Just True -> Passed
@@ -470,6 +546,7 @@ closeCase Recorder {current, gathered} res = do
     moveList = [ moveName s | s@StepRecord {kind} <- stepList, isMove kind ]
     countKeys = [ moveCountKey s | s@StepRecord {kind} <- stepList, isMove kind ]
     held = Set.toList (Set.fromList (map T.pack (P.classes res)))
+    replayable = (\(sz, its) -> CaseRecord {format = caseFormat, scenario = scenarioHash, property = propertyName, size = sz, items = its}) <$> caseKept
   modifyIORef' gathered $ \g@Gathered {..} ->
     if not narrowingStarted
       then case outcome of
@@ -482,7 +559,7 @@ closeCase Recorder {current, gathered} res = do
                , countedCases = countedCases + 1
                , labelCounts = M.unionWith (+) labelCounts (M.fromList [ (l, 1) | l <- held ])
                , moveCounts = M.unionWith (+) moveCounts (M.fromListWith (+) [ (m, 1) | m <- countKeys ])
-               , firstFailing = if outcome == Failed then Just CaseTrace {from = "case " <> tshow k, steps = stepList} else firstFailing
+               , firstFailing = if outcome == Failed then Just CaseTrace {from = "case " <> tshow k, steps = stepList, replayable} else firstFailing
                , narrowingStarted = outcome == Failed
                }
       else
@@ -491,7 +568,7 @@ closeCase Recorder {current, gathered} res = do
             line' = TrySummary {number = k, played, moves = moveList, outcome, at, why, taken}
         in g { tryCount = k
              , tryLines = tryLines |> line'
-             , lastTaken = if taken then Just CaseTrace {from = "try " <> tshow k, steps = stepList} else lastTaken
+             , lastTaken = if taken then Just CaseTrace {from = "try " <> tshow k, steps = stepList, replayable} else lastTaken
              }
   where
     stepWhy StepRecord {checks, answer} =
@@ -499,6 +576,18 @@ closeCase Recorder {current, gathered} res = do
         (w : _) -> Just w
         [] -> answer >>= \AnswerRecord {failure} -> failure
     nonEmpty t = if T.null (T.strip t) then Nothing else Just t
+
+-- | Where a case's steps failed, and why: the first step that did not
+-- hold, its first failed check's reason or its answer's failure.
+stepsFailure :: [StepRecord] -> (Maybe Int, Maybe Text)
+stepsFailure stepList = case find (\StepRecord {ok} -> not ok) stepList of
+  Nothing -> (Nothing, Nothing)
+  Just s@StepRecord {n} -> (Just n, whyOf s)
+  where
+    whyOf StepRecord {checks, answer} =
+      case [ w | CheckRecord {held = False, why = Just w} <- checks ] of
+        (w : _) -> Just w
+        [] -> answer >>= \AnswerRecord {failure} -> failure
 
 finalFailure :: Recorder -> IO ()
 finalFailure Recorder {gathered} = modifyIORef' gathered $ \g@Gathered {lastTaken, firstFailing} ->
@@ -520,6 +609,7 @@ readRunTrace Recorder {gathered, declared} = do
     , narrowed = final <|> (if narrowingStarted then lastTaken <|> firstFailing else Nothing)
     , labels = [ LabelCount {label = l, cases = M.findWithDefault 0 l labelCounts, outOf = countedCases} | l <- labelOrder ]
     , moves = [ MoveCount {move = m, timesPlayed = c} | (m, c) <- M.toList moveCounts ]
+    , replays = toList replayLines
     }
   where
     dedupe = go Set.empty

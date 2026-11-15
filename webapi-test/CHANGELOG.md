@@ -1,5 +1,36 @@
 # Revision history for webapi-test
 
+## 0.3.0.0 -- 2026-11-16 (zenbridge #2713: regression cases, with exact replay)
+
+* **A run's narrowed case, written out** (`Test.WebApi.Case`): the case
+  quickcheck-dynamic drew, its picks and steps in order. A step the
+  program writes is kept by its kind, trail and operation, and the replay
+  makes it again from the program. A drawn step (`anyActions`) is kept by
+  its operation, the positions its generation drew, and the earlier steps
+  its request refers to. A fresh value is never kept: it is made again,
+  and every step that shared it still shares it. The trace's
+  `narrowed.case` and `first_failure.case` hold it, as JSON.
+* **Replay** (`Test.WebApi.Replay`): `replayTest` walks the program's
+  formula, giving each quantifier the case's next pick and checking each
+  step against the case's next move. It says why when the program no
+  longer plays the case: a move gone or changed, a pick of another type,
+  a drawn move the state no longer offers. `replayCasesDL` plays each
+  case once, before the property draws its own, and records how it fared
+  (`RunTrace.replays`: passed, failed at a move, or `cant_replay` and why).
+* `propDLTraced` records through `forAllDLRecorded`, quickcheck-dynamic's
+  own generation and narrowing with each test handed to the property.
+  It needs `runDL`, which byteally's quickcheck-dynamic 4.0.1.1 exports.
+* Generation keeps the positions it draws (`ApiGenM`,
+  `runApiGenMDrawing`), and can draw them again (`runApiGenMRedrawing`).
+  A drawn action is stamped with its operation (`stampDrawn`).
+  `WebApiGlobalStateModel` gains `appRedraw` (`noRedraw` for a model that
+  never draws).
+* `Val`: `varLeaves` and `repointVal`, the variables of a value by path;
+  `GValRep` gains `gTraverseLeaves`.
+* `Recorder`: `newRecorderFor` (the program's version and the property's
+  name, for the cases it writes out), `beginCaseWith`, `takeSteps`,
+  `noteReplay`, `stepsFailure`.
+
 ## 0.2.0.0 -- 2026-11-15 (zenbridge #2712: a run's trace)
 
 * **A run's trace, as data** (`Test.WebApi.Trace`, qc-dynamic). A

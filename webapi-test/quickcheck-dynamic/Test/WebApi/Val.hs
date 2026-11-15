@@ -35,9 +35,13 @@ module Test.WebApi.Val
   , unsetLabel
   , GSetField
   , GGetField
+  , varLeaves
+  , repointVal
   ) where
 
-import Test.QuickCheck.StateModel (Var, LookUp, HasVariables (..), VarContext, Any, shrinkVar)
+import Test.QuickCheck.StateModel (Var, LookUp, HasVariables (..), VarContext, Any, shrinkVar, mkVar)
+import qualified Data.Map.Strict as M
+import qualified Data.Functor.Const as F
 import qualified Data.Set as Set
 import Data.Kind (Type)
 import Data.Proxy
@@ -182,6 +186,62 @@ shrinkVal vctx = \case
   Fresh {} -> []
   TempFile {} -> []
 
+-- | Every variable leaf, by where it sits and the variable's index. A
+-- path is the position of each node on the way down: a record's fields
+-- left to right, a pair's two sides, the value under a map or a file's
+-- contents. A value rebuilt the same way has the same paths
+-- ("Test.WebApi.Case": the links of a drawn step).
+varLeaves :: Val a -> [([Int], Int)]
+varLeaves = go []
+  where
+    go :: [Int] -> Val x -> [([Int], Int)]
+    go p = \case
+      Var _ v -> [(reverse p, indexOfVar v)]
+      Pair _ (a, b) -> go (0 : p) a ++ go (1 : p) b
+      Map _ a -> go (0 : p) a
+      Fields gv -> concat (zipWith (\i (AnyLeaf l) -> go (i : p) l) [0 ..] (getLeaves gv))
+      TempFile _ c _ -> go (0 : p) c
+      _ -> []
+    getLeaves :: GValRep f => GVal f -> [AnyLeaf]
+    getLeaves gv = F.getConst (gTraverseLeaves (\l -> F.Const [AnyLeaf l]) gv)
+
+-- | The value with the variable at each path replaced by the one of the
+-- given index (a path 'varLeaves' would give; a path with no variable is
+-- left as it is).
+repointVal :: M.Map [Int] Int -> Val a -> Val a
+repointVal m = go []
+  where
+    go :: [Int] -> Val x -> Val x
+    go p = \case
+      Var f v -> maybe (Var f v) (Var f . mkVar) (M.lookup (reverse p) m)
+      Pair f (a, b) -> Pair f (go (0 : p) a, go (1 : p) b)
+      Map f a -> Map f (go (0 : p) a)
+      Fields gv -> Fields (fst (runCounter (gTraverseLeaves (\l -> Counter (\i -> (go (i : p) l, i + 1))) gv) 0))
+      TempFile n c f -> TempFile n (go (0 : p) c) f
+      other -> other
+
+data AnyLeaf where
+  AnyLeaf :: Val x -> AnyLeaf
+
+-- | Numbering, left to right (no state monad among this package's own).
+newtype Counter a = Counter (Int -> (a, Int))
+
+runCounter :: Counter a -> Int -> (a, Int)
+runCounter (Counter f) = f
+
+instance Functor Counter where
+  fmap f (Counter g) = Counter (\i -> let (a, i') = g i in (f a, i'))
+
+instance Applicative Counter where
+  pure a = Counter (\i -> (a, i))
+  Counter f <*> Counter g = Counter (\i -> let (h, i') = f i; (a, i'') = g i' in (h a, i''))
+
+-- | A variable's index (quickcheck-dynamic shows one as @var<n>@).
+indexOfVar :: Var a -> Int
+indexOfVar v = case reads (drop 3 (show v)) of
+  [(i, "")] -> i
+  _ -> error ("indexOfVar: " <> show v)
+
 fromVar :: Typeable a => Var a -> Val a
 fromVar = Var id
 
@@ -240,6 +300,8 @@ class GValRep f where
   gTempFiles :: GVal f -> [(Text, Val ByteString)]
   gUnsetLeaves :: GVal f -> [Text]
   gShrink :: VarContext -> GVal f -> [GVal f]
+  -- | Every field's value, left to right, through an applicative effect.
+  gTraverseLeaves :: Applicative m => (forall x. Val x -> m (Val x)) -> GVal f -> m (GVal f)
 
 instance GValRep f => GValRep (M1 i c f) where
   gConst (M1 f) = GM1 (gConst f)
@@ -250,6 +312,7 @@ instance GValRep f => GValRep (M1 i c f) where
   gTempFiles (GM1 g) = gTempFiles g
   gUnsetLeaves (GM1 g) = gUnsetLeaves g
   gShrink vc (GM1 g) = GM1 <$> gShrink vc g
+  gTraverseLeaves f (GM1 g) = GM1 <$> gTraverseLeaves f g
 
 instance (GValRep f, GValRep g) => GValRep (f :*: g) where
   gConst (f :*: g) = GProd (gConst f) (gConst g)
@@ -260,6 +323,7 @@ instance (GValRep f, GValRep g) => GValRep (f :*: g) where
   gTempFiles (GProd a b) = gTempFiles a ++ gTempFiles b
   gUnsetLeaves (GProd a b) = gUnsetLeaves a ++ gUnsetLeaves b
   gShrink vc (GProd a b) = [GProd a' b | a' <- gShrink vc a] ++ [GProd a b' | b' <- gShrink vc b]
+  gTraverseLeaves f (GProd a b) = GProd <$> gTraverseLeaves f a <*> gTraverseLeaves f b
 
 instance GValRep (K1 i a) where
   gConst (K1 a) = GK1 (Const a)
@@ -270,6 +334,7 @@ instance GValRep (K1 i a) where
   gTempFiles (GK1 v) = tempFiles v
   gUnsetLeaves (GK1 v) = unsetLeaves v
   gShrink vc (GK1 v) = GK1 <$> shrinkVal vc v
+  gTraverseLeaves f (GK1 v) = GK1 <$> f v
 
 instance GValRep U1 where
   gConst U1 = GU1
@@ -280,6 +345,7 @@ instance GValRep U1 where
   gTempFiles GU1 = []
   gUnsetLeaves GU1 = []
   gShrink _ GU1 = []
+  gTraverseLeaves _ GU1 = pure GU1
 
 -- | Get a field by selector name, from a 'GVal'.
 class GGetField (name :: Symbol) (x :: Type) (f :: Type -> Type) | name f -> x where

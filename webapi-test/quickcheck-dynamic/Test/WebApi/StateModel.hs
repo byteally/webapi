@@ -68,6 +68,13 @@ module Test.WebApi.StateModel
   , AnyVal (..)
   , GetOpIdName
   , runApiGenM
+  , runApiGenMDrawing
+  , runApiGenMRedrawing
+  , stampDrawn
+  , drawnOf
+  , requestLinks
+  , repointAction
+  , noRedraw
   , RefinementId (..)
   , initWebApiSessionsCxt
   , successCall
@@ -101,6 +108,7 @@ module Test.WebApi.StateModel
   , andClassify
   , tracingCxt
   , noStage
+  , moveIdentity
   , addVariables
   , initApiState
   , initApiState_
@@ -188,6 +196,9 @@ import Data.Bifunctor
 import Control.Monad.IO.Class
 import Control.Concurrent (threadDelay)
 import Control.Monad.Reader
+import Control.Monad.State.Strict (StateT, runStateT, get, put)
+import qualified Test.QuickCheck.Gen as QCG
+import qualified Test.QuickCheck.Random as QCR
 import Control.Monad (foldM)
 
 type WebApiActionCxt (apps :: [Type]) (meth :: Type) (app :: Type) (r :: k) =
@@ -588,6 +599,10 @@ data SuccessApiModel s c xstate apps meth r a = SuccessApiModel
     -- over the same ('andClassify'); a label never fails the step
   , apiStep :: Maybe StepInfo
     -- ^ where the step was written ('setStep'), for the trace
+  , apiDrawn :: Maybe (Text, [Int])
+    -- ^ a step drawn rather than written ('stampDrawn'): its operation and
+    -- the positions its generation drew, so a regression case can draw it
+    -- again ("Test.WebApi.Case")
   , apiPostconditionOnFailure :: (ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> Either ErrorState a -> Bool
   , apiVariables :: Set.Set (Any Var)
     -- ^ variables the model's hooks look up besides the request's (a
@@ -623,6 +638,7 @@ defSuccessApiModel = SuccessApiModel
   , apiChecks = []
   , apiClassify = []
   , apiStep = Nothing
+  , apiDrawn = Nothing
   , apiPostconditionOnFailure = \_ _ _ -> True
   , label = Nothing
   , apiVariables = mempty
@@ -723,7 +739,16 @@ data WebApiGlobalStateModel c xstate apps = WebApiGlobalStateModel
   , appStageOf :: forall (s :: Type). LookUp -> ApiState s c xstate apps -> Maybe Text
     -- ^ the stage the model is at, as the trace shows it before and after
     -- each step; 'noStage' for a model that declares none
+  , appRedraw :: forall (s :: Type). VarContext -> ApiState s c xstate apps -> Text -> [Int] -> Either Text (Any (Action (ApiState s c xstate apps)))
+    -- ^ a drawn action made again for a regression case, from its operation
+    -- and the positions its generation drew ('runApiGenMRedrawing');
+    -- 'noRedraw' for a model whose actions are never drawn
   }
+
+-- | A model whose actions are never drawn: a regression case holding a
+-- drawn one cannot be replayed.
+noRedraw :: VarContext -> ApiState s c xstate apps -> Text -> [Int] -> Either Text (Any (Action (ApiState s c xstate apps)))
+noRedraw _ _ op _ = Left ("the model does not draw " <> op <> " again")
 
 -- | A model with no stages: the trace's stage stays empty.
 noStage :: LookUp -> ApiState s c xstate apps -> Maybe Text
@@ -1124,6 +1149,21 @@ recordPerformed rec st (MkWebApiAction act) lkp res = do
       AnyFailure -> Nothing
       FailureStatus code -> Just code
 
+-- | What tells a step apart in a regression case ("Test.WebApi.Case"):
+-- its kind, where it was written, and its operation (or the glue's name,
+-- the fresh value's label, …). The same as the trace's record says.
+moveIdentity :: StateModel xstate => WebApiAction s c xstate apps a -> (StepKind, Maybe StepInfo, Text)
+moveIdentity = \case
+  SuccessCall creq SuccessApiModel {apiStep} _ _ -> (KindCall, apiStep, T.pack (getOpIdFromRequest creq))
+  ErrorCall creq _ SuccessApiModel {apiStep} _ -> (KindCall, apiStep, T.pack (getOpIdFromRequest creq))
+  SomeExceptionCall creq -> (KindCall, Nothing, T.pack (getOpIdFromRequest creq))
+  SetContext {} -> (KindContext, Nothing, "setContext")
+  ClearContext {} -> (KindContext, Nothing, "clearContext")
+  ModelOnly nm _ -> (KindModel, Nothing, T.pack nm)
+  FreshValue l -> (KindFresh, Nothing, "fresh " <> l)
+  EffectCall nm i _ _ -> (KindGlue, i, T.pack nm)
+  XAction xact -> (KindOther, Nothing, T.pack (actionName xact))
+
 -- | A call's record: the request as it went out (its fresh values as the
 -- step made them, its files by name), the answer as received, and the
 -- check that its status was the one expected.
@@ -1315,6 +1355,7 @@ expectingFailure expected pre (MkWebApiAction act) = case act of
       , apiChecks = []
       , apiClassify = []
       , apiStep
+      , apiDrawn = Nothing
       , apiPostconditionOnFailure = \_ _ _ -> True
       , label
       , apiVariables
@@ -1653,8 +1694,24 @@ instance (StateModel xstate, Eq (Action xstate Text)) => HasApiStateM (DL (ApiSt
 
 instance HasApiStateM (ApiGenM s c xstate apps) s c xstate apps where
   getApiStateM = ask
-  genValM gen _ = ApiGenM (lift gen)
-  genIndexM n = ApiGenM (lift (QC.choose (0, n - 1)))
+  -- a drawn value is not kept (no generation here draws one): drawing it
+  -- again fails
+  genValM gen _ = ApiGenM $ lift $ get >>= \case
+    Drawing _ -> lift gen
+    _ -> do
+      put (RedrawFailed "it draws a value a regression case does not keep")
+      lift gen
+  -- a position is kept as it is drawn, and given back when drawn again
+  genIndexM n = ApiGenM $ lift $ get >>= \case
+    Drawing ds -> do
+      i <- lift (QC.choose (0, n - 1))
+      put (Drawing (i : ds))
+      pure i
+    Redrawing (i : rest)
+      | i >= 0 && i < n -> put (Redrawing rest) >> pure i
+      | otherwise -> put (RedrawFailed ("it drew position " <> T.pack (show i) <> " among " <> T.pack (show n))) >> pure 0
+    Redrawing [] -> put (RedrawFailed "it draws more than the case kept") >> pure 0
+    RedrawFailed why -> put (RedrawFailed why) >> pure 0
   freshM l = pure (fresh l)
 
 -- | One of the candidates — a quantified choice when the action is a DL
@@ -1665,11 +1722,79 @@ elementsM :: HasApiStateM m s c xstate apps => [a] -> m a
 elementsM [] = error "elementsM: nothing to choose from"
 elementsM xs = (xs !!) <$> genIndexM (length xs)
 
-newtype ApiGenM s c xstate apps a = ApiGenM (ReaderT (ApiState s c xstate apps) QC.Gen a)
+newtype ApiGenM s c xstate apps a = ApiGenM (ReaderT (ApiState s c xstate apps) (StateT Draws QC.Gen) a)
   deriving newtype (Functor, Applicative, Monad, MonadReader (ApiState s c xstate apps))
 
+-- | The positions a generation draws: kept as it draws them, or given
+-- back from a regression case.
+data Draws
+  = Drawing [Int]
+    -- ^ newest first
+  | Redrawing [Int]
+  | RedrawFailed Text
+
 runApiGenM :: ApiGenM s c xstate apps a -> ApiState s c xstate apps -> QC.Gen a
-runApiGenM (ApiGenM m) st = runReaderT m st
+runApiGenM m st = fst <$> runApiGenMDrawing m st
+
+-- | A generation, with the positions it drew, in order.
+runApiGenMDrawing :: ApiGenM s c xstate apps a -> ApiState s c xstate apps -> QC.Gen (a, [Int])
+runApiGenMDrawing (ApiGenM m) st = (\(a, d) -> (a, kept d)) <$> runStateT (runReaderT m st) (Drawing [])
+  where
+    kept = \case
+      Drawing ds -> reverse ds
+      _ -> []
+
+-- | A generation done again from the positions it drew: deterministic
+-- (a fixed seed; nothing else is drawn), 'Left' when the state no longer
+-- offers what it drew.
+runApiGenMRedrawing :: [Int] -> ApiGenM s c xstate apps a -> ApiState s c xstate apps -> Either Text a
+runApiGenMRedrawing ds (ApiGenM m) st = case QCG.unGen (runStateT (runReaderT m st) (Redrawing ds)) (QCR.mkQCGen 0) 30 of
+  (a, Redrawing []) -> Right a
+  (_, Redrawing rest) -> Left ("it draws less than the case kept (" <> T.pack (show (length rest)) <> " left)")
+  (_, RedrawFailed why) -> Left why
+  (a, Drawing _) -> Right a
+
+-- | The step as drawn ("Test.WebApi.Case"): its operation and the
+-- positions its generation drew.
+stampDrawn :: Text -> [Int] -> Action (ApiState s c xstate apps) a -> Action (ApiState s c xstate apps) a
+stampDrawn op ds (MkWebApiAction act) = MkWebApiAction $ case act of
+  SuccessCall creq m cookMod f -> SuccessCall creq m {apiDrawn = Just (op, ds)} cookMod f
+  ErrorCall creq expected m f -> ErrorCall creq expected m {apiDrawn = Just (op, ds)} f
+  other -> other
+
+drawnOf :: WebApiAction s c xstate apps a -> Maybe (Text, [Int])
+drawnOf = \case
+  SuccessCall _ SuccessApiModel {apiDrawn} _ _ -> apiDrawn
+  ErrorCall _ _ SuccessApiModel {apiDrawn} _ -> apiDrawn
+  _ -> Nothing
+
+-- | Every variable leaf of the step's request, by where it sits: the
+-- part (query, form, header, path, body, file: 0 to 5), then the path
+-- within it ('varLeaves').
+requestLinks :: WebApiAction s c xstate apps a -> [([Int], Int)]
+requestLinks = \case
+  SuccessCall creq _ _ _ -> linksOf creq
+  ErrorCall creq _ _ _ -> linksOf creq
+  _ -> []
+  where
+    linksOf :: ClientRequestVal meth r -> [([Int], Int)]
+    linksOf ClientRequestVal {query, form, header, path, body, file} =
+      concat [ map (\(p, v) -> (k : p, v)) ls
+             | (k, ls) <- zip [0 ..] [varLeaves query, varLeaves form, varLeaves header, varLeaves path, varLeaves body, varLeaves file] ]
+
+-- | The step with the variable at each path ('requestLinks') replaced by
+-- the one of the given index.
+repointAction :: M.Map [Int] Int -> Action (ApiState s c xstate apps) a -> Action (ApiState s c xstate apps) a
+repointAction m (MkWebApiAction act) = MkWebApiAction $ case act of
+  SuccessCall creq md cookMod f -> SuccessCall (repointRequest creq) md cookMod f
+  ErrorCall creq expected md f -> ErrorCall (repointRequest creq) expected md f
+  other -> other
+  where
+    repointRequest :: ClientRequestVal meth r -> ClientRequestVal meth r
+    repointRequest ClientRequestVal {query, form, header, path, body, file} = ClientRequestVal
+      { query = at 0 query, form = at 1 form, header = at 2 header, path = at 3 path, body = at 4 body, file = at 5 file }
+    at :: Int -> Val x -> Val x
+    at k = repointVal (M.fromList [ (p, v) | (k' : p, v) <- M.toList m, k' == k ])
 
 apiAction :: forall s a c xstate meth route apps.
   ( Typeable a
