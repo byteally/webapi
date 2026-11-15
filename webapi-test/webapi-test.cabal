@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               webapi-test
-version:            0.1.0.0
+version:            0.2.0.0
 -- synopsis:
 -- description:
 license:            BSD-3-Clause
@@ -55,8 +55,10 @@ library qc-dynamic
     exposed-modules:  Test.WebApi.Val
                       Test.WebApi.StateModel
                       Test.WebApi.DynamicLogic
+                      Test.WebApi.Trace
     -- other-modules:
     build-depends:    webapi-test
+                    , aeson >= 2.0
                     , wai-extra >= 3.1
                     , cookie
                     , http-types

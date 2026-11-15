@@ -1,5 +1,6 @@
 module Test.WebApi.DynamicLogic
   ( propDL
+  , propDLTraced
   , prop_api
   -- , runWebApiTest
   -- , apiAction
@@ -22,6 +23,7 @@ import Test.QuickCheck.Monadic
 import Test.QuickCheck.Monadic qualified as QC
 import Data.Reflection
 import Data.IORef
+import Test.WebApi.Trace (Recorder, beginCase, recordedProperty)
 -- import Control.Monad.IO.Class
 import Control.Monad.Reader
 
@@ -35,6 +37,19 @@ propDL :: forall c xstate apps e s.
   ) => Proxy s -> (forall a. WebApiSessions apps a -> IO a) -> DL (ApiState s c xstate apps) () -> Property
 propDL _ webapiRunner d = forAllDL d (prop_api undefined webapiRunner)
 
+-- | 'propDL', each case it plays recorded into the recorder: the steps as
+-- they run, the case closed when QuickCheck finishes it (a generated case
+-- or a narrowing try alike; see "Test.WebApi.Trace").
+propDLTraced :: forall c xstate apps e s.
+  ( DynLogicModel xstate
+  , RunModel xstate IO
+  , XActionError e ~ Error xstate IO
+  , Typeable e
+  , Show e
+  , Reifies s (WebApiGlobalStateModel c xstate apps)
+  ) => Recorder -> Proxy s -> (forall a. WebApiSessions apps a -> IO a) -> DL (ApiState s c xstate apps) () -> Property
+propDLTraced rec _ webapiRunner d = recordedProperty rec $ forAllDL d (propApiWith (Just rec) webapiRunner)
+
 prop_api :: forall c xstate apps e s.
   ( DynLogicModel xstate
   , RunModel xstate IO
@@ -46,10 +61,23 @@ prop_api :: forall c xstate apps e s.
   -> (forall a. WebApiSessions apps a -> IO a)
   -> Actions (ApiState s c xstate apps)
   -> Property
-prop_api _newStRef webapiRunner s =
-  -- let
-  --   runner = 
-  monadic (ioProperty . webapiRunner . flip runReaderT initWebApiSessionsCxt) $ do
+prop_api _newStRef = propApiWith Nothing
+
+-- | The actions run, recorded when there is a recorder.
+propApiWith :: forall c xstate apps e s.
+  ( DynLogicModel xstate
+  , RunModel xstate IO
+  , XActionError e ~ Error xstate IO
+  , Typeable e
+  , Show e
+  , Reifies s (WebApiGlobalStateModel c xstate apps)
+  ) => Maybe Recorder
+  -> (forall a. WebApiSessions apps a -> IO a)
+  -> Actions (ApiState s c xstate apps)
+  -> Property
+propApiWith rec webapiRunner s =
+  monadic (ioProperty . webapiRunner . flip runReaderT (maybe initWebApiSessionsCxt tracingCxt rec)) $ do
+    mapM_ (QC.run . liftIO . beginCase) rec
     monitor $ counterexample "\nExecution\n"
     (_anonSt, _env) <- runActions s
     -- let 

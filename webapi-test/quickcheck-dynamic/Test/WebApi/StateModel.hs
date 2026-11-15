@@ -95,7 +95,12 @@ module Test.WebApi.StateModel
   , setPostcondition
   , setPostconditionOnFailure
   , setLabel
+  , setStep
   , andPostcondition
+  , andCheck
+  , andClassify
+  , tracingCxt
+  , noStage
   , addVariables
   , initApiState
   , initApiState_
@@ -149,7 +154,16 @@ import WebApi.Contract
 import WebApi.Param
 import WebApi.ContentTypes
 import WebApi.Util
-import Control.Exception (SomeException)
+import Control.Exception (SomeException, evaluate, try)
+import Control.Applicative ((<|>))
+import Data.Either (isRight)
+import Data.Foldable (forM_)
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Encoding.Error as TE
+import Test.WebApi.Trace
+  ( StepInfo (..), stepLabel, StepKind (..), Expectation (..), RequestRecord (..), FileRecord (..)
+  , AnswerRecord (..), CheckRecord (..), StageRecord (..), StepRecord (..), Recorder
+  , pushStep, amendStep, afterStep, clipText, bodyText )
 import Data.ByteString (ByteString)
 import Data.Text (Text)
 import Data.Kind
@@ -334,6 +348,8 @@ data WebApiAction s (c :: Type) (xstate :: Type) (apps :: [Type]) (a :: Type) wh
   -- them. A 'Left' is the effect's own failure, reported at the step.
   EffectCall :: (Typeable res, Show res, Eq res, Eq (Action xstate res))
     => String
+    -> Maybe StepInfo
+       -- ^ where it was written (a script's rule), for the trace
     -> Set.Set (Any Var)
     -> (LookUp -> IO (Either T.Text res))
     -> WebApiAction s c xstate apps res
@@ -373,7 +389,7 @@ instance StateModel xstate => Show (WebApiAction s c xstate apps a) where
     ClearContext pc -> "Clear-Context: " ++ show (typeRep pc)
     ModelOnly n _ -> "Model: " ++ n
     FreshValue l -> "fresh " ++ T.unpack l
-    EffectCall n _ _ -> n
+    EffectCall n _ _ _ -> n
     XAction xact -> show xact
 
 -- TODO: Revisit
@@ -400,8 +416,8 @@ instance Eq (Action xstate a) => Eq (WebApiAction s c xstate apps a) where
   (==) (FreshValue l1) = \case
     FreshValue l2 -> l1 == l2
     _ -> False
-  (==) (EffectCall n1 _ _) = \case
-    EffectCall n2 _ _ -> n1 == n2
+  (==) (EffectCall n1 _ _ _) = \case
+    EffectCall n2 _ _ _ -> n1 == n2
     _ -> False
   (==) (XAction xact1) = \case
     XAction xact2 -> xact1 == xact2
@@ -416,7 +432,7 @@ instance StateModel xstate => HasVariables (WebApiAction s c xstate apps a) wher
     ClearContext {} -> mempty
     ModelOnly {} -> mempty
     FreshValue {} -> mempty
-    EffectCall _ vars _ -> vars
+    EffectCall _ _ vars _ -> vars
     XAction xact -> getAllVariables xact
 
 newtype RefinementId = RefinementId Text
@@ -563,9 +579,15 @@ data SuccessApiModel s c xstate apps meth r a = SuccessApiModel
   , apiPrecondition :: Maybe (ApiState s c xstate apps -> Bool)
   , apiValidFailingAction :: Maybe (ApiState s c xstate apps -> Bool)
   , apiShrinkAction :: Maybe (VarContext -> ApiState s c xstate apps -> [Any (Action (ApiState s c xstate apps))])
-  , apiPostcondition :: (ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> ClientRequest meth r -> a -> Either Text ()
-    -- ^ over the request as it went out and the result of the call; 'Left'
-    -- says why it does not hold (the counterexample carries it)
+  , apiChecks :: [(Text, StepCheck s c xstate apps meth r a ())]
+    -- ^ the step's checks, each by name ('andCheck'), over the request as
+    -- it went out and the result of the call. Every one runs; a 'Left' says
+    -- why it does not hold (the counterexample and the trace carry it)
+  , apiClassify :: [(Text, StepCheck s c xstate apps meth r a Bool)]
+    -- ^ the labels the step gives its case where their predicate holds,
+    -- over the same ('andClassify'); a label never fails the step
+  , apiStep :: Maybe StepInfo
+    -- ^ where the step was written ('setStep'), for the trace
   , apiPostconditionOnFailure :: (ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> Either ErrorState a -> Bool
   , apiVariables :: Set.Set (Any Var)
     -- ^ variables the model's hooks look up besides the request's (a
@@ -586,6 +608,11 @@ data SuccessApiModel s c xstate apps meth r a = SuccessApiModel
     -- asynchronously ('eventually')
   }
 
+-- | A judgement over a step: the model before and after, the lookup, the
+-- request as it went out and the step's value ('apiChecks', 'apiClassify').
+newtype StepCheck s c xstate apps meth r a b = StepCheck
+  ((ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> ClientRequest meth r -> a -> Either Text b)
+
 defSuccessApiModel :: SuccessApiModel s c xstate apps meth r a
 defSuccessApiModel = SuccessApiModel
   { apiNextState = Nothing
@@ -593,7 +620,9 @@ defSuccessApiModel = SuccessApiModel
   , apiPrecondition = Nothing
   , apiValidFailingAction = Nothing
   , apiShrinkAction = Nothing
-  , apiPostcondition = \_ _ _ _ -> Right ()
+  , apiChecks = []
+  , apiClassify = []
+  , apiStep = Nothing
   , apiPostconditionOnFailure = \_ _ _ -> True
   , label = Nothing
   , apiVariables = mempty
@@ -628,15 +657,33 @@ setShrinkAction :: (VarContext -> ApiState s c xstate apps -> [Any (Action (ApiS
 setShrinkAction f SuccessApiModel {..} = SuccessApiModel {apiShrinkAction = Just f, ..}
 
 setPostcondition :: ((ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> ClientRequest meth r -> a -> Either Text ()) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
-setPostcondition f SuccessApiModel {..} = SuccessApiModel {apiPostcondition = f, ..}
+setPostcondition f SuccessApiModel {..} = SuccessApiModel {apiChecks = [("postcondition", StepCheck f)], ..}
 
--- | Require another postcondition besides the model's own (the model's is
--- checked first; the first failure is reported).
+-- | Require another postcondition besides the model's own, named
+-- @postcondition@ (see 'andCheck').
 andPostcondition :: ((ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> ClientRequest meth r -> a -> Either Text ()) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
-andPostcondition f SuccessApiModel {apiPostcondition, ..} = SuccessApiModel {apiPostcondition = \ss lkp req a -> apiPostcondition ss lkp req a >> f ss lkp req a, ..}
+andPostcondition = andCheck "postcondition"
+
+-- | Require another check, by name, after the model's own. Every check
+-- runs and every failure is reported; the trace lists each with whether
+-- it held.
+andCheck :: Text -> ((ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> ClientRequest meth r -> a -> Either Text ()) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+andCheck nm f SuccessApiModel {apiChecks, ..} = SuccessApiModel {apiChecks = apiChecks ++ [(nm, StepCheck f)], ..}
+
+-- | Give the step's case a label where the predicate holds (QuickCheck's
+-- 'QC.classify'): a case carries it if any of its steps' predicates held.
+-- A 'Left' (the predicate could not be judged) gives no label; a label
+-- never fails the step.
+andClassify :: Text -> ((ApiState s c xstate apps, ApiState s c xstate apps) -> LookUp -> ClientRequest meth r -> a -> Either Text Bool) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+andClassify nm f SuccessApiModel {apiClassify, ..} = SuccessApiModel {apiClassify = apiClassify ++ [(nm, StepCheck f)], ..}
 
 setLabel :: Text -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
 setLabel l SuccessApiModel {..} = SuccessApiModel {label = Just l, ..}
+
+-- | Where the step was written (a script's rule): the trace's trail and
+-- summary, and the label the counterexample shows (@rule: summary@).
+setStep :: StepInfo -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
+setStep i SuccessApiModel {..} = SuccessApiModel {apiStep = Just i, label = Just (stepLabel i), ..}
 
 -- | Declare variables the model's hooks look up (see 'apiVariables').
 addVariables :: Set.Set (Any Var) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
@@ -673,7 +720,14 @@ unWebApiAction (MkWebApiAction a) = a
 data WebApiGlobalStateModel c xstate apps = WebApiGlobalStateModel
   { appAribitaryAction :: forall (s :: Type). VarContext -> ApiState s c xstate apps -> QC.Gen (Any (Action (ApiState s c xstate apps)))
   , appInitState :: forall (s :: Type). ApiState s c xstate apps
+  , appStageOf :: forall (s :: Type). LookUp -> ApiState s c xstate apps -> Maybe Text
+    -- ^ the stage the model is at, as the trace shows it before and after
+    -- each step; 'noStage' for a model that declares none
   }
+
+-- | A model with no stages: the trace's stage stays empty.
+noStage :: LookUp -> ApiState s c xstate apps -> Maybe Text
+noStage _ _ = Nothing
 
 deriving newtype instance Eq (Action xstate a) => Eq (Action (ApiState s c xstate apps) a)
 
@@ -692,7 +746,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     MkWebApiAction a@(ClearContext {}) -> show a
     MkWebApiAction a@(ModelOnly {}) -> show a
     MkWebApiAction (FreshValue {}) -> "fresh"
-    MkWebApiAction (EffectCall n _ _) -> n
+    MkWebApiAction (EffectCall n _ _ _) -> n
     MkWebApiAction (XAction xact) -> actionName xact
 
   arbitraryAction varCxt s = case reflect (Proxy @s) of
@@ -803,13 +857,19 @@ data ResultError = MkResultError
 -- ModifyClientCookies moved to WebApi.Client.Session (M8a).
 
 data WebApiSessionsCxt = WebApiSessionsCxt
-  { -- defaultClientsState :: ClientsState
+  { traceRecorder :: Maybe Recorder
+    -- ^ where the steps are recorded as they run ('tracingCxt'); none:
+    -- nothing is recorded
   }
 
 initWebApiSessionsCxt :: WebApiSessionsCxt
 initWebApiSessionsCxt = WebApiSessionsCxt
-  {
+  { traceRecorder = Nothing
   }
+
+-- | The steps recorded into the recorder as they run.
+tracingCxt :: Recorder -> WebApiSessionsCxt
+tracingCxt rec = WebApiSessionsCxt {traceRecorder = Just rec}
 
 instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
          , RunModel xstate IO
@@ -820,99 +880,140 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
          , StateModel xstate
          ) => RunModel (ApiState s c xstate apps) (ReaderT WebApiSessionsCxt (WebApiSessions apps)) where
   type Error (ApiState s c xstate apps) (ReaderT WebApiSessionsCxt (WebApiSessions apps)) = ErrorState
-  perform (ApiState {xActionState}) act lkp = case act of
-    MkWebApiAction (SuccessCall creq' SuccessApiModel {apiRetry} cookModMay f) -> ReaderT $ \_ -> do
-      sup <- stepSuppliers lkp creq'
-      case resolveRequest sup lkp creq' of
-        Right creq -> do
-          let
-            once = testClients creq >>= \case
-              Success code out headerOut cookieOut -> do
-                let apiSucc = ApiSuccess {code, out, headerOut, cookieOut, sent = creq}
-                case cookModMay of
-                  Nothing -> pure ()
-                  Just cookMod -> case cookMod apiSucc of
-                    modCk@(SetClientCookies setcooks) -> mapM_ (setClientCookie modCk) setcooks
-                    modCk@(ModifyClientCookies modcooks) -> modifyClientCookies modCk modcooks
-                    modCk@(DeleteClientCookies delcooks) -> mapM_ (deleteClientCookie modCk) delcooks
-                pure $ either (Left . ResultError) Right $ f apiSucc
+  -- the step, then its record (when a recorder is listening): the request
+  -- as it went out and the answer as received are the session's until
+  -- the next step begins
+  perform st@ApiState {xActionState} act lkp = do
+    res <- performIt
+    ReaderT $ \WebApiSessionsCxt {traceRecorder} ->
+      forM_ traceRecorder $ \rec -> recordPerformed rec st act lkp res
+    pure res
+    where
+     performIt = case act of
+        MkWebApiAction (SuccessCall creq' SuccessApiModel {apiRetry} cookModMay f) -> ReaderT $ \_ -> do
+          sup <- stepSuppliers lkp creq'
+          case resolveRequest sup lkp creq' of
+            Right creq -> do
+              let
+                once = testClients creq >>= \case
+                  Success code out headerOut cookieOut -> do
+                    let apiSucc = ApiSuccess {code, out, headerOut, cookieOut, sent = creq}
+                    case cookModMay of
+                      Nothing -> pure ()
+                      Just cookMod -> case cookMod apiSucc of
+                        modCk@(SetClientCookies setcooks) -> mapM_ (setClientCookie modCk) setcooks
+                        modCk@(ModifyClientCookies modcooks) -> modifyClientCookies modCk modcooks
+                        modCk@(DeleteClientCookies delcooks) -> mapM_ (deleteClientCookie modCk) delcooks
+                    pure $ either (Left . ResultError) Right $ f apiSucc
+                  Failure (Right oerr) -> pure $ Left UnExpectedApiCrash
+                                          { status = H.status500 -- TODO: Fix this
+                                          , headerOut = [] -- TODO: Fix this
+                                          , someError = oerr
+                                          }
+                  Failure (Left (ApiError code _err hd _)) -> pure $ Left UnExpectedApiError
+                                                             { status = code
+                                                             , headerOut = maybe [] toHeader hd
+                                                             }
+                -- what the platform does asynchronously shows up eventually
+                attempt n = once >>= \case
+                  Left _ | n > 1 -> liftIO (threadDelay (1000 * maybe 0 snd apiRetry)) >> attempt (n - 1)
+                  r -> pure r
+              attempt (maybe 1 fst apiRetry)
+            Left field -> pure $ Left (InputNotSetError field)
+        MkWebApiAction (ErrorCall creq' expected _model f) -> ReaderT $ \_ -> do
+          sup <- stepSuppliers lkp creq'
+          case resolveRequest sup lkp creq' of
+            Right creq -> testClients creq >>= \case
+              Failure (Left apiErr@(ApiError code _err hd _))
+                | matchesFailure expected code -> pure $ either (Left . ResultError) Right $ f apiErr
+                | otherwise -> pure $ Left UnexpectedStatus
+                                      { expected
+                                      , status = code
+                                      , headerOut = maybe [] toHeader hd
+                                      }
               Failure (Right oerr) -> pure $ Left UnExpectedApiCrash
                                       { status = H.status500 -- TODO: Fix this
                                       , headerOut = [] -- TODO: Fix this
                                       , someError = oerr
                                       }
-              Failure (Left (ApiError code _err hd _)) -> pure $ Left UnExpectedApiError
-                                                         { status = code
-                                                         , headerOut = maybe [] toHeader hd
-                                                         }
-            -- what the platform does asynchronously shows up eventually
-            attempt n = once >>= \case
-              Left _ | n > 1 -> liftIO (threadDelay (1000 * maybe 0 snd apiRetry)) >> attempt (n - 1)
-              r -> pure r
-          attempt (maybe 1 fst apiRetry)
-        Left field -> pure $ Left (InputNotSetError field)
-    MkWebApiAction (ErrorCall creq' expected _model f) -> ReaderT $ \_ -> do
-      sup <- stepSuppliers lkp creq'
-      case resolveRequest sup lkp creq' of
-        Right creq -> testClients creq >>= \case
-          Failure (Left apiErr@(ApiError code _err hd _))
-            | matchesFailure expected code -> pure $ either (Left . ResultError) Right $ f apiErr
-            | otherwise -> pure $ Left UnexpectedStatus
-                                  { expected
-                                  , status = code
-                                  , headerOut = maybe [] toHeader hd
-                                  }
-          Failure (Right oerr) -> pure $ Left UnExpectedApiCrash
-                                  { status = H.status500 -- TODO: Fix this
-                                  , headerOut = [] -- TODO: Fix this
-                                  , someError = oerr
-                                  }
-          Success code _out headerOut _cookieOut -> pure $ Left $ UnExpectedApiSuccess
-                                                  { status = code
-                                                  , headerOut = toHeader headerOut
-                                                  }
-        Left field -> pure $ Left (InputNotSetError field)
-    MkWebApiAction (SomeExceptionCall creq) -> ReaderT $ \_ -> do
-      testClients creq >>= \case
-        Failure (Right (OtherError e)) -> pure $ Right e
-        Failure (Left (ApiError code _err hd _)) -> pure $ Left UnExpectedApiError
-                                                   { status = code
-                                                   , headerOut = maybe [] toHeader hd
-                                                   }
-        Success code _out headerOut _cookieOut -> pure $ Left $ UnExpectedApiSuccess
-                                                { status = code
-                                                , headerOut = toHeader headerOut
-                                                }
-    MkWebApiAction (SetContext c) -> Right <$> (liftIO $ setContext $ hashed c)
-    MkWebApiAction (ClearContext pc) -> Right <$> (liftIO $ clearContext pc)
-    MkWebApiAction (ModelOnly {}) -> pure (Right ())
-    MkWebApiAction (FreshValue l) -> ReaderT $ \_ -> Right <$> freshToken ("fresh:" <> l)
-    MkWebApiAction (EffectCall _ _ eff) -> ReaderT $ \_ ->
-      either (Left . ResultError . MkResultError) Right <$> liftIO (eff lkp)
-    MkWebApiAction (XAction xact) -> ReaderT $ \_ -> do
-      res <- liftIO $ perform xActionState xact lkp
-      pure $ first (XActionError . AnyXActionError) res
+              Success code _out headerOut _cookieOut -> pure $ Left $ UnExpectedApiSuccess
+                                                      { status = code
+                                                      , headerOut = toHeader headerOut
+                                                      }
+            Left field -> pure $ Left (InputNotSetError field)
+        MkWebApiAction (SomeExceptionCall creq) -> ReaderT $ \_ -> do
+          testClients creq >>= \case
+            Failure (Right (OtherError e)) -> pure $ Right e
+            Failure (Left (ApiError code _err hd _)) -> pure $ Left UnExpectedApiError
+                                                       { status = code
+                                                       , headerOut = maybe [] toHeader hd
+                                                       }
+            Success code _out headerOut _cookieOut -> pure $ Left $ UnExpectedApiSuccess
+                                                    { status = code
+                                                    , headerOut = toHeader headerOut
+                                                    }
+        MkWebApiAction (SetContext c) -> Right <$> (liftIO $ setContext $ hashed c)
+        MkWebApiAction (ClearContext pc) -> Right <$> (liftIO $ clearContext pc)
+        MkWebApiAction (ModelOnly {}) -> pure (Right ())
+        MkWebApiAction (FreshValue l) -> ReaderT $ \_ -> Right <$> freshToken ("fresh:" <> l)
+        MkWebApiAction (EffectCall _ _ _ eff) -> ReaderT $ \_ ->
+          either (Left . ResultError . MkResultError) Right <$> liftIO (eff lkp)
+        MkWebApiAction (XAction xact) -> ReaderT $ \_ -> do
+          res <- liftIO $ perform xActionState xact lkp
+          pure $ first (XActionError . AnyXActionError) res
 
-  postcondition ss (MkWebApiAction act) lkp res = case act of
-    SuccessCall creq model _ _ -> check creq model res
-    ErrorCall creq _ model _ -> check creq model res
-    _ -> pure True
+  postcondition ss@(_, after) (MkWebApiAction act) lkp res = do
+    (held, cs, ls, SomeLookUp lkp') <- case act of
+      SuccessCall creq model _ _ -> withChecks creq model res
+      ErrorCall creq _ model _ -> withChecks creq model res
+      EffectCall {} -> pure (True, [], [], SomeLookUp (extendLookUp lkp res))
+      _ -> pure (True, [], [], SomeLookUp lkp)
+    rec <- lift (asks (\WebApiSessionsCxt {traceRecorder} -> traceRecorder))
+    forM_ rec $ \r -> lift $ liftIO $ do
+      m <- renderModel lkp' after
+      stageAfter <- stageOfGuarded lkp' after
+      amendStep r (afterStep cs ls m stageAfter held)
+    pure held
     where
-      -- the request as it went out: the step's fresh tokens are still those
-      check :: forall meth r x. SingMethod meth => ClientRequestVal meth r -> SuccessApiModel s c xstate apps meth r x -> x -> PostconditionM (ReaderT WebApiSessionsCxt (WebApiSessions apps)) Bool
-      check creq SuccessApiModel {apiPostcondition} x = do
+      -- the request as it went out: the step's fresh tokens are still those.
+      -- Every check runs; each failure is reported, and the trace lists
+      -- each check with whether it held, and the labels that held. The
+      -- model after the step is read with this step's own value bound
+      -- (quickcheck-dynamic hands a postcondition the lookup from before it)
+      withChecks :: forall meth r x. (SingMethod meth, Typeable x) => ClientRequestVal meth r -> SuccessApiModel s c xstate apps meth r x -> x -> PostconditionM (ReaderT WebApiSessionsCxt (WebApiSessions apps)) (Bool, [CheckRecord], [Text], SomeLookUp)
+      withChecks creq SuccessApiModel {apiChecks, apiClassify} x = do
         toks <- lift (lift freshTokens)
         -- the files were written for the call; the view names them
-        case resolveRequest placeholders {freshOf = freshLookup toks} lkp creq >>= \req -> apiPostcondition ss lkp req x of
-          Right () -> pure True
+        case resolveRequest placeholders {freshOf = freshLookup toks} lkp creq of
           Left why -> do
             counterexamplePost ("  postcondition failed: " ++ T.unpack why)
-            pure False
+            pure (False, [CheckRecord {check = "request", held = False, why = Just why}], [], SomeLookUp (extendLookUp lkp x))
+          Right req -> do
+            let
+              results = [ (nm, f ss lkp req x) | (nm, StepCheck f) <- apiChecks ]
+              heldLabels = [ l | (l, StepCheck p) <- apiClassify, Right True <- [p ss lkp req x] ]
+            forM_ [ why | (_, Left why) <- results ] $ \why ->
+              counterexamplePost ("  postcondition failed: " ++ T.unpack why)
+            forM_ heldLabels $ \l -> monitorPost (QC.classify True (T.unpack l))
+            pure
+              ( all (isRight . snd) results
+              , [ CheckRecord {check = nm, held = isRight r, why = either Just (const Nothing) r} | (nm, r) <- results ]
+              , heldLabels
+              , SomeLookUp (extendLookUp lkp x)
+              )
 
-  postconditionOnFailure ss (MkWebApiAction act) lkp res = pure $ case act of
-    SuccessCall _ SuccessApiModel {apiPostconditionOnFailure} _ _ -> apiPostconditionOnFailure ss lkp res
-    ErrorCall _ _ SuccessApiModel {apiPostconditionOnFailure} _ -> apiPostconditionOnFailure ss lkp res
-    _ -> True
+  postconditionOnFailure ss@(_, after) (MkWebApiAction act) lkp res = do
+    rec <- lift (asks (\WebApiSessionsCxt {traceRecorder} -> traceRecorder))
+    forM_ rec $ \r -> lift $ liftIO $ do
+      m <- renderModel lkp after
+      stageAfter <- stageOfGuarded lkp after
+      amendStep r (afterStep [] [] m stageAfter held)
+    pure held
+    where
+      held = case act of
+        SuccessCall _ SuccessApiModel {apiPostconditionOnFailure} _ _ -> apiPostconditionOnFailure ss lkp res
+        ErrorCall _ _ SuccessApiModel {apiPostconditionOnFailure} _ -> apiPostconditionOnFailure ss lkp res
+        _ -> True
 
   monitoring _ (MkWebApiAction act) lkp res = QC.counterexample $ case act of
     SuccessCall creq _ _ _ -> stepReport (show act) (requestReport lkp creq) (outcome res)
@@ -967,6 +1068,199 @@ requestReport lkp creq = case resolveRequest placeholders lkp creq of
       (pre, []) -> pre
       (pre, _) -> pre ++ "…"
 
+-- ---------------------------------------------------------------------------
+-- The trace's records ("Test.WebApi.Trace"): what a step that ran is
+-- recorded as. Rendering never fails a step: a value that cannot be shown
+-- yet reads as a placeholder.
+
+-- | How much of a body, and of a value, a record keeps.
+bodyClip, valueClip :: Int
+bodyClip = 32768
+valueClip = 4000
+
+-- | The step that just ran, recorded: the request and the answer while
+-- the session still holds them, the stage before it.
+recordPerformed :: forall s c xstate apps a. (Reifies s (WebApiGlobalStateModel c xstate apps), StateModel xstate)
+  => Recorder -> ApiState s c xstate apps -> Action (ApiState s c xstate apps) a -> LookUp -> Either ErrorState a -> WebApiSessions apps ()
+recordPerformed rec st (MkWebApiAction act) lkp res = do
+  stageBefore <- liftIO (stageOfGuarded lkp st)
+  let
+    engineStep k op i shown = StepRecord
+      { n = 0, kind = k, info = i, operation = op, method = Nothing, expect = Nothing, request = Nothing
+      , answer = Just AnswerRecord
+          { httpStatus = Nothing
+          , body = Nothing
+          , value = either (const Nothing) shown res
+          , failure = either (Just . shownText) (const Nothing) res
+          }
+      , checks = [], labels = [], model = Nothing
+      , stage = StageRecord {before = stageBefore, after = Nothing}
+      , ok = isRight res
+      }
+  record <- case act of
+    SuccessCall creq SuccessApiModel {apiStep} _ _ -> callRecord lkp creq apiStep GoesThrough res stageBefore
+    ErrorCall creq expected SuccessApiModel {apiStep} _ -> callRecord lkp creq apiStep (Refused (expectedStatus expected)) res stageBefore
+    SomeExceptionCall creq -> do
+      raw <- getLastResponse
+      bodyMay <- getLastResponseBody
+      let (req, meth) = requestRecordOf creq
+      pure StepRecord
+        { n = 0, kind = KindCall, info = Nothing, operation = T.pack (getOpIdFromRequest creq), method = Just meth
+        , expect = Nothing, request = Just req
+        , answer = Just AnswerRecord {httpStatus = H.statusCode . fst <$> raw, body = bodyMay >>= bodyText bodyClip, value = Nothing, failure = either (Just . shownText) (const Nothing) res}
+        , checks = [], labels = [], model = Nothing
+        , stage = StageRecord {before = stageBefore, after = Nothing}
+        , ok = isRight res
+        }
+    SetContext c -> pure (engineStep KindContext "setContext" Nothing (const (Just (shownText c))))
+    ClearContext {} -> pure (engineStep KindContext "clearContext" Nothing (const Nothing))
+    ModelOnly nm _ -> pure (engineStep KindModel (T.pack nm) Nothing (const Nothing))
+    FreshValue l -> pure (engineStep KindFresh ("fresh " <> l) Nothing Just)
+    EffectCall nm i _ _ -> pure (engineStep KindGlue (T.pack nm) i (Just . shownText))
+    XAction xact -> pure (engineStep KindOther (T.pack (actionName xact)) Nothing (const Nothing))
+  liftIO (pushStep rec record)
+  where
+    expectedStatus = \case
+      AnyFailure -> Nothing
+      FailureStatus code -> Just code
+
+-- | A call's record: the request as it went out (its fresh values as the
+-- step made them, its files by name), the answer as received, and the
+-- check that its status was the one expected.
+callRecord :: forall meth app r res apps. (WebApiActionCxt apps meth app r, Show res)
+  => LookUp -> ClientRequestVal meth (app :// r) -> Maybe StepInfo -> Expectation -> Either ErrorState res -> Maybe Text -> WebApiSessions apps StepRecord
+callRecord lkp creq i expectation res stageBefore = do
+  toks <- freshTokens
+  raw <- getLastResponse
+  bodyMay <- getLastResponseBody
+  let
+    (req, meth) = case resolveRequest placeholders {freshOf = freshLookup toks} lkp creq of
+      Left fld -> (RequestUnset fld, Nothing)
+      Right resolved -> second Just (requestRecordOf resolved)
+  pure StepRecord
+    { n = 0
+    , kind = KindCall
+    , info = i
+    , operation = T.pack (getOpIdFromRequest creq)
+    , method = meth
+    , expect = Just expectation
+    , request = Just req
+    , answer = Just AnswerRecord
+        { httpStatus = (H.statusCode . fst <$> raw) <|> either errorStatus (const Nothing) res
+        , body = bodyMay >>= bodyText bodyClip
+        , value = either (const Nothing) (Just . shownText) res
+        , failure = either (Just . shownText) (const Nothing) res
+        }
+    , checks = callChecks expectation res
+    , labels = []
+    , model = Nothing
+    , stage = StageRecord {before = stageBefore, after = Nothing}
+    , ok = isRight res
+    }
+  where
+    errorStatus = \case
+      UnExpectedApiError {status} -> Just (H.statusCode status)
+      UnExpectedApiSuccess {status} -> Just (H.statusCode status)
+      UnexpectedStatus {status} -> Just (H.statusCode status)
+      _ -> Nothing
+
+-- | The checks a call's answer itself makes: its status was the expected
+-- one, and the model could read it.
+callChecks :: Expectation -> Either ErrorState res -> [CheckRecord]
+callChecks expectation = \case
+  Right _ -> [statusHeld]
+  Left (ResultError (MkResultError e)) -> [statusHeld, CheckRecord {check = "result", held = False, why = Just e}]
+  Left (InputNotSetError fld) -> [CheckRecord {check = "request", held = False, why = Just (fld <> " is not set")}]
+  Left err -> [CheckRecord {check = "status", held = False, why = Just (statusWhy err)}]
+  where
+    statusHeld = CheckRecord {check = "status", held = True, why = Nothing}
+    code st = T.pack (show (H.statusCode st))
+    expected = case expectation of
+      GoesThrough -> "it to go through"
+      Refused Nothing -> "a refusal"
+      Refused (Just c) -> "a refusal with " <> T.pack (show c)
+    statusWhy = \case
+      UnExpectedApiError {status} -> "answered " <> code status <> ", expected " <> expected
+      UnExpectedApiSuccess {status} -> "answered " <> code status <> ", expected " <> expected
+      UnexpectedStatus {status} -> "answered " <> code status <> ", expected " <> expected
+      UnExpectedApiCrash {someError} -> "no answer: " <> T.pack (show someError)
+      other -> T.pack (show other)
+
+-- | The request as the client sends it (method, path, query, headers,
+-- form, files, body), credentials masked; and its method.
+requestRecordOf :: forall meth r.
+  ( ToParam 'PathParam (PathParam meth r)
+  , ToParam 'QueryParam (QueryParam meth r)
+  , ToParam 'FormParam (FormParam meth r)
+  , ToParam 'FileParam (FileParam meth r)
+  , ToHeader (HeaderIn meth r)
+  , PartEncodings (RequestBody meth r)
+  , ToHListRecTuple (StripContents (RequestBody meth r))
+  , MkPathFormatString r
+  , SingMethod meth
+  ) => ClientRequest meth r -> (RequestRecord, Text)
+requestRecordOf resolved =
+  let
+    RequestParts {uriPath, meth, qitms, hdrs, formPar, filePar, bodyPart} = requestParts BC.empty [] (fromClientRequest resolved)
+  in
+    ( RequestSent
+        { line = utf8 meth <> " " <> utf8 uriPath <> utf8 (H.renderQuery True qitms)
+        , headers = [ (utf8 (CI.original k), maskedText (CI.original k) v) | (k, v) <- hdrs, k /= H.hAccept ]
+        , form = [ (utf8 k, maskedText k v) | (k, v) <- formPar ]
+        , files = [ FileRecord {field = utf8 k, fileName = utf8 fileName, contentType = utf8 fileContentType}
+                  | (k, FileInfo {fileName, fileContentType}) <- filePar ]
+        , body = bodyPart >>= bodyText bodyClip . snd
+        , bodyType = utf8 . fst <$> bodyPart
+        }
+    , utf8 meth
+    )
+  where
+    utf8 = TE.decodeUtf8With TE.lenientDecode
+    -- credentials do not belong in a test report
+    maskedText k v
+      | any (`T.isInfixOf` T.toLower (utf8 k)) ["password", "authorization", "cookie", "token"] = "<hidden>"
+      | otherwise = utf8 v
+
+-- | A value as a record shows it.
+shownText :: Show x => x -> Text
+shownText = clipText valueClip . T.pack . show
+
+-- | The model's entities, each class with its values, as far as the
+-- lookup can resolve them.
+renderModel :: LookUp -> ApiState s c xstate apps -> IO (M.Map Text [Text])
+renderModel lkp ApiState {namedEntityTyped = NamedEntityTyped NamedEntity {namedEntity}} = do
+  rows <- forM (concat (M.elems namedEntity)) $ \(Some NamedVal {name = RefinementId nm, val}) -> do
+    shown <- try (evaluate (forced (either (\why -> "<" <> why <> ">") shownText (resolveVal lkp val))))
+    pure (nm, [either (\(_ :: SomeException) -> "<not known yet>") id shown])
+  pure (M.fromListWith (flip (++)) rows)
+  where
+    forced t = T.length t `seq` t
+
+-- | The model's stage by its hook; a hook that fails reads as none.
+stageOfGuarded :: forall s c xstate apps. Reifies s (WebApiGlobalStateModel c xstate apps) => LookUp -> ApiState s c xstate apps -> IO (Maybe Text)
+stageOfGuarded lkp st = case reflect (Proxy @s) of
+  WebApiGlobalStateModel {appStageOf} -> do
+    r <- try (evaluate (forced (appStageOf lkp st)))
+    pure (either (\(_ :: SomeException) -> Nothing) id r)
+  where
+    forced = \case
+      Nothing -> Nothing
+      Just t -> T.length t `seq` Just t
+
+-- | A lookup, carried where a polymorphic one cannot go (a tuple).
+newtype SomeLookUp = SomeLookUp LookUp
+
+-- | The lookup with the step's own value bound: quickcheck-dynamic hands a
+-- postcondition the lookup from before the step, in which only the step's
+-- own variable is unbound — so a variable the lookup does not know, at the
+-- value's type, is the step's.
+extendLookUp :: forall x. Typeable x => LookUp -> x -> LookUp
+extendLookUp lkp x v = unsafePerformIO $ do
+  r <- try (evaluate (lkp v))
+  case r of
+    Right y -> pure y
+    Left (_ :: SomeException) -> maybe (evaluate (lkp v)) pure (cast x)
+
 instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
          , DynLogicModel xstate
          ) => DynLogicModel (ApiState s c xstate apps) where
@@ -1011,14 +1305,16 @@ expectingFailure :: Eq (Action xstate ()) =>
   -> Action (ApiState s c xstate apps) a
   -> Maybe (Action (ApiState s c xstate apps) ())
 expectingFailure expected pre (MkWebApiAction act) = case act of
-  SuccessCall creq SuccessApiModel {apiFailureNextState, label, apiVariables} _ _ -> Just $ mkWebApiAction $ ErrorCall creq expected
+  SuccessCall creq SuccessApiModel {apiFailureNextState, label, apiVariables, apiStep} _ _ -> Just $ mkWebApiAction $ ErrorCall creq expected
     SuccessApiModel
       { apiNextState = (\ns _ st -> ns st) <$> apiFailureNextState
       , apiFailureNextState
       , apiPrecondition = Just pre
       , apiValidFailingAction = Nothing
       , apiShrinkAction = Nothing
-      , apiPostcondition = \_ _ _ _ -> Right ()
+      , apiChecks = []
+      , apiClassify = []
+      , apiStep
       , apiPostconditionOnFailure = \_ _ _ -> True
       , label
       , apiVariables
@@ -1170,14 +1466,14 @@ ensuresRefinement r = noteEnsured . foldr ((.) . check) id (chain r)
   where
     chain x@Refinement {refines} = x : concatMap chain refines
     check Refinement {refinementName = RefinementId n, holds} =
-      andPostcondition (\_ lkp req x -> either (\why -> Left ("refinement " <> n <> ": " <> why)) Right (holds lkp req x))
+      andCheck ("ensures " <> n) (\_ lkp req x -> either (\why -> Left ("refinement " <> n <> ": " <> why)) Right (holds lkp req x))
     noteEnsured SuccessApiModel {apiEnsures, ..} = SuccessApiModel {apiEnsures = apiEnsures <> Set.fromList (refinementNames r), ..}
 
 -- | Check the step's value is *not* in the refinement: outside a class
 -- means its predicate fails or one of its bases' does (the class is their
 -- conjunction). Refuting never makes a class drawable.
 refutesRefinement :: forall meth r a s c xstate apps. Refinement meth r a -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a
-refutesRefinement r@Refinement {refinementName = rid@(RefinementId n)} = noteRefuted . andPostcondition (\_ lkp req x -> check lkp req x)
+refutesRefinement r@Refinement {refinementName = rid@(RefinementId n)} = noteRefuted . andCheck ("refutes " <> n) (\_ lkp req x -> check lkp req x)
   where
     check :: LookUp -> ClientRequest meth r -> a -> Either Text ()
     check lkp req x = case [ () | Refinement {holds} <- chain r, Left _ <- [holds lkp req x] ] of
