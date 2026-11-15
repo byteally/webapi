@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               webapi-test
-version:            0.2.0.0
+version:            0.3.0.0
 -- synopsis:
 -- description:
 license:            BSD-3-Clause
@@ -56,6 +56,8 @@ library qc-dynamic
                       Test.WebApi.StateModel
                       Test.WebApi.DynamicLogic
                       Test.WebApi.Trace
+                      Test.WebApi.Case
+                      Test.WebApi.Replay
     -- other-modules:
     build-depends:    webapi-test
                     , aeson >= 2.0
@@ -64,7 +66,7 @@ library qc-dynamic
                     , http-types
                     , http-media
                     , QuickCheck >= 2.14
-                    , quickcheck-dynamic >= 4.0
+                    , quickcheck-dynamic >= 4.0.1.1 && < 4.1
                     , dependent-map
                     , dependent-sum
                     , reflection >= 2.1
@@ -86,7 +88,7 @@ library webapi-test-tasty
                     , http-types
                     , http-media
                     , QuickCheck >= 2.14
-                    , quickcheck-dynamic >= 4.0
+                    , quickcheck-dynamic >= 4.0.1.1 && < 4.1
                     , tasty
                     , tasty-quickcheck
                     , dependent-map
