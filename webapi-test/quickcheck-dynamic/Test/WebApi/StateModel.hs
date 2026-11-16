@@ -1034,7 +1034,10 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
         MkWebApiAction (SetContext c) -> Right <$> (liftIO $ setContext $ hashed c)
         MkWebApiAction (ClearContext pc) -> Right <$> (liftIO $ clearContext pc)
         MkWebApiAction (ModelOnly {}) -> pure (Right ())
-        MkWebApiAction (FreshValue l) -> ReaderT $ \_ -> Right <$> freshToken ("fresh:" <> l)
+        -- a draw is a step of its own: its token is new each time it is
+        -- drawn (a second thing a move makes gets its own), never the
+        -- token an earlier draw of the same label got (zenbridge #2714)
+        MkWebApiAction (FreshValue l) -> ReaderT $ \_ -> Right <$> (beginStep >> freshToken ("fresh:" <> l))
         MkWebApiAction (EffectCall _ _ _ eff) -> ReaderT $ \_ ->
           either (Left . ResultError . MkResultError) Right <$> eff lkp
         MkWebApiAction (XAction xact) -> ReaderT $ \_ -> do

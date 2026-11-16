@@ -2,6 +2,10 @@
 
 ## 0.4.0.0 -- 2026-11-16 (zenbridge #2714: a scenario's moves, stages and checks)
 
+* **A fresh value is new each time it is drawn.** `FreshValue` begins a step
+  of its own, so the session's one-token-per-label-per-step cache no longer
+  hands a second draw of the same label the first draw's token (two things a
+  move made in one case had one "fresh" PO).
 * **`EffectCall` runs in the sessions** (breaking). Its effect is
   `LookUp -> WebApiSessions apps (Either Text res)`, was `IO`: a host's
   own step (a document built from a spec and uploaded, several calls) runs
