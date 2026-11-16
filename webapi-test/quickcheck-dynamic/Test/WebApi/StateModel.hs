@@ -21,6 +21,8 @@ module Test.WebApi.StateModel
   , module Test.WebApi.Val
   , ClientRequestVal (..)
   , WebApiGlobalStateModel (..)
+  , MoveHost (..)
+  , defMoveHost
   , NER (..)
   , HasApiSession (..)
   , WebApiSessionsCxt
@@ -65,7 +67,6 @@ module Test.WebApi.StateModel
   , ActionConfig (..)
   , ActionConfigWith (..)
   , ApiGenM
-  , AnyVal (..)
   , GetOpIdName
   , runApiGenM
   , runApiGenMDrawing
@@ -162,7 +163,7 @@ import WebApi.Contract
 import WebApi.Param
 import WebApi.ContentTypes
 import WebApi.Util
-import Control.Exception (SomeException, evaluate, try)
+import Control.Exception (SomeException, evaluate, throwIO, try)
 import Control.Applicative ((<|>))
 import Data.Either (isRight)
 import Data.Foldable (forM_)
@@ -171,7 +172,8 @@ import qualified Data.Text.Encoding.Error as TE
 import Test.WebApi.Trace
   ( StepInfo (..), stepLabel, StepKind (..), Expectation (..), RequestRecord (..), FileRecord (..)
   , AnswerRecord (..), CheckRecord (..), StageRecord (..), StepRecord (..), Recorder
-  , pushStep, amendStep, afterStep, clipText, bodyText )
+  , pushStep, amendStep, afterStep, markInconclusive, clipText, bodyText )
+import Test.WebApi.Prediction
 import Data.ByteString (ByteString)
 import Data.Text (Text)
 import Data.Kind
@@ -352,19 +354,31 @@ data WebApiAction s (c :: Type) (xstate :: Type) (apps :: [Type]) (a :: Type) wh
   -- execution): a fresh value the DL binds like any other result, so a
   -- request and a later assertion can share it and a replay makes a new one.
   FreshValue :: Text -> WebApiAction s c xstate apps Text
-  -- | A step that performs an effect outside the web API — a foreign
-  -- transform, say — its result bound like any other. The variables the
+  -- | A step that performs an effect outside one route's call — a foreign
+  -- transform, or a host's own step over several calls (a document built
+  -- and uploaded) — its result bound like any other. The variables the
   -- effect's closure references are declared up front, so the DL keeps the
   -- steps that bind them; the effect receives the 'LookUp' that resolves
-  -- them. A 'Left' is the effect's own failure, reported at the step.
+  -- them, and runs in the sessions, so it may call the apps as the run's
+  -- context. A 'Left' is the effect's own failure, reported at the step.
   EffectCall :: (Typeable res, Show res, Eq res, Eq (Action xstate res))
     => String
     -> Maybe StepInfo
        -- ^ where it was written (a script's rule), for the trace
     -> Set.Set (Any Var)
-    -> (LookUp -> IO (Either T.Text res))
+    -> (LookUp -> WebApiSessions apps (Either T.Text res))
     -> WebApiAction s c xstate apps res
   XAction :: Action xstate a -> WebApiAction s c xstate apps a
+  -- | A move of a scenario begins ("Test.WebApi.Moves"): nothing is
+  -- performed. The move's own steps follow, and its 'MoveSettle' closes it;
+  -- narrowing keeps or drops the three together.
+  MoveBegin :: Text -> StepInfo -> WebApiAction s c xstate apps ()
+  -- | A move ends: the prediction moves on (the things it picked go where
+  -- the move sends them, then along the platform's answers; the things it
+  -- makes are recorded), the host settles what the move caused and
+  -- observes it, and the property's judge holds every thing against the
+  -- observation. A move that does not settle is inconclusive.
+  MoveSettle :: MoveEnd -> WebApiAction s c xstate apps ()
 
 -- | What an 'ErrorCall' expects of the response.
 data ExpectedFailure
@@ -402,6 +416,8 @@ instance StateModel xstate => Show (WebApiAction s c xstate apps a) where
     FreshValue l -> "fresh " ++ T.unpack l
     EffectCall n _ _ _ -> n
     XAction xact -> show xact
+    MoveBegin n _ -> "begin " ++ T.unpack n
+    MoveSettle MoveEnd {name} -> "settle " ++ T.unpack name
 
 -- TODO: Revisit
 instance Eq (Action xstate a) => Eq (WebApiAction s c xstate apps a) where
@@ -433,6 +449,12 @@ instance Eq (Action xstate a) => Eq (WebApiAction s c xstate apps a) where
   (==) (XAction xact1) = \case
     XAction xact2 -> xact1 == xact2
     _ -> False
+  (==) (MoveBegin n1 i1) = \case
+    MoveBegin n2 i2 -> n1 == n2 && i1 == i2
+    _ -> False
+  (==) (MoveSettle MoveEnd {name = n1, info = i1}) = \case
+    MoveSettle MoveEnd {name = n2, info = i2} -> n1 == n2 && i1 == i2
+    _ -> False
 
 instance StateModel xstate => HasVariables (WebApiAction s c xstate apps a) where
   getAllVariables = \case
@@ -445,12 +467,13 @@ instance StateModel xstate => HasVariables (WebApiAction s c xstate apps a) wher
     FreshValue {} -> mempty
     EffectCall _ _ vars _ -> vars
     XAction xact -> getAllVariables xact
+    MoveBegin {} -> mempty
+    -- the values of the things it makes refer to the move's steps (and to
+    -- earlier ones): the DL keeps the steps that bind them
+    MoveSettle MoveEnd {makes, uses} -> uses <> foldMap (\(_, _, v) -> getAllVariables v) makes
 
 newtype RefinementId = RefinementId Text
   deriving newtype (Show, Eq, Ord, Read)
-
-data AnyVal where
-  SomeVal :: Typeable x => Val x -> AnyVal
 
 -- | The entities the model knows, by type: each carries the class
 -- ('RefinementId') it was recorded under. A class is a *name* the model
@@ -522,6 +545,9 @@ data ApiState (s :: Type) (c :: Type) (xstate :: Type) (apps :: [Type]) = ApiSta
   , classTypes :: M.Map RefinementId TypeRep
     -- ^ the type each registered class holds ('registerClass'); recording
     -- another type under it is a model bug
+  , prediction :: Prediction
+    -- ^ the things a scenario tracks and the stage each is predicted at
+    -- ("Test.WebApi.Moves"); each is also recorded under its stage's class
 --  , sessionState :: M.Map SessionKey NamedEntityTyped
   }
 
@@ -560,6 +586,7 @@ initApiState f xstate = ApiState
   , xActionState = xstate
   , generateFrom = Nothing
   , classTypes = mempty
+  , prediction = emptyPrediction
   }
 
 -- | Register a class with the type its entities have; a second
@@ -743,6 +770,9 @@ data WebApiGlobalStateModel c xstate apps = WebApiGlobalStateModel
     -- ^ a drawn action made again for a regression case, from its operation
     -- and the positions its generation drew ('runApiGenMRedrawing');
     -- 'noRedraw' for a model whose actions are never drawn
+  , appMoveHost :: MoveHost apps
+    -- ^ what the host does after each move of a scenario: settle, observe,
+    -- its own checks ('defMoveHost': settles at once, observes nothing)
   }
 
 -- | A model whose actions are never drawn: a regression case holding a
@@ -773,6 +803,8 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     MkWebApiAction (FreshValue {}) -> "fresh"
     MkWebApiAction (EffectCall n _ _ _) -> n
     MkWebApiAction (XAction xact) -> actionName xact
+    MkWebApiAction a@(MoveBegin {}) -> show a
+    MkWebApiAction (MoveSettle MoveEnd {name}) -> T.unpack name
 
   arbitraryAction varCxt s = case reflect (Proxy @s) of
     WebApiGlobalStateModel {appAribitaryAction} -> appAribitaryAction @s varCxt s
@@ -791,6 +823,8 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     FreshValue {} -> s
     EffectCall {} -> s
     XAction xact -> ApiState {xActionState = nextState xActionState xact var, ..}
+    MoveBegin {} -> s
+    MoveSettle me -> settleNextState me s
 
   failureNextState s@ApiState{xActionState, ..} (MkWebApiAction act) = case act of
     SuccessCall _creq SuccessApiModel {apiFailureNextState=nsMay} _ _ -> maybe s (\ns -> ns s) nsMay
@@ -802,6 +836,8 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     FreshValue {} -> s
     EffectCall {} -> s
     XAction xact -> ApiState {xActionState = failureNextState xActionState xact, ..}
+    MoveBegin {} -> s
+    MoveSettle {} -> s
 
   precondition s (MkWebApiAction act) = webApiPrecondition s act
 
@@ -815,6 +851,8 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     FreshValue {} -> False
     EffectCall {} -> False
     XAction xact -> validFailingAction xActionState xact
+    MoveBegin {} -> False
+    MoveSettle {} -> False
 
   shrinkAction varCxt s@ApiState{xActionState} (MkWebApiAction act) = case act of
     -- by default a request shrinks one leaf at a time (a variable to an
@@ -832,6 +870,9 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     FreshValue {} -> []
     EffectCall {} -> []
     XAction xact -> fmap (\(Some xact') -> Some $ MkWebApiAction $ XAction xact') $ shrinkAction varCxt xActionState xact
+    -- a move narrows by its picks and draws, which the program owns
+    MoveBegin {} -> []
+    MoveSettle {} -> []
 
 
 -- instance Functor (Action (ApiState s c xstate apps)) where
@@ -908,11 +949,24 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
   -- the step, then its record (when a recorder is listening): the request
   -- as it went out and the answer as received are the session's until
   -- the next step begins
-  perform st@ApiState {xActionState} act lkp = do
-    res <- performIt
-    ReaderT $ \WebApiSessionsCxt {traceRecorder} ->
+  perform st@ApiState {xActionState} act lkp = case act of
+    -- a move's end: the host settles what it caused, within its budget;
+    -- one that does not is inconclusive, recorded so before the case stops
+    MkWebApiAction (MoveSettle MoveEnd {name, budget}) -> ReaderT $ \WebApiSessionsCxt {traceRecorder} -> do
+      let WebApiGlobalStateModel {appMoveHost = MoveHost {settle}} = reflect (Proxy @s)
+      settled <- settle budget
+      let res = either (const (Right ())) Right settled
       forM_ traceRecorder $ \rec -> recordPerformed rec st act lkp res
-    pure res
+      case settled of
+        Right () -> pure res
+        Left why -> do
+          forM_ traceRecorder $ \rec -> liftIO (amendStep rec (markInconclusive why))
+          liftIO (throwIO MoveInconclusive {move = name, why})
+    _ -> do
+      res <- performIt
+      ReaderT $ \WebApiSessionsCxt {traceRecorder} ->
+        forM_ traceRecorder $ \rec -> recordPerformed rec st act lkp res
+      pure res
     where
      performIt = case act of
         MkWebApiAction (SuccessCall creq' SuccessApiModel {apiRetry} cookModMay f) -> ReaderT $ \_ -> do
@@ -980,18 +1034,24 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
         MkWebApiAction (SetContext c) -> Right <$> (liftIO $ setContext $ hashed c)
         MkWebApiAction (ClearContext pc) -> Right <$> (liftIO $ clearContext pc)
         MkWebApiAction (ModelOnly {}) -> pure (Right ())
-        MkWebApiAction (FreshValue l) -> ReaderT $ \_ -> Right <$> freshToken ("fresh:" <> l)
+        -- a draw is a step of its own: its token is new each time it is
+        -- drawn (a second thing a move makes gets its own), never the
+        -- token an earlier draw of the same label got (zenbridge #2714)
+        MkWebApiAction (FreshValue l) -> ReaderT $ \_ -> Right <$> (beginStep >> freshToken ("fresh:" <> l))
         MkWebApiAction (EffectCall _ _ _ eff) -> ReaderT $ \_ ->
-          either (Left . ResultError . MkResultError) Right <$> liftIO (eff lkp)
+          either (Left . ResultError . MkResultError) Right <$> eff lkp
         MkWebApiAction (XAction xact) -> ReaderT $ \_ -> do
           res <- liftIO $ perform xActionState xact lkp
           pure $ first (XActionError . AnyXActionError) res
+        MkWebApiAction (MoveBegin {}) -> pure (Right ())
+        MkWebApiAction (MoveSettle {}) -> pure (Right ())
 
   postcondition ss@(_, after) (MkWebApiAction act) lkp res = do
     (held, cs, ls, SomeLookUp lkp') <- case act of
       SuccessCall creq model _ _ -> withChecks creq model res
       ErrorCall creq _ model _ -> withChecks creq model res
       EffectCall {} -> pure (True, [], [], SomeLookUp (extendLookUp lkp res))
+      MoveSettle me -> settleChecks me
       _ -> pure (True, [], [], SomeLookUp lkp)
     rec <- lift (asks (\WebApiSessionsCxt {traceRecorder} -> traceRecorder))
     forM_ rec $ \r -> lift $ liftIO $ do
@@ -1000,6 +1060,27 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
       amendStep r (afterStep cs ls m stageAfter held)
     pure held
     where
+      -- a move's end: the host observes, then every thing is held against
+      -- the observation, and the host's own checks run. What cannot be
+      -- observed is inconclusive, as a move that does not settle is
+      settleChecks :: MoveEnd -> PostconditionM (ReaderT WebApiSessionsCxt (WebApiSessions apps)) (Bool, [CheckRecord], [Text], SomeLookUp)
+      settleChecks me@MoveEnd {name, labels} = do
+        let WebApiGlobalStateModel {appMoveHost = MoveHost {observe, hostChecks}} = reflect (Proxy @s)
+        observed <- lift (lift observe)
+        case observed of
+          Left why -> do
+            rec <- lift (asks (\WebApiSessionsCxt {traceRecorder} -> traceRecorder))
+            lift $ liftIO $ do
+              forM_ rec $ \r -> amendStep r (markInconclusive ("nothing could be observed: " <> why))
+              throwIO MoveInconclusive {move = name, why = "nothing could be observed: " <> why}
+          Right obs -> do
+            let
+              judged = judgeMove lkp me ss obs
+                ++ [ CheckRecord {check = nm, held = isRight r, why = either Just (const Nothing) r, subject = Nothing} | (nm, r) <- hostChecks obs ]
+              failed = [ (c, w) | CheckRecord {check = c, held = False, why = w} <- judged ]
+            forM_ failed $ \(c, w) -> counterexamplePost ("  check " ++ T.unpack c ++ " failed: " ++ maybe "" T.unpack w)
+            forM_ (Set.toList labels) $ \l -> monitorPost (QC.classify True (T.unpack l))
+            pure (null failed, judged, Set.toList labels, SomeLookUp lkp)
       -- the request as it went out: the step's fresh tokens are still those.
       -- Every check runs; each failure is reported, and the trace lists
       -- each check with whether it held, and the labels that held. The
@@ -1012,7 +1093,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
         case resolveRequest placeholders {freshOf = freshLookup toks} lkp creq of
           Left why -> do
             counterexamplePost ("  postcondition failed: " ++ T.unpack why)
-            pure (False, [CheckRecord {check = "request", held = False, why = Just why}], [], SomeLookUp (extendLookUp lkp x))
+            pure (False, [CheckRecord {check = "request", held = False, why = Just why, subject = Nothing}], [], SomeLookUp (extendLookUp lkp x))
           Right req -> do
             let
               results = [ (nm, f ss lkp req x) | (nm, StepCheck f) <- apiChecks ]
@@ -1022,7 +1103,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
             forM_ heldLabels $ \l -> monitorPost (QC.classify True (T.unpack l))
             pure
               ( all (isRight . snd) results
-              , [ CheckRecord {check = nm, held = isRight r, why = either Just (const Nothing) r} | (nm, r) <- results ]
+              , [ CheckRecord {check = nm, held = isRight r, why = either Just (const Nothing) r, subject = Nothing} | (nm, r) <- results ]
               , heldLabels
               , SomeLookUp (extendLookUp lkp x)
               )
@@ -1111,7 +1192,7 @@ recordPerformed rec st (MkWebApiAction act) lkp res = do
   stageBefore <- liftIO (stageOfGuarded lkp st)
   let
     engineStep k op i shown = StepRecord
-      { n = 0, kind = k, info = i, operation = op, method = Nothing, expect = Nothing, request = Nothing
+      { n = 0, kind = k, info = i, operation = op, method = Nothing, expect = Nothing, request = Nothing, inMove = Nothing, inconclusive = Nothing
       , answer = Just AnswerRecord
           { httpStatus = Nothing
           , body = Nothing
@@ -1131,7 +1212,7 @@ recordPerformed rec st (MkWebApiAction act) lkp res = do
       let (req, meth) = requestRecordOf creq
       pure StepRecord
         { n = 0, kind = KindCall, info = Nothing, operation = T.pack (getOpIdFromRequest creq), method = Just meth
-        , expect = Nothing, request = Just req
+        , expect = Nothing, request = Just req, inMove = Nothing, inconclusive = Nothing
         , answer = Just AnswerRecord {httpStatus = H.statusCode . fst <$> raw, body = bodyMay >>= bodyText bodyClip, value = Nothing, failure = either (Just . shownText) (const Nothing) res}
         , checks = [], labels = [], model = Nothing
         , stage = StageRecord {before = stageBefore, after = Nothing}
@@ -1143,6 +1224,8 @@ recordPerformed rec st (MkWebApiAction act) lkp res = do
     FreshValue l -> pure (engineStep KindFresh ("fresh " <> l) Nothing Just)
     EffectCall nm i _ _ -> pure (engineStep KindGlue (T.pack nm) i (Just . shownText))
     XAction xact -> pure (engineStep KindOther (T.pack (actionName xact)) Nothing (const Nothing))
+    MoveBegin nm i -> pure (engineStep KindBegin nm (Just i) (const Nothing))
+    MoveSettle MoveEnd {name, info} -> pure (engineStep KindSettle name (Just info) (const Nothing))
   liftIO (pushStep rec record)
   where
     expectedStatus = \case
@@ -1163,6 +1246,8 @@ moveIdentity = \case
   FreshValue l -> (KindFresh, Nothing, "fresh " <> l)
   EffectCall nm i _ _ -> (KindGlue, i, T.pack nm)
   XAction xact -> (KindOther, Nothing, T.pack (actionName xact))
+  MoveBegin nm i -> (KindBegin, Just i, nm)
+  MoveSettle MoveEnd {name, info} -> (KindSettle, Just info, name)
 
 -- | A call's record: the request as it went out (its fresh values as the
 -- step made them, its files by name), the answer as received, and the
@@ -1185,6 +1270,8 @@ callRecord lkp creq i expectation res stageBefore = do
     , method = meth
     , expect = Just expectation
     , request = Just req
+    , inMove = Nothing
+    , inconclusive = Nothing
     , answer = Just AnswerRecord
         { httpStatus = (H.statusCode . fst <$> raw) <|> either errorStatus (const Nothing) res
         , body = bodyMay >>= bodyText bodyClip
@@ -1209,11 +1296,11 @@ callRecord lkp creq i expectation res stageBefore = do
 callChecks :: Expectation -> Either ErrorState res -> [CheckRecord]
 callChecks expectation = \case
   Right _ -> [statusHeld]
-  Left (ResultError (MkResultError e)) -> [statusHeld, CheckRecord {check = "result", held = False, why = Just e}]
-  Left (InputNotSetError fld) -> [CheckRecord {check = "request", held = False, why = Just (fld <> " is not set")}]
-  Left err -> [CheckRecord {check = "status", held = False, why = Just (statusWhy err)}]
+  Left (ResultError (MkResultError e)) -> [statusHeld, CheckRecord {check = "result", held = False, why = Just e, subject = Nothing}]
+  Left (InputNotSetError fld) -> [CheckRecord {check = "request", held = False, why = Just (fld <> " is not set"), subject = Nothing}]
+  Left err -> [CheckRecord {check = "status", held = False, why = Just (statusWhy err), subject = Nothing}]
   where
-    statusHeld = CheckRecord {check = "status", held = True, why = Nothing}
+    statusHeld = CheckRecord {check = "status", held = True, why = Nothing, subject = Nothing}
     code st = T.pack (show (H.statusCode st))
     expected = case expectation of
       GoesThrough -> "it to go through"
@@ -1305,6 +1392,85 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
          , DynLogicModel xstate
          ) => DynLogicModel (ApiState s c xstate apps) where
   restricted _ = False
+
+-- ---------------------------------------------------------------------------
+-- A move's end ("Test.WebApi.Moves")
+
+-- | The prediction after a move: each thing it picked goes where the move
+-- sends it, then along its track's answers (a thing the move leaves where
+-- it is stays put); each thing it makes is recorded at its stage and
+-- carried along the answers from there. Every thing it touches gains the
+-- move and the labels its draws gave, and moves between the stages'
+-- classes ('stageClassName').
+settleNextState :: MoveEnd -> ApiState s c xstate apps -> ApiState s c xstate apps
+settleNextState MoveEnd {name, picked, makes, labels, tracks} st0 =
+  foldl makeOne (foldl moveOne st0 picked) makes
+  where
+    touched Thing {movesOn, labels = ls, ..} = Thing {movesOn = movesOn ++ [name], labels = ls <> labels, ..}
+    sentTo sg Thing {thingId, track, movesOn, labels = ls, value} = Thing {thingId, track, stage = sg, movesOn, labels = ls, value}
+    along t@Thing {track} p = case M.lookup track tracks of
+      Nothing -> error $ T.unpack $ "move " <> name <> ": no track " <> track
+      Just tr -> either (\why -> error (T.unpack ("move " <> name <> ": " <> why))) id (follow tr p t)
+    moveOne st (tid, _, toMay) = case M.lookup tid (thingsOf st) of
+      Nothing -> st
+      Just t@Thing {stage = before} ->
+        let p = predictionOf st
+            t' = case toMay of
+              Nothing -> touched t
+              Just to -> along (sentTo to (touched t)) p
+        in placed before t' st
+    makeOne st (tr, sg, v) =
+      let p@Prediction {nextThing, things} = predictionOf st
+          t = along Thing {thingId = ThingId nextThing, track = tr, stage = sg, movesOn = [name], labels, value = v} p
+      in placed "" t (setPrediction Prediction {nextThing = nextThing + 1, things} st)
+    -- the thing at its stage: out of the class it was in, into its stage's
+    placed before t@Thing {thingId, track, stage} st =
+      let st1 = if T.null before then st else removeNamedEntity (RefinementId (stageClassName track before)) (Const thingId) st
+          st2 = addTypedEntity (Const thingId) (stageNER track stage) st1
+          Prediction {nextThing} = predictionOf st2
+      in setPrediction Prediction {things = M.insert thingId t (thingsOf st2), nextThing} st2
+    stageNER tr sg = let k = stageClassName tr sg in NER {refinementId = RefinementId k, entityName = k, desc = Nothing}
+    predictionOf ApiState {prediction} = prediction
+    thingsOf st = let Prediction {things} = predictionOf st in things
+    setPrediction p ApiState {..} = ApiState {prediction = p, ..}
+
+-- | A move's end judged: for every thing, its observed stage against the
+-- predicted one and the checks at that stage; the checks after this move,
+-- for the things it touched; the checks across things. Each record names
+-- the check and the thing (the step is the move's).
+judgeMove :: LookUp -> MoveEnd -> (ApiState s c xstate apps, ApiState s c xstate apps) -> SomeObservation -> [CheckRecord]
+judgeMove lkp MoveEnd {name, picked, judge = Judge {stageOf, atStage, afterMove, always}} (before, after) (SomeObservation o0) =
+  case cast o0 of
+    Nothing
+      | nothingToJudge -> []
+      | otherwise -> [CheckRecord {check = "observation", held = False, subject = Nothing, why = Just ("the host observed a " <> T.pack (show (typeOf o0)) <> ", which the property's checks do not read")}]
+    Just o -> stageChecks o ++ atChecks o ++ afterChecks o ++ alwaysChecks o
+  where
+    nothingToJudge = M.null stageOf && null atStage && null afterMove && null always
+    p@Prediction {nextThing = madeUpTo} = let ApiState {prediction} = after in prediction
+    Prediction {nextThing = madeFrom} = let ApiState {prediction} = before in prediction
+    everything = predictedThings p
+    touchedIds = Set.fromList ([ tid | (tid, _, _) <- picked ] ++ map ThingId [madeFrom .. madeUpTo - 1])
+    record nm t r = CheckRecord {check = nm, held = isRight r, why = either Just (const Nothing) r, subject = thingSubject <$> t}
+    guarded :: Either Text () -> Either Text ()
+    guarded r = unsafePerformIO $ either (\(e :: SomeException) -> Left ("the check could not be judged: " <> T.pack (show e))) id <$> try (evaluate (forcedE r))
+    forcedE r = case r of
+      Left w -> T.length w `seq` r
+      Right () -> r
+    stageChecks o =
+      [ record "stage" (Just t) $ guarded $ case f lkp o t of
+          Right seen | seen == stage -> Right ()
+                     | otherwise -> Left ("predicted at " <> stage <> ", observed at " <> seen)
+          Left why -> Left why
+      | t@Thing {track, stage} <- everything, Just (StageOf f) <- [M.lookup track stageOf] ]
+    atChecks o =
+      [ record nm (Just t) (guarded (f lkp p t o))
+      | (nm, (tr, sg), ThingCheck f) <- atStage, t <- thingsAt tr sg p ]
+    afterChecks o =
+      [ record nm (Just t) (guarded (f lkp p t o))
+      | (nm, mv, ThingCheck f) <- afterMove, mv == name, t@Thing {thingId} <- everything, Set.member thingId touchedIds ]
+    alwaysChecks o =
+      [ record nm Nothing (guarded (f lkp p o)) | (nm, PredictionCheck f) <- always ]
 
 successCall :: forall meth r app c xstate apps s. (WebApiActionCxt apps meth app r, Show (ApiOut meth (app :// r)), Eq (Action xstate (ApiOut meth (app :// r)))) =>
   ClientRequestVal meth (app :// r)
@@ -1834,7 +2000,7 @@ setGenerateFromDL names = modelOnlyDL ("generate from " ++ maybe "*" (show . Set
 -- | The model's precondition of an action (what 'precondition' answers),
 -- available without the reflected model.
 webApiPrecondition :: StateModel xstate => ApiState s c xstate apps -> WebApiAction s c xstate apps a -> Bool
-webApiPrecondition s@ApiState{xActionState} = \case
+webApiPrecondition s@ApiState{xActionState, prediction} = \case
   SuccessCall _creq SuccessApiModel {apiPrecondition=pcMay} _ _ -> maybe True (\pc -> pc s) pcMay
   ErrorCall _creq _ SuccessApiModel {apiPrecondition=pcMay} _ -> maybe True (\pc -> pc s) pcMay
   SomeExceptionCall {} -> True
@@ -1844,6 +2010,11 @@ webApiPrecondition s@ApiState{xActionState} = \case
   FreshValue {} -> True
   EffectCall {} -> True
   XAction xact -> precondition xActionState xact
+  MoveBegin {} -> True
+  -- each thing it picked is still where it was picked
+  MoveSettle MoveEnd {picked} ->
+    let Prediction {things} = prediction
+    in and [ maybe False (\Thing {stage} -> stage == at) (M.lookup tid things) | (tid, at, _) <- picked ]
 
 -- | Run another next-state transition after the model's own.
 addNextState :: (Var a -> ApiState s c xstate apps -> ApiState s c xstate apps) -> SuccessApiModel s c xstate apps meth r a -> SuccessApiModel s c xstate apps meth r a

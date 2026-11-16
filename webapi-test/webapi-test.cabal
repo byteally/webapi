@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               webapi-test
-version:            0.3.0.0
+version:            0.4.0.0
 -- synopsis:
 -- description:
 license:            BSD-3-Clause
@@ -58,6 +58,8 @@ library qc-dynamic
                       Test.WebApi.Trace
                       Test.WebApi.Case
                       Test.WebApi.Replay
+                      Test.WebApi.Prediction
+                      Test.WebApi.Moves
     -- other-modules:
     build-depends:    webapi-test
                     , aeson >= 2.0
@@ -97,3 +99,16 @@ library webapi-test-tasty
                     , hashable
     hs-source-dirs:   tasty
     default-language: GHC2021        
+
+-- A scenario's moves against a toy platform (zenbridge #2714).
+test-suite moves
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          Moves.hs
+    hs-source-dirs:   test
+    build-depends:    webapi-test
+                    , webapi-test:qc-dynamic
+                    , QuickCheck >= 2.14
+                    , quickcheck-dynamic >= 4.0.1.1 && < 4.1
+                    , reflection >= 2.1
+    default-language: GHC2021

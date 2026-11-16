@@ -55,6 +55,8 @@ module Test.WebApi.Trace
   , pushStep
   , amendStep
   , afterStep
+  , markInconclusive
+  , caseMoves
     -- * Rendering helpers
   , clipText
   , bodyText
@@ -95,10 +97,12 @@ data StepInfo = StepInfo
 stepLabel :: StepInfo -> Text
 stepLabel StepInfo {trail, summary} = T.intercalate "." trail <> ": " <> summary
 
--- | What a step is. A /move/ is a call or a glue step; the rest are the
--- engine's own (a fresh value, a context switch, a step that only moves
--- the model).
-data StepKind = KindCall | KindGlue | KindFresh | KindContext | KindModel | KindOther
+-- | What a step is. A /move/ is a call or a glue step, or a scenario's
+-- move ("Test.WebApi.Moves"): its 'KindBegin' step, its own steps, and its
+-- 'KindSettle' step, which settles, observes and judges it. The rest are
+-- the engine's own (a fresh value, a context switch, a step that only
+-- moves the model).
+data StepKind = KindCall | KindGlue | KindFresh | KindContext | KindModel | KindOther | KindBegin | KindSettle
   deriving (Eq, Show)
 
 kindText :: StepKind -> Text
@@ -109,6 +113,8 @@ kindText = \case
   KindContext -> "context"
   KindModel -> "model"
   KindOther -> "other"
+  KindBegin -> "begin"
+  KindSettle -> "settle"
 
 isMove :: StepKind -> Bool
 isMove k = k == KindCall || k == KindGlue
@@ -156,6 +162,8 @@ data CheckRecord = CheckRecord
   { check :: Text
   , held :: Bool
   , why :: Maybe Text
+  , subject :: Maybe Text
+    -- ^ the thing a scenario's check was about (@orders #2@)
   }
   deriving (Eq, Show)
 
@@ -185,6 +193,12 @@ data StepRecord = StepRecord
     -- when the step failed (no next state is computed then)
   , stage :: StageRecord
   , ok :: Bool
+  , inMove :: Maybe Int
+    -- ^ the scenario's move the step belongs to (its begin and settle
+    -- steps included), numbered from 1 in its case
+  , inconclusive :: Maybe Text
+    -- ^ a move's settle step that did not settle, or could not observe:
+    -- why. Neither passed nor failed
   }
   deriving (Eq, Show)
 
@@ -201,7 +215,7 @@ moveCountKey StepRecord {info, operation} = case info of
   Just StepInfo {name = Just nm} -> nm
   _ -> operation
 
-data CaseOutcome = Passed | Failed | Discarded
+data CaseOutcome = Passed | Failed | Discarded | Inconclusive
   deriving (Eq, Show)
 
 outcomeText :: CaseOutcome -> Text
@@ -209,6 +223,7 @@ outcomeText = \case
   Passed -> "passed"
   Failed -> "failed"
   Discarded -> "discarded"
+  Inconclusive -> "inconclusive"
 
 -- | One generated case, in a line.
 data CaseSummary = CaseSummary
@@ -255,6 +270,8 @@ data ReplayOutcome
   | CantReplay
     -- ^ the program no longer plays it (a move removed, a pick of another
     -- type, …); 'why' says what
+  | ReplayInconclusive
+    -- ^ a move did not settle within its budget; 'why' says why
   deriving (Eq, Show)
 
 data ReplayRecord = ReplayRecord
@@ -334,7 +351,7 @@ instance ToJSON AnswerRecord where
     [ "http_status" .= httpStatus, "body" .= body, "value" .= value, "failure" .= failure ]
 
 instance ToJSON CheckRecord where
-  toJSON CheckRecord {..} = object ["check" .= check, "held" .= held, "why" .= why]
+  toJSON CheckRecord {..} = object ["check" .= check, "held" .= held, "why" .= why, "subject" .= subject]
 
 instance ToJSON StageRecord where
   toJSON StageRecord {..} = case (before, after) of
@@ -357,7 +374,11 @@ instance ToJSON StepRecord where
     , "labels" .= labels
     , "model" .= model
     , "stage" .= stage
-    , "outcome" .= (if ok then "ok" else "failed" :: Text)
+    , "move" .= inMove
+    , "outcome" .= (case inconclusive of
+                      Just _ -> "inconclusive"
+                      Nothing -> if ok then "ok" else "failed" :: Text)
+    , "inconclusive" .= inconclusive
     ]
 
 instance ToJSON CaseSummary where
@@ -378,6 +399,7 @@ instance ToJSON ReplayOutcome where
     ReplayPassed -> "passed"
     ReplayFailed -> "failed"
     CantReplay -> "cant_replay"
+    ReplayInconclusive -> "inconclusive"
 
 instance ToJSON ReplayRecord where
   toJSON ReplayRecord {..} = object
@@ -498,16 +520,37 @@ takeSteps Recorder {current, currentCase} = do
 noteReplay :: Recorder -> ReplayRecord -> IO ()
 noteReplay Recorder {gathered} r = modifyIORef' gathered $ \g@Gathered {replayLines} -> g {replayLines = replayLines |> r}
 
--- | A step ran: append it, numbered.
+-- | A step ran: append it, numbered, and with the scenario's move it
+-- belongs to: a begin step opens the case's next move, and every step
+-- after it up to its settle step is in it.
 pushStep :: Recorder -> StepRecord -> IO ()
 pushStep Recorder {current} StepRecord {..} =
-  modifyIORef' current $ \s -> s |> StepRecord {n = Seq.length s + 1, ..}
+  modifyIORef' current $ \s ->
+    let
+      marks = [ (k, m) | StepRecord {kind = k, inMove = m} <- toList s, k == KindBegin || k == KindSettle ]
+      opened = length [ () | (KindBegin, _) <- marks ]
+      open = case reverse marks of
+        (KindBegin, m) : _ -> m
+        _ -> Nothing
+      inMove' = case kind of
+        KindBegin -> Just (opened + 1)
+        _ -> open
+    in s |> StepRecord {n = Seq.length s + 1, inMove = inMove', ..}
 
 -- | Change the step last pushed (its postcondition ran).
 amendStep :: Recorder -> (StepRecord -> StepRecord) -> IO ()
 amendStep Recorder {current} f = modifyIORef' current $ \s -> case Seq.viewr s of
   Seq.EmptyR -> s
   rest Seq.:> lastStep -> rest |> f lastStep
+
+-- | A move's settle step that did not settle (or could not observe): why.
+markInconclusive :: Text -> StepRecord -> StepRecord
+markInconclusive why StepRecord {..} = StepRecord {inconclusive = Just why, ok = False, ..}
+
+-- | The moves a case played, as its summary lists them: a scenario's move
+-- once (by its settle step), and every call or glue step outside one.
+caseMoves :: [StepRecord] -> [StepRecord]
+caseMoves stepList = [ st | st@StepRecord {kind, inMove} <- stepList, kind == KindSettle || (isMove kind && inMove == Nothing) ]
 
 -- | What a step's postcondition adds: its checks, the labels that held,
 -- the model after it, the stage after it, and whether it all held.
@@ -533,24 +576,33 @@ closeCase Recorder {current, currentCase, gathered, origin = (scenarioHash, prop
   stepList <- toList <$> atomicModifyIORef' current (\s -> (Seq.empty, s))
   caseKept <- atomicModifyIORef' currentCase (\c -> (Nothing, c))
   let
-    outcome = case P.ok res of
-      Just True -> Passed
-      Just False -> Failed
-      Nothing -> Discarded
+    unsettled = find (\StepRecord {inconclusive} -> inconclusive /= Nothing) stepList
+    outcome = case (unsettled, P.ok res) of
+      (Just _, _) -> Inconclusive
+      (_, Just True) -> Passed
+      (_, Just False) -> Failed
+      (_, Nothing) -> Discarded
     failing = find (\StepRecord {ok} -> not ok) stepList
     at = (\StepRecord {n} -> n) <$> failing
     why
       | outcome == Failed = (failing >>= stepWhy) <|> nonEmpty (T.pack (P.reason res))
+      | outcome == Inconclusive = unsettled >>= \StepRecord {inconclusive} -> inconclusive
       | otherwise = Nothing
     played = not (null stepList)
-    moveList = [ moveName s | s@StepRecord {kind} <- stepList, isMove kind ]
-    countKeys = [ moveCountKey s | s@StepRecord {kind} <- stepList, isMove kind ]
+    moveList = map moveName (caseMoves stepList)
+    countKeys = map moveCountKey (caseMoves stepList)
     held = Set.toList (Set.fromList (map T.pack (P.classes res)))
     replayable = (\(sz, its) -> CaseRecord {format = caseFormat, scenario = scenarioHash, property = propertyName, size = sz, items = its}) <$> caseKept
   modifyIORef' gathered $ \g@Gathered {..} ->
     if not narrowingStarted
       then case outcome of
         Discarded -> g {discardedCount = discardedCount + 1}
+        -- QuickCheck discards it and draws another; the trace lists it, and
+        -- counts no label or move of it
+        Inconclusive ->
+          let k = caseCount + 1
+          in g { caseCount = k
+               , caseLines = caseLines |> CaseSummary {number = k, played, moves = moveList, outcome, at, why, labels = []} }
         _ ->
           let k = caseCount + 1
               line' = CaseSummary {number = k, played, moves = moveList, outcome, at, why, labels = held}

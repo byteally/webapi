@@ -13,6 +13,7 @@
 -- ('runDL', exported by byteally's quickcheck-dynamic 4.0.1.1).
 module Test.WebApi.Replay
   ( forAllDLRecorded
+  , narrowThroughProgram
   , caseItemsOf
     -- * Replay
   , ReplayHooks (..)
@@ -30,7 +31,7 @@ import qualified Test.QuickCheck as QC
 import           Test.QuickCheck.DynamicLogic (DL, DynLogicModel, runDL)
 import           Test.QuickCheck.DynamicLogic.Internal
   ( DynFormula (..), DynLogic (..), DynLogicTest (DLScript), TestContinuation (..), TestSequence (..), Witnesses (..)
-  , generateDLTest, getScript, initialStateFor, shrinkDLTest, withDLScript )
+  , generateDLTest, getScript, initialStateFor, nextStateStep, shrinkDLTest, shrinkWitness, stepDLStep, stepDLWitness, withDLScript )
 import           Test.QuickCheck.DynamicLogic.SmartShrinking (shrinkSmart)
 import qualified Test.QuickCheck.DynamicLogic.Utils as QCU
 import           Test.QuickCheck.DynamicLogic.Quantify (Quantification (..), QuantifyConstraints)
@@ -42,25 +43,85 @@ import           Data.Proxy (Proxy (..))
 import           Data.Reflection (Reifies, reflect)
 import           Test.WebApi.StateModel
   ( ApiState, WebApiGlobalStateModel (..), drawnOf, moveIdentity, repointAction, requestLinks, stampDrawn, unWebApiAction )
-import           Test.WebApi.Trace (StepInfo (..), kindText)
+import           Test.WebApi.Trace (StepInfo (..), StepKind (..), kindText)
 
 -- | 'Test.QuickCheck.DynamicLogic.forAllDL', the property handed each test
--- it plays as @keep size test@ beside the test's actions. Generation and
--- narrowing are quickcheck-dynamic's own ('forAllMappedScripts' with the
--- test itself as its representation).
+-- it plays as @keep size test@ beside the test's actions. Generation is
+-- quickcheck-dynamic's own; so is narrowing, its candidates passed through
+-- @narrow@ (the formula, the test being narrowed, its candidates) before
+-- any is played ('narrowThroughProgram').
 forAllDLRecorded
   :: (DynLogicModel s, Testable a)
-  => (Int -> DynLogicTest s -> b)
+  => (DynLogic s -> DynLogicTest s -> [DynLogicTest s] -> [DynLogicTest s])
+  -> (Int -> DynLogicTest s -> b)
   -> DL s ()
   -> (b -> Actions s -> a)
   -> Property
-forAllDLRecorded keep d k =
+forAllDLRecorded narrow keep d k =
   QCU.withSize $ \n ->
     let dl = unDynFormula (runDL initialAnnotatedState d) n
      in QC.forAllShrinkBlind
           (QC.Smart 0 <$> QC.sized (generateDLTest dl))
-          (shrinkSmart (shrinkDLTest dl))
+          (shrinkSmart (\test -> narrow dl test (shrinkDLTest dl test)))
           $ \(QC.Smart _ test) -> withDLScript dl (k (keep n test)) test
+
+-- | Narrowing as the program plays it (zenbridge #2714). quickcheck-dynamic
+-- keeps a shorter test's own steps and only checks each against the
+-- program by its 'Eq', which for a call is its operation and label: a pick
+-- narrowed under a step left the step as it was drawn. So each candidate
+-- is made again from its picks through the program ('replayTest'), as a
+-- regression case is. Every pick is offered narrowed too ('pickShrinks'):
+-- quickcheck-dynamic narrows a run of picks only from its first, so a
+-- first pick that cannot narrow keeps the rest as drawn. A candidate that
+-- ends inside a scenario's move (a begin step with no settle step after
+-- it) is dropped: a move is narrowed whole. So is one the program no
+-- longer plays, one equal to the test being narrowed, and every repeat.
+narrowThroughProgram
+  :: forall s c xstate apps. (StateModel xstate, Reifies s (WebApiGlobalStateModel c xstate apps), DynLogicModel (ApiState s c xstate apps))
+  => DynLogic (ApiState s c xstate apps)
+  -> DynLogicTest (ApiState s c xstate apps)
+  -> [DynLogicTest (ApiState s c xstate apps)]
+  -> [DynLogicTest (ApiState s c xstate apps)]
+narrowThroughProgram dl current = go [key current] . (++ pickShrinks dl current)
+  where
+    go _ [] = []
+    go seen (t : rest) = case remade t of
+      Nothing -> go seen rest
+      Just t'
+        | k `elem` seen -> go seen rest
+        | otherwise -> t' : go (k : seen) rest
+        where k = key t'
+    remade t@(DLScript _) = case replayTest webApiReplayHooks dl (caseItemsOf t) of
+      Right t' | wholeMoves t' -> Just t'
+      _ -> Nothing
+    remade t = Just t
+    -- the items, a pick after the last step aside (it plays nothing)
+    key t = reverse (dropWhile isPick (reverse (caseItemsOf t)))
+    isPick = \case
+      ItemPick _ -> True
+      ItemMove _ -> False
+    wholeMoves t = not (or (scanOpen False [ kd | Right st <- flatten (getScript t), let (kd, _, _) = identity st ]))
+    identity (_ := ActionWithPolarity {polarAction = act}) = moveIdentity (unWebApiAction act)
+    -- whether a move is open after each step; the last must be closed
+    scanOpen o [] = [o]
+    scanOpen _ (KindBegin : ks) = scanOpen True ks
+    scanOpen _ (KindSettle : ks) = scanOpen False ks
+    scanOpen o (_ : ks) = scanOpen o ks
+
+-- | The test with one of its picks narrowed (by the quantifier the
+-- program draws it with), every other item as it was: a step after it may
+-- no longer match it, so the candidates are to be made again through the
+-- program ('narrowThroughProgram').
+pickShrinks :: forall s. DynLogicModel s => DynLogic s -> DynLogicTest s -> [DynLogicTest s]
+pickShrinks d0 test = map DLScript (go initialAnnotatedState d0 (getScript test))
+  where
+    go :: Annotated s -> DynLogic s -> TestSequence s -> [TestSequence s]
+    go s d (TestSeq w) = case w of
+      Do ContStop -> []
+      Do (ContStep st rest) -> [ TestSeq (Do (ContStep st r)) | r <- go (nextStateStep st s) (stepDLStep d s st) rest ]
+      Witness a k ->
+        [ TestSeq (Witness a' k) | a' <- shrinkWitness d a ]
+          ++ [ TestSeq (Witness a r) | TestSeq r <- go s (stepDLWitness d a) (TestSeq k) ]
 
 -- | A pick, whatever its type.
 data AnyPick where
