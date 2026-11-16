@@ -2,6 +2,10 @@
 
 ## 0.4.0.0 -- 2026-11-16 (zenbridge #2714: a scenario's moves, stages and checks)
 
+* **`EffectCall` runs in the sessions** (breaking). Its effect is
+  `LookUp -> WebApiSessions apps (Either Text res)`, was `IO`: a host's
+  own step (a document built from a spec and uploaded, several calls) runs
+  as the run's context. An `IO` effect lifts with `liftIO`.
 * **A scenario's moves** (`Test.WebApi.Moves`). A move is one action by an
   actor, written as DL: its things picked by the stage they are predicted
   at (`pickAt`), a step that begins it (`MoveBegin`), its own steps, and a

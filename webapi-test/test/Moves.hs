@@ -119,7 +119,7 @@ info nm = StepInfo {trail = ["orders", "partner", nm], summary = nm, name = Just
 sendStep :: Platform -> Text -> (Text -> IO Text) -> Val Text -> DL (St s) (Val Text)
 sendStep _ nm send pv = fmap (Var id) $ action $ mkWebApiAction $
   EffectCall (T.unpack nm) (Just (info nm)) (getAllVariables pv) $ \lkp -> case resolveVal lkp pv of
-    Right p -> Right <$> send p
+    Right p -> Right <$> liftIO (send p)
     Left why -> pure (Left why)
 
 send850 :: Platform -> DL (St s) ()

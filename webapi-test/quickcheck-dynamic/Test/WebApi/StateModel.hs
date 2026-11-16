@@ -354,17 +354,19 @@ data WebApiAction s (c :: Type) (xstate :: Type) (apps :: [Type]) (a :: Type) wh
   -- execution): a fresh value the DL binds like any other result, so a
   -- request and a later assertion can share it and a replay makes a new one.
   FreshValue :: Text -> WebApiAction s c xstate apps Text
-  -- | A step that performs an effect outside the web API — a foreign
-  -- transform, say — its result bound like any other. The variables the
+  -- | A step that performs an effect outside one route's call — a foreign
+  -- transform, or a host's own step over several calls (a document built
+  -- and uploaded) — its result bound like any other. The variables the
   -- effect's closure references are declared up front, so the DL keeps the
   -- steps that bind them; the effect receives the 'LookUp' that resolves
-  -- them. A 'Left' is the effect's own failure, reported at the step.
+  -- them, and runs in the sessions, so it may call the apps as the run's
+  -- context. A 'Left' is the effect's own failure, reported at the step.
   EffectCall :: (Typeable res, Show res, Eq res, Eq (Action xstate res))
     => String
     -> Maybe StepInfo
        -- ^ where it was written (a script's rule), for the trace
     -> Set.Set (Any Var)
-    -> (LookUp -> IO (Either T.Text res))
+    -> (LookUp -> WebApiSessions apps (Either T.Text res))
     -> WebApiAction s c xstate apps res
   XAction :: Action xstate a -> WebApiAction s c xstate apps a
   -- | A move of a scenario begins ("Test.WebApi.Moves"): nothing is
@@ -1034,7 +1036,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
         MkWebApiAction (ModelOnly {}) -> pure (Right ())
         MkWebApiAction (FreshValue l) -> ReaderT $ \_ -> Right <$> freshToken ("fresh:" <> l)
         MkWebApiAction (EffectCall _ _ _ eff) -> ReaderT $ \_ ->
-          either (Left . ResultError . MkResultError) Right <$> liftIO (eff lkp)
+          either (Left . ResultError . MkResultError) Right <$> eff lkp
         MkWebApiAction (XAction xact) -> ReaderT $ \_ -> do
           res <- liftIO $ perform xActionState xact lkp
           pure $ first (XActionError . AnyXActionError) res
