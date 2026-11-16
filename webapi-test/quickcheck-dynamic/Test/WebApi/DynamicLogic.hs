@@ -24,9 +24,12 @@ import Test.QuickCheck.Monadic
 import Test.QuickCheck.Monadic qualified as QC
 import Data.Reflection
 import Data.IORef
-import Test.WebApi.Trace (Recorder, ReplayOutcome (..), ReplayRecord (..), beginCaseWith, noteReplay, recordedProperty, stepsFailure, takeSteps)
+import Test.WebApi.Trace (Recorder, ReplayOutcome (..), ReplayRecord (..), StepRecord (..), beginCaseWith, noteReplay, recordedProperty, stepsFailure, takeSteps)
+import Test.WebApi.Prediction (MoveInconclusive (..))
+import Control.Exception (catch)
+import Data.List (find)
 import Test.WebApi.Case (CaseItem, CaseRecord (..))
-import Test.WebApi.Replay (caseItemsOf, forAllDLRecorded, replayTest, webApiReplayHooks)
+import Test.WebApi.Replay (caseItemsOf, forAllDLRecorded, narrowThroughProgram, replayTest, webApiReplayHooks)
 import Test.QuickCheck.DynamicLogic.Internal (DynFormula (..), withDLScript)
 import qualified Test.QuickCheck as QC
 import qualified Data.Text as T
@@ -43,13 +46,15 @@ propDL :: forall c xstate apps e s.
   , Show e
   , Reifies s (WebApiGlobalStateModel c xstate apps)
   ) => Proxy s -> (forall a. WebApiSessions apps a -> IO a) -> DL (ApiState s c xstate apps) () -> Property
-propDL _ webapiRunner d = forAllDL d (prop_api undefined webapiRunner)
+propDL _ webapiRunner d = forAllDLRecorded narrowThroughProgram (\_ _ -> ()) d (\() -> propApiWith Nothing webapiRunner)
 
 -- | 'propDL', each case it plays recorded into the recorder: the steps as
 -- they run, the case closed when QuickCheck finishes it (a generated case
 -- or a narrowing try alike; see "Test.WebApi.Trace"), and the case as a
 -- regression case would keep it ("Test.WebApi.Case"), so the narrowed one
--- can be replayed.
+-- can be replayed. Narrowing goes through the program
+-- ('narrowThroughProgram'): a shorter case is made again from its picks,
+-- and a scenario's move is kept or dropped whole.
 propDLTraced :: forall c xstate apps e s.
   ( DynLogicModel xstate
   , RunModel xstate IO
@@ -59,7 +64,7 @@ propDLTraced :: forall c xstate apps e s.
   , Reifies s (WebApiGlobalStateModel c xstate apps)
   ) => Recorder -> Proxy s -> (forall a. WebApiSessions apps a -> IO a) -> DL (ApiState s c xstate apps) () -> Property
 propDLTraced rec _ webapiRunner d = recordedProperty rec $
-  forAllDLRecorded (\size test -> (size, caseItemsOf test)) d (\c -> propApiWithCase (Just rec) (Just c) webapiRunner)
+  forAllDLRecorded narrowThroughProgram (\size test -> (size, caseItemsOf test)) d (\c -> propApiWithCase (Just rec) (Just c) webapiRunner)
 
 -- | Each regression case played once against the program as it is now
 -- (zenbridge #2713), before the property draws any of its own: how it
@@ -82,16 +87,22 @@ replayCasesDL rec _ webapiRunner d kept = forM_ (zip [1 ..] kept) $ \(k, CaseRec
                (withDLScript dl (propApiWithCase (Just rec) Nothing webapiRunner) test)
       played <- takeSteps rec
       let (at, why) = stepsFailure played
+          unsettled = find (\StepRecord {inconclusive} -> inconclusive /= Nothing) played
           qcWhy = case res of
             QC.Failure {QC.reason = r} -> Just (T.pack r)
             _ -> Nothing
-          outcome = case res of
-            QC.Success {} -> ReplayPassed
-            QC.GaveUp {} -> CantReplay
+          outcome = case (unsettled, res) of
+            (Just _, _) -> ReplayInconclusive
+            (_, QC.Success {}) -> ReplayPassed
+            (_, QC.GaveUp {}) -> CantReplay
             _ -> ReplayFailed
+          replayWhy = case outcome of
+            CantReplay -> Just (T.pack "the program discards it")
+            ReplayInconclusive -> unsettled >>= \StepRecord {inconclusive} -> inconclusive
+            _ -> why <|> qcWhy
       noteReplay rec ReplayRecord
         { caseNumber = k, replayOutcome = outcome, replayAt = at
-        , replayWhy = if outcome == CantReplay then Just (T.pack "the program discards it") else why <|> qcWhy
+        , replayWhy
         , replaySteps = played }
 
 prop_api :: forall c xstate apps e s.
@@ -135,7 +146,9 @@ propApiWithCase :: forall c xstate apps e s.
   -> Actions (ApiState s c xstate apps)
   -> Property
 propApiWithCase rec kept webapiRunner s =
-  monadic (ioProperty . webapiRunner . flip runReaderT (maybe initWebApiSessionsCxt tracingCxt rec)) $ do
+  -- a move that did not settle stops the case: neither passed nor failed,
+  -- so QuickCheck discards it (the trace says it was inconclusive)
+  monadic (\m -> ioProperty (webapiRunner (runReaderT m (maybe initWebApiSessionsCxt tracingCxt rec)) `catch` inconclusive)) $ do
     mapM_ (\r -> QC.run (liftIO (beginCaseWith r kept))) rec
     monitor $ counterexample "\nExecution\n"
     (_anonSt, _env) <- runActions s
@@ -143,6 +156,9 @@ propApiWithCase rec kept webapiRunner s =
     --   newApiState = resolveNamedEntities env $ underlyingState anonSt
     -- liftIO $ writeIORef newStRef (Just newApiState)
     QC.assert True
+  where
+    inconclusive MoveInconclusive {move = mv, why} =
+      pure (QC.counterexample ("move " ++ T.unpack mv ++ " is inconclusive: " ++ T.unpack why) (QC.property QC.Discard))
 
 -- runWebApiTest :: forall r apps. WebApiGlobalStateModel apps -> (forall (s :: Type). Reifies s (WebApiGlobalStateModel apps) => Proxy s -> r) -> r
 -- runWebApiTest gstate runner = reify gstate (\ps -> runner ps)

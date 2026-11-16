@@ -1,5 +1,51 @@
 # Revision history for webapi-test
 
+## 0.4.0.0 -- 2026-11-16 (zenbridge #2714: a scenario's moves, stages and checks)
+
+* **A scenario's moves** (`Test.WebApi.Moves`). A move is one action by an
+  actor, written as DL: its things picked by the stage they are predicted
+  at (`pickAt`), a step that begins it (`MoveBegin`), its own steps, and a
+  step that ends it (`MoveSettle`). `anyMoves n` draws moves one after
+  another, `n` on average, each by its weight among the moves allowed at
+  that point (quickcheck-dynamic's own weighted choice).
+* **The prediction** (`Test.WebApi.Prediction`). `ApiState` gains
+  `prediction`: the things a scenario tracks (`Thing`: its track, the stage
+  it is predicted at, the moves made on it, the labels its draws gave, its
+  value). A `Track` declares a kind of thing's stages, its refusal stages
+  and the platform's answers, the paths it takes by itself; the first
+  answer whose `when` holds is taken. A thing at a stage is also recorded
+  under the class `track@stage`.
+* **A move's end is judged against what the host observes.** The host
+  settles what the move caused within the move's budget and observes it
+  (`MoveHost`, in `WebApiGlobalStateModel`'s new `appMoveHost`;
+  `defMoveHost` settles at once and observes nothing). The property's
+  `Judge` then holds every thing against the observation: its observed
+  stage against the predicted one, the checks at that stage, the checks
+  after the move for the things it touched, and the checks across things.
+  The host's own checks run too. A failure names the check and the thing.
+* **Inconclusive.** A move that does not settle within its budget, or
+  cannot be observed, stops its case: neither passed nor failed.
+  QuickCheck discards the case. The trace says `inconclusive` and why
+  (`CaseOutcome.Inconclusive`, `ReplayOutcome.ReplayInconclusive`,
+  `StepRecord.inconclusive`).
+* **Narrowing through the program** (`Test.WebApi.Replay.narrowThroughProgram`,
+  used by `propDL` and `propDLTraced`). quickcheck-dynamic keeps a shorter case's own
+  steps and checks them against the program only by `Eq`, which for a call
+  compares its operation and label, so a step under a narrowed pick kept
+  the request it was drawn with. Each shorter case is now made again from
+  its picks through the program, as a regression case is replayed. Every
+  pick is offered narrowed too: quickcheck-dynamic narrows a run of picks
+  only from its first. A move is kept or dropped whole. `forAllDLRecorded`
+  takes the narrowing as its first argument.
+* The trace: step kinds `begin` and `settle`; `StepRecord.inMove` (the move
+  a step belongs to); `CheckRecord.subject` (the thing a check was about);
+  a case's `moves`, and the move counts, list a scenario's moves rather
+  than their steps.
+* `AnyVal` moves to `Test.WebApi.Val` (still re-exported by
+  `Test.WebApi.StateModel`).
+* A test suite, `moves`: two moves against a toy platform that does not
+  acknowledge a replacement 850.
+
 ## 0.3.0.0 -- 2026-11-16 (zenbridge #2713: regression cases, with exact replay)
 
 * **A run's narrowed case, written out** (`Test.WebApi.Case`): the case

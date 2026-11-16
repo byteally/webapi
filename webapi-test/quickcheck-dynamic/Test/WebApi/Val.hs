@@ -14,6 +14,7 @@
 -- whole request.
 module Test.WebApi.Val
   ( Val (..)
+  , AnyVal (..)
   , GVal (..)
   , GValRep (..)
   , resolveVal
@@ -161,6 +162,13 @@ freshLabels = \case
   Unset {} -> mempty
   Fresh l _ -> Set.singleton l
   TempFile _ c _ -> freshLabels c
+
+-- | A value, whatever its type.
+data AnyVal where
+  SomeVal :: Typeable x => Val x -> AnyVal
+
+instance HasVariables AnyVal where
+  getAllVariables (SomeVal v) = getAllVariables v
 
 instance HasVariables (Val a) where
   getAllVariables = \case
