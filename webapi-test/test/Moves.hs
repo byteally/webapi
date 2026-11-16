@@ -129,7 +129,7 @@ send850 pf = move Move
       token <- freshM "po"
       rush <- genValM (QC.arbitrary :: QC.Gen Bool) QC.shrink
       pv <- sendStep pf "send850" (receiveNew pf) token
-      pure ([SomeVal pv], if rush then Set.singleton "rush" else Set.empty)
+      pure MoveBody {values = [SomeVal pv], labels = if rush then Set.singleton "rush" else Set.empty, uses = Set.empty}
   , tracks = M.singleton "orders" orders, judge, budget = 1 }
 
 replace850 :: Platform -> DL (St s) ()
@@ -140,7 +140,7 @@ replace850 pf = do
     , body = do
         pv <- either (fail . T.unpack) pure (thingPo o)
         _ <- sendStep pf "replace850" (\p -> p <$ receive pf p "05") pv
-        pure ([], Set.empty)
+        pure MoveBody {values = [], labels = Set.empty, uses = Set.empty}
     , tracks = M.singleton "orders" orders, judge, budget = 1 }
   where
     thingPo Thing {value = SomeVal v} = maybe (Left "an order's value is its PO") Right (gcast v)

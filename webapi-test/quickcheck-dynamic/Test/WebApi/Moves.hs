@@ -23,6 +23,7 @@ module Test.WebApi.Moves
   , anyMoves
   , pickAt
   , Move (..)
+  , MoveBody (..)
   , move
   ) where
 
@@ -35,7 +36,7 @@ import           Data.Text (Text)
 import qualified Data.Text as T
 import           Test.QuickCheck.DynamicLogic (DL, action, exactlyQ, forAllQ, getModelStateDL, stopping, weight)
 import           Test.QuickCheck.StateModel.Variables (HasNoVariables (..))
-import           Test.QuickCheck.StateModel (Action, StateModel)
+import           Test.QuickCheck.StateModel (Action, Any, StateModel, Var)
 import           Test.WebApi.Prediction
 import           Test.WebApi.StateModel
 import           Test.WebApi.Trace (StepInfo)
@@ -82,20 +83,30 @@ data Move s c xstate apps = Move
     -- no answer moves it)
   , makes :: [(Text, Text)]
     -- ^ the track and stage of each thing it makes
-  , body :: DL (ApiState s c xstate apps) ([AnyVal], Set.Set Text)
-    -- ^ its steps; the values of the things it makes (one per 'makes'),
-    -- and the labels its draws give every thing it touches
+  , body :: DL (ApiState s c xstate apps) MoveBody
+    -- ^ its steps, and what they gave
   , tracks :: M.Map Text Track
   , judge :: Judge
   , budget :: Int
     -- ^ seconds the host may take to settle it
   }
 
+-- | What a move's steps gave.
+data MoveBody = MoveBody
+  { values :: [AnyVal]
+    -- ^ the values of the things it makes, one per 'makes'
+  , labels :: Set.Set Text
+    -- ^ what its draws said, onto every thing it touches
+  , uses :: Set.Set (Any Var)
+    -- ^ the variables those values refer to beyond their own ('Val's
+    -- carry theirs), for a value the engine cannot look into
+  }
+
 -- | The move played: it begins, its steps, it ends.
 move :: (StateModel xstate, Eq (Action xstate ())) => Move s c xstate apps -> DL (ApiState s c xstate apps) ()
 move Move {..} = do
   void (action (mkWebApiAction (MoveBegin name info)))
-  (values, labels) <- body
+  MoveBody {values, labels, uses} <- body
   when (length values /= length makes) $
     fail ("move " <> T.unpack name <> " makes " <> show (length makes) <> " things, and its steps gave " <> show (length values))
   void $ action $ mkWebApiAction $ MoveSettle MoveEnd
@@ -107,4 +118,5 @@ move Move {..} = do
     , tracks
     , judge
     , budget
+    , uses
     }

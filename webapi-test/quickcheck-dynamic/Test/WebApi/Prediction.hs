@@ -51,7 +51,7 @@ import qualified Data.Set as Set
 import           Data.Text (Text)
 import qualified Data.Text as T
 import           Data.Typeable (Typeable)
-import           Test.QuickCheck.StateModel (LookUp)
+import           Test.QuickCheck.StateModel (Any, LookUp, Var)
 import           Test.WebApi (WebApiSessions)
 import           Test.WebApi.Trace (StepInfo)
 import           Test.WebApi.Val (AnyVal)
@@ -157,6 +157,9 @@ data MoveEnd = MoveEnd
   , judge :: Judge
   , budget :: Int
     -- ^ seconds the host may take to settle
+  , uses :: Set.Set (Any Var)
+    -- ^ the variables the things it makes refer to: the DL keeps the
+    -- steps that bind them
   }
 
 -- | The stage a thing is observed at.

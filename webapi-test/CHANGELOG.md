@@ -37,6 +37,10 @@
   pick is offered narrowed too: quickcheck-dynamic narrows a run of picks
   only from its first. A move is kept or dropped whole. `forAllDLRecorded`
   takes the narrowing as its first argument.
+* A move's body reports what it gave (`MoveBody`: the values of the things
+  it makes, the labels its draws said, and the variables those values use
+  beyond their own, kept on the settle step, `MoveEnd.uses`, so narrowing
+  never keeps a move whose things refer to a step it dropped).
 * The trace: step kinds `begin` and `settle`; `StepRecord.inMove` (the move
   a step belongs to); `CheckRecord.subject` (the thing a check was about);
   a case's `moves`, and the move counts, list a scenario's moves rather

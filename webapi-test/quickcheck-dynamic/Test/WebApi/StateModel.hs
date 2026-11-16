@@ -468,7 +468,7 @@ instance StateModel xstate => HasVariables (WebApiAction s c xstate apps a) wher
     MoveBegin {} -> mempty
     -- the values of the things it makes refer to the move's steps (and to
     -- earlier ones): the DL keeps the steps that bind them
-    MoveSettle MoveEnd {makes} -> foldMap (\(_, _, v) -> getAllVariables v) makes
+    MoveSettle MoveEnd {makes, uses} -> uses <> foldMap (\(_, _, v) -> getAllVariables v) makes
 
 newtype RefinementId = RefinementId Text
   deriving newtype (Show, Eq, Ord, Read)
