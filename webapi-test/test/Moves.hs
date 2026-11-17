@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
 -- | A scenario's moves against a toy platform (zenbridge #2714): an
@@ -11,7 +12,11 @@
 -- them, and a check at @855 sent@ holds one 855 per 850 the moves sent.
 module Main (main) where
 
-import           Control.Monad (unless)
+import           Control.Concurrent (threadDelay)
+import           Control.Exception (AllocationLimitExceeded (..), evaluate, try)
+import           Control.Monad (unless, void, when)
+import           System.Mem (getAllocationCounter)
+import           Test.WebApi.Budget
 import           Control.Monad.IO.Class (liftIO)
 import           Data.IORef
 import           Data.List (isInfixOf)
@@ -22,6 +27,7 @@ import qualified Data.Text as T
 import           Data.Typeable (Proxy (..), gcast)
 import           System.Exit (exitFailure)
 import qualified Test.QuickCheck as QC
+import           System.Timeout (timeout)
 import           Test.QuickCheck.DynamicLogic (DL, action)
 import           Test.QuickCheck.Random (mkQCGen)
 import           Test.QuickCheck.StateModel (Any (..), HasVariables (..), LookUp, initialState)
@@ -44,6 +50,10 @@ data Platform = Platform
   , orderCount :: IORef Int
   , buggy :: Bool
   , settles :: Bool
+  , stallAt :: Maybe Int
+    -- ^ the order whose 850 the platform takes a long while over
+  , heavy :: Bool
+    -- ^ every 850 costs its sender a lot of allocation
   }
 
 -- | An 850 arrives; the platform acknowledges it, except a replacement
@@ -57,8 +67,10 @@ receive Platform {docs, buggy} p purp = do
 -- | An original 850: the PO is the sender's fresh value, made unique here
 -- (two cases may draw their tokens in the same millisecond).
 receiveNew :: Platform -> Text -> IO Text
-receiveNew pf@Platform {orderCount} token = do
+receiveNew pf@Platform {orderCount, stallAt, heavy} token = do
   k <- atomicModifyIORef' orderCount (\c -> (c + 1, c + 1))
+  when heavy (heavyWork k)
+  when (stallAt == Just k) (threadDelay 30000000)
   let p = token <> "/" <> T.pack (show k)
   receive pf p "00"
   pure p
@@ -166,7 +178,7 @@ newPlatform :: Bool -> Bool -> IO Platform
 newPlatform b s = do
   r <- newIORef []
   c <- newIORef 0
-  pure Platform {docs = r, orderCount = c, buggy = b, settles = s}
+  pure Platform {docs = r, orderCount = c, buggy = b, settles = s, stallAt = Nothing, heavy = False}
 
 -- | The scenario run, traced: QuickCheck's result and the run's trace.
 run :: Platform -> Double -> Int -> IO (QC.Result, RunTrace)
@@ -196,6 +208,8 @@ main = do
     [ soundPlatform
     , buggyPlatform
     , unsettledPlatform
+    , cutRun
+    , budgetRuns
     ]
   unless (and (concat results)) exitFailure
 
@@ -253,3 +267,68 @@ unsettledPlatform = do
     , check "no case failed" (all (\CaseSummary {outcome} -> outcome /= Failed) cases)
     , check ("the cases that played a move are inconclusive, saying why: " <> show (take 1 whys)) (not (null whys) && all ("still busy" `isInfixOf`) (map T.unpack whys))
     ]
+
+-- | A run's time limit cuts it while a move waits on the platform: the
+-- cancel reaches the case (nothing on the way swallows it), and the case is
+-- recorded as cut, at its last step, with the move it was in.
+cutRun :: IO [Bool]
+cutRun = do
+  putStrLn "a run cut while a move waits on the platform:"
+  pf0 <- newPlatform False True
+  let pf = pf0 {stallAt = Just 2}
+  rec <- newRecorderFor "toy" "orders" []
+  r <- timeout 1000000 $ reify (model pf) $ \(ps :: Proxy s) ->
+    QC.quickCheckWithResult QC.stdArgs {QC.maxSuccess = 30, QC.chatty = False, QC.replay = Just (mkQCGen 7, 0), QC.maxDiscardRatio = 3}
+      (propDLTraced rec ps (runWebApis emptyApp) (scenario @s pf 1))
+  closeCut rec "the run passed its time limit of 1 s"
+  RunTrace {cases, cut} <- readRunTrace rec
+  let lastCase = reverse cases
+      cutSteps = maybe [] (\CaseTrace {steps} -> steps) cut
+  sequence
+    [ check "the time limit cut the run (the cancel was not swallowed)" (isNothing' r)
+    , check "the last case is cut, saying why" (case lastCase of CaseSummary {outcome = Cut, why = Just w} : _ -> "time limit" `isInfixOf` T.unpack w; _ -> False)
+    , check ("it is cut at its last step: " <> show (map (\CaseSummary {at} -> at) (take 1 lastCase), length cutSteps)) (case lastCase of CaseSummary {at = Just n} : _ -> n == length cutSteps && n > 0; _ -> False)
+    , check ("its moves end with the one it was in: " <> show (map (\CaseSummary {moves = ms} -> ms) (take 1 lastCase))) (case lastCase of CaseSummary {moves = ms@(_ : _)} : _ -> last ms == "orders.partner.send850"; _ -> False)
+    , check "the trace keeps the cut case's steps" (not (null cutSteps))
+    ]
+  where
+    isNothing' = \case Nothing -> True; Just _ -> False
+
+-- | Work that allocates: what a heavy 850 costs its sender.
+heavyWork :: Int -> IO ()
+heavyWork k = void (evaluate (length (concatMap show [k .. k + 200000])))
+
+-- | A move over its own budget is cut; a case over its budget is cut at a
+-- later move although each of its moves is within the move's budget; and
+-- light moves pass under the same budgets.
+budgetRuns :: IO [Bool]
+budgetRuns = do
+  putStrLn "allocation budgets, a case's and a move's:"
+  c0 <- getAllocationCounter
+  heavyWork 0
+  c1 <- getAllocationCounter
+  let x = c0 - c1
+  heavyPf <- newPlatform False True
+  let hpf = heavyPf {heavy = True}
+  (rMove, cutMove) <- budgetRun hpf AllocBudget {perCase = Nothing, perMove = Just (x `div` 2)}
+  (rCase, cutCase) <- budgetRun hpf AllocBudget {perCase = Just (x * 3 `div` 2), perMove = Just (x * 3 `div` 2)}
+  light <- newPlatform False True
+  (rLight, _) <- budgetRun light AllocBudget {perCase = Just (x * 3 `div` 2), perMove = Just (x * 3 `div` 2)}
+  let movesOf = maybe [] (\CaseTrace {steps} -> [ operation | StepRecord {kind = KindBegin, operation} <- steps ])
+  sequence
+    [ check ("a move over its budget is cut (" <> show (x `div` 1024) <> " KiB a heavy send, " <> show (x `div` 2048) <> " KiB a move)") (exceeded rMove && not (null (movesOf cutMove)))
+    , check ("a case over its budget is cut at a later move: the moves begun " <> show (movesOf cutCase)) (exceeded rCase && length (movesOf cutCase) >= 2)
+    , check "light moves pass under the same budgets" (either (const False) QC.isSuccess rLight)
+    ]
+  where
+    exceeded = either (const True) (const False)
+
+budgetRun :: Platform -> AllocBudget -> IO (Either AllocationLimitExceeded QC.Result, Maybe CaseTrace)
+budgetRun pf b = do
+  rec <- newRecorderFor "toy" "orders" []
+  r <- try $ reify (model pf) $ \(ps :: Proxy s) ->
+    QC.quickCheckWithResult QC.stdArgs {QC.maxSuccess = 20, QC.chatty = False, QC.replay = Just (mkQCGen 7, 0), QC.maxDiscardRatio = 3}
+      (propDLTraced rec ps (\sess -> withCaseBudget b (runWebApis emptyApp sess)) (scenario @s pf 1))
+  either (const (closeCut rec "the allocation budget")) (const (pure ())) r
+  RunTrace {cut} <- readRunTrace rec
+  pure (r, cut)

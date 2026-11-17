@@ -144,6 +144,7 @@ module Test.WebApi.StateModel
   -- , liftApiDL
   ) where
 
+import Test.WebApi.Budget (moveBegins)
 import Test.WebApi
 import Test.QuickCheck.StateModel
 import Test.QuickCheck.DynamicLogic (DynLogicModel (..), DL, getModelStateDL, action, forAllNonVariableQ, withGenQ)
@@ -1043,7 +1044,8 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
         MkWebApiAction (XAction xact) -> ReaderT $ \_ -> do
           res <- liftIO $ perform xActionState xact lkp
           pure $ first (XActionError . AnyXActionError) res
-        MkWebApiAction (MoveBegin {}) -> pure (Right ())
+        -- a move's own allocation budget starts here ("Test.WebApi.Budget")
+        MkWebApiAction (MoveBegin {}) -> liftIO moveBegins >> pure (Right ())
         MkWebApiAction (MoveSettle {}) -> pure (Right ())
 
   postcondition ss@(_, after) (MkWebApiAction act) lkp res = do

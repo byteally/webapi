@@ -1,5 +1,22 @@
 # Revision history for webapi-test
 
+## 0.5.0.0 -- 2026-11-17 (zenbridge #2730: a run cut, and a run's budgets)
+
+* **A cut case is recorded** (breaking: `CaseOutcome` gains `Cut`,
+  `RunTrace` gains `cut`). A run stopped while a case is open, by its time
+  or allocation limit or its thread cancelled, never reaches QuickCheck's
+  end-of-case callback, so the case used to vanish from the trace.
+  `closeCut rec why`, called once the run has stopped, closes it from the
+  steps already pushed: as `cut`, at its last step (the move it reached),
+  its moves ending with the one it was in, its steps in `RunTrace.cut`.
+* **Allocation budgets, a case's and a move's** (`Test.WebApi.Budget`).
+  `withCaseBudget AllocBudget {perCase, perMove}` around the runner that
+  plays a case arms GHC's allocation limit on the case's thread; each move,
+  as it begins, gets its own budget or what the case has left, whichever is
+  less. A case or move over budget gets `AllocationLimitExceeded`, which
+  nothing on the way catches. It counts the case's own thread: a host that
+  runs an application in process puts that work on a thread of its own.
+
 ## 0.4.0.0 -- 2026-11-16 (zenbridge #2714: a scenario's moves, stages and checks)
 
 * **A fresh value is new each time it is drawn.** `FreshValue` begins a step
