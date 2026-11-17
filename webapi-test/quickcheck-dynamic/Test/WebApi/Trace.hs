@@ -47,6 +47,7 @@ module Test.WebApi.Trace
   , newRecorderFor
   , recordedProperty
   , readRunTrace
+  , closeCut
   , beginCase
   , beginCaseWith
   , takeSteps
@@ -63,6 +64,7 @@ module Test.WebApi.Trace
   ) where
 
 import           Control.Applicative ((<|>))
+import           Control.Monad (unless)
 import           Data.Aeson (ToJSON (..), Value (..), object, (.=))
 import qualified Data.Aeson.Key as K
 import qualified Data.ByteString.Lazy as LBS
@@ -215,7 +217,10 @@ moveCountKey StepRecord {info, operation} = case info of
   Just StepInfo {name = Just nm} -> nm
   _ -> operation
 
-data CaseOutcome = Passed | Failed | Discarded | Inconclusive
+-- | 'Cut': the run was stopped while the case was open (its time or
+-- allocation limit, or its thread cancelled), so the case ends at the last
+-- step it pushed — the move it reached — neither passed nor failed.
+data CaseOutcome = Passed | Failed | Discarded | Inconclusive | Cut
   deriving (Eq, Show)
 
 outcomeText :: CaseOutcome -> Text
@@ -224,6 +229,7 @@ outcomeText = \case
   Failed -> "failed"
   Discarded -> "discarded"
   Inconclusive -> "inconclusive"
+  Cut -> "cut"
 
 -- | One generated case, in a line.
 data CaseSummary = CaseSummary
@@ -314,6 +320,9 @@ data RunTrace = RunTrace
   , moves :: [MoveCount]
   , replays :: [ReplayRecord]
     -- ^ the regression cases the run played first, before it drew any
+  , cut :: Maybe CaseTrace
+    -- ^ the case open when the run was cut ('closeCut'), its steps up to
+    -- the move it reached
   }
   deriving (Eq, Show)
 
@@ -421,6 +430,7 @@ instance ToJSON RunTrace where
     , "labels" .= labels
     , "moves" .= moves
     , "replays" .= replays
+    , "cut" .= cut
     ]
 
 -- ---------------------------------------------------------------------------
@@ -471,6 +481,7 @@ data Gathered = Gathered
   , labelCounts :: M.Map Text Int
   , moveCounts :: M.Map Text Int
   , replayLines :: Seq ReplayRecord
+  , cutCase :: Maybe CaseTrace
   }
 
 -- | A recorder for one property, given the labels its steps declare (a
@@ -498,6 +509,7 @@ newRecorderFor scenarioHash propertyName declaredLabels = do
     , labelCounts = M.empty
     , moveCounts = M.empty
     , replayLines = Seq.empty
+    , cutCase = Nothing
     }
   pure Recorder {current = cur, currentCase = curCase, gathered = g, declared = declaredLabels, origin = (scenarioHash, propertyName)}
 
@@ -641,6 +653,41 @@ stepsFailure stepList = case find (\StepRecord {ok} -> not ok) stepList of
         (w : _) -> Just w
         [] -> answer >>= \AnswerRecord {failure} -> failure
 
+-- | The run was cut while a case was open — a time or allocation limit, or
+-- its thread cancelled — so QuickCheck never closed it ('recordedProperty'
+-- closes a case only when QuickCheck finishes it): the case is closed from
+-- the steps already pushed, as 'Cut', at its last step, with why. Its
+-- moves are the ones it played and, last, the one it was in (begun, never
+-- settled). A recorder with no open case is left as it is. Call it once the
+-- run has stopped, before 'readRunTrace'.
+closeCut :: Recorder -> Text -> IO ()
+closeCut Recorder {current, currentCase, gathered, origin = (scenarioHash, propertyName)} why = do
+  stepList <- toList <$> atomicModifyIORef' current (\s -> (Seq.empty, s))
+  caseKept <- atomicModifyIORef' currentCase (\c -> (Nothing, c))
+  unless (null stepList) $ modifyIORef' gathered $ \g@Gathered {..} ->
+    let
+      reached = case reverse stepList of
+        StepRecord {n} : _ -> Just n
+        [] -> Nothing
+      settled = [ m | StepRecord {kind = KindSettle, inMove = m} <- stepList ]
+      openMove = case reverse [ st | st@StepRecord {kind = KindBegin} <- stepList ] of
+        st@StepRecord {inMove = m} : _ | m `notElem` settled -> [moveName st]
+        _ -> []
+      moveList = map moveName (caseMoves stepList) <> openMove
+      replayable = (\(sz, its) -> CaseRecord {format = caseFormat, scenario = scenarioHash, property = propertyName, size = sz, items = its}) <$> caseKept
+      traced from = Just CaseTrace {from, steps = stepList, replayable}
+    in if narrowingStarted
+      then
+        let k = tryCount + 1
+        in g { tryCount = k
+             , tryLines = tryLines |> TrySummary {number = k, played = True, moves = moveList, outcome = Cut, at = reached, why = Just why, taken = False}
+             , cutCase = traced ("try " <> tshow k) }
+      else
+        let k = caseCount + 1
+        in g { caseCount = k
+             , caseLines = caseLines |> CaseSummary {number = k, played = True, moves = moveList, outcome = Cut, at = reached, why = Just why, labels = []}
+             , cutCase = traced ("case " <> tshow k) }
+
 finalFailure :: Recorder -> IO ()
 finalFailure Recorder {gathered} = modifyIORef' gathered $ \g@Gathered {lastTaken, firstFailing} ->
   g {final = lastTaken <|> firstFailing}
@@ -662,6 +709,7 @@ readRunTrace Recorder {gathered, declared} = do
     , labels = [ LabelCount {label = l, cases = M.findWithDefault 0 l labelCounts, outOf = countedCases} | l <- labelOrder ]
     , moves = [ MoveCount {move = m, timesPlayed = c} | (m, c) <- M.toList moveCounts ]
     , replays = toList replayLines
+    , cut = cutCase
     }
   where
     dedupe = go Set.empty
