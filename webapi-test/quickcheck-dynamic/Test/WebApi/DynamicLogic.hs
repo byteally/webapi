@@ -24,7 +24,7 @@ import Test.QuickCheck.Monadic
 import Test.QuickCheck.Monadic qualified as QC
 import Data.Reflection
 import Data.IORef
-import Test.WebApi.Trace (Recorder, ReplayOutcome (..), ReplayRecord (..), StepRecord (..), beginCaseWith, noteReplay, recordedProperty, stepsFailure, takeSteps)
+import Test.WebApi.Trace (Recorder, ReplayOutcome (..), ReplayRecord (..), StepRecord (..), beginCaseWith, beginReplay, noteReplay, recordedProperty, stepsFailure, takeSteps)
 import Test.WebApi.Prediction (MoveInconclusive (..))
 import Control.Exception (catch)
 import Data.List (find)
@@ -70,6 +70,8 @@ propDLTraced rec _ webapiRunner d = recordedProperty rec $
 -- (zenbridge #2713), before the property draws any of its own: how it
 -- fared noted in the recorder ('Test.WebApi.Trace.replays'), its moves
 -- in full. A case the program no longer plays is noted as such, with why.
+-- A run cut while a case replays leaves it open: 'Test.WebApi.Trace.closeCut'
+-- notes it as cut.
 replayCasesDL :: forall c xstate apps e s.
   ( DynLogicModel xstate
   , RunModel xstate IO
@@ -83,7 +85,10 @@ replayCasesDL rec _ webapiRunner d kept = forM_ (zip [1 ..] kept) $ \(k, CaseRec
   case replayTest webApiReplayHooks dl items of
     Left why -> noteReplay rec ReplayRecord {caseNumber = k, replayOutcome = CantReplay, replayAt = Nothing, replayWhy = Just why, replaySteps = []}
     Right test -> do
-      res <- QC.quickCheckWithResult QC.stdArgs {QC.maxSuccess = 1, QC.maxShrinks = 0, QC.chatty = False}
+      beginReplay rec k
+      -- played once: a case that is discarded (a move that did not settle)
+      -- is not drawn again, it is the same case
+      res <- QC.quickCheckWithResult QC.stdArgs {QC.maxSuccess = 1, QC.maxShrinks = 0, QC.maxDiscardRatio = 1, QC.chatty = False}
                (withDLScript dl (propApiWithCase (Just rec) Nothing webapiRunner) test)
       played <- takeSteps rec
       let (at, why) = stepsFailure played

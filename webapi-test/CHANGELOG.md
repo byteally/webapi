@@ -1,5 +1,34 @@
 # Revision history for webapi-test
 
+## 0.6.0.0 -- 2026-11-18 (zenbridge #2741: a recorder's sink)
+
+* **A recorder hands what it records to a sink, as it happens**
+  (`newRecorderTo`, `TraceEvent`), so a run can be followed while it plays.
+  * `StepEnded phase step`: each step once, when it is final. That is as
+    soon as its checks have run (`sealStep`, which the state model calls
+    after a step's postcondition, or after its inconclusive mark), not when
+    the next step is pushed: a move's own step is handed over before its
+    settle step begins. A step whose checks never ran (it failed, or its
+    case was cut) is handed over as its case closes.
+  * `CaseEnded phase close`: a play closed, after its last step
+    (`CaseClose`: its outcome, the step it failed at or reached, why, its
+    moves, the labels that held). A case QuickCheck discards closes too.
+  * `Phase` tells a replayed regression case, a generated case and a
+    narrowing try apart (`{"replay": 1}`, `{"case": 2}`, `{"try": 3}`).
+  * The sink is called on the thread that plays the case, with asynchronous
+    exceptions masked, so an event is handed over whole or not at all: it
+    must neither block nor throw (put the event on a queue). A recorder
+    without a sink records as before.
+* **A regression case cut while it replays is recorded** (breaking:
+  `ReplayOutcome` gains `ReplayCut`). `replayCasesDL` marks the replay it
+  is in (`beginReplay`); `closeCut` notes it among the replays as `cut`,
+  with the steps it had made, and `RunTrace.cut` holds it (`replay k`).
+* **A regression case is replayed once.** A replay QuickCheck discarded (a
+  move that did not settle) was played again, up to ten times: the same
+  case each time.
+* `reached`: where a case stopped while it was open got to (its last step,
+  and the move it was in).
+
 ## 0.5.0.0 -- 2026-11-17 (zenbridge #2730: a run cut, and a run's budgets)
 
 * **A cut case is recorded** (breaking: `CaseOutcome` gains `Cut`,
