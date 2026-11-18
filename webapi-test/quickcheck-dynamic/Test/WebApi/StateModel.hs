@@ -23,6 +23,12 @@ module Test.WebApi.StateModel
   , WebApiGlobalStateModel (..)
   , MoveHost (..)
   , defMoveHost
+  , MovePlayed (..)
+  , MoveStep (..)
+  , Sent (..)
+  , Answered (..)
+  , sentAs
+  , answeredAs
   , NER (..)
   , HasApiSession (..)
   , WebApiSessionsCxt
@@ -77,7 +83,7 @@ module Test.WebApi.StateModel
   , repointAction
   , noRedraw
   , RefinementId (..)
-  , initWebApiSessionsCxt
+  , newWebApiSessionsCxt
   , successCall
   , successCallWith
   , failingCall
@@ -107,7 +113,6 @@ module Test.WebApi.StateModel
   , andPostcondition
   , andCheck
   , andClassify
-  , tracingCxt
   , noStage
   , moveIdentity
   , addVariables
@@ -194,6 +199,7 @@ import qualified GHC.Base as Unsafe (Any)
 import Data.Reflection
 import Data.Hashable
 import Data.Maybe (fromMaybe)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import GHC.Generics (Rep)
 import Data.Bifunctor
 import Control.Monad.IO.Class
@@ -923,20 +929,28 @@ data ResultError = MkResultError
 
 -- ModifyClientCookies moved to WebApi.Client.Session (M8a).
 
+-- | What one case's steps share while it plays: made for each case
+-- ('newWebApiSessionsCxt'), never kept from one to the next.
 data WebApiSessionsCxt = WebApiSessionsCxt
   { traceRecorder :: Maybe Recorder
-    -- ^ where the steps are recorded as they run ('tracingCxt'); none:
-    -- nothing is recorded
+    -- ^ where the steps are recorded as they run; none: nothing is recorded
+  , openMove :: IORef (Maybe [MoveStep])
+    -- ^ the steps of the scenario's move the case is in, newest first, for
+    -- the host ('MovePlayed'); 'Nothing' outside a move. A move's begin
+    -- step opens it, each step of its body is put on it, and its settle
+    -- step reads it twice (to settle, then to observe) and closes it
+  , lastSent :: IORef (Maybe Sent)
+    -- ^ the request of the call being performed, as it went out: a call
+    -- leaves it here, and the step put on the open move takes it
   }
 
-initWebApiSessionsCxt :: WebApiSessionsCxt
-initWebApiSessionsCxt = WebApiSessionsCxt
-  { traceRecorder = Nothing
-  }
-
--- | The steps recorded into the recorder as they run.
-tracingCxt :: Recorder -> WebApiSessionsCxt
-tracingCxt rec = WebApiSessionsCxt {traceRecorder = Just rec}
+-- | A case's context: its steps recorded into the recorder as they run,
+-- when there is one, and no move open.
+newWebApiSessionsCxt :: Maybe Recorder -> IO WebApiSessionsCxt
+newWebApiSessionsCxt traceRecorder = do
+  openMove <- newIORef Nothing
+  lastSent <- newIORef Nothing
+  pure WebApiSessionsCxt {traceRecorder, openMove, lastSent}
 
 instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
          , RunModel xstate IO
@@ -953,11 +967,12 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
   perform st@ApiState {xActionState} act lkp = case act of
     -- a move's end: the host settles what it caused, within its budget;
     -- one that does not is inconclusive, recorded so before the case stops
-    MkWebApiAction (MoveSettle MoveEnd {name, budget}) -> ReaderT $ \WebApiSessionsCxt {traceRecorder} -> do
+    MkWebApiAction (MoveSettle MoveEnd {name, info, budget}) -> ReaderT $ \WebApiSessionsCxt {traceRecorder, openMove} -> do
       let WebApiGlobalStateModel {appMoveHost = MoveHost {settle}} = reflect (Proxy @s)
-      settled <- settle budget
+      played <- liftIO (movePlayed name info openMove)
+      settled <- settle played budget
       let res = either (const (Right ())) Right settled
-      forM_ traceRecorder $ \rec -> recordPerformed rec st act lkp res
+      forM_ traceRecorder $ \rec -> recordPerformed rec st act lkp res (pure ())
       case settled of
         Right () -> pure res
         Left why -> do
@@ -965,15 +980,19 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
           liftIO (throwIO MoveInconclusive {move = name, why})
     _ -> do
       res <- performIt
-      ReaderT $ \WebApiSessionsCxt {traceRecorder} ->
-        forM_ traceRecorder $ \rec -> recordPerformed rec st act lkp res
+      ReaderT $ \WebApiSessionsCxt {traceRecorder, openMove, lastSent} ->
+        -- a step of a move's body is put on the move, for its host: with
+        -- the step's record when there is a recorder, in the one action
+        let noted = noteMoveStep openMove lastSent act res
+        in maybe (liftIO noted) (\rec -> recordPerformed rec st act lkp res noted) traceRecorder
       pure res
     where
      performIt = case act of
-        MkWebApiAction (SuccessCall creq' SuccessApiModel {apiRetry} cookModMay f) -> ReaderT $ \_ -> do
+        MkWebApiAction (SuccessCall creq' SuccessApiModel {apiRetry} cookModMay f) -> ReaderT $ \WebApiSessionsCxt {lastSent} -> do
           sup <- stepSuppliers lkp creq'
           case resolveRequest sup lkp creq' of
             Right creq -> do
+              liftIO (writeIORef lastSent (Just (Sent creq)))
               let
                 once = testClients creq >>= \case
                   Success code out headerOut cookieOut -> do
@@ -1000,10 +1019,10 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
                   r -> pure r
               attempt (maybe 1 fst apiRetry)
             Left field -> pure $ Left (InputNotSetError field)
-        MkWebApiAction (ErrorCall creq' expected _model f) -> ReaderT $ \_ -> do
+        MkWebApiAction (ErrorCall creq' expected _model f) -> ReaderT $ \WebApiSessionsCxt {lastSent} -> do
           sup <- stepSuppliers lkp creq'
           case resolveRequest sup lkp creq' of
-            Right creq -> testClients creq >>= \case
+            Right creq -> liftIO (writeIORef lastSent (Just (Sent creq))) >> testClients creq >>= \case
               Failure (Left apiErr@(ApiError code _err hd _))
                 | matchesFailure expected code -> pure $ either (Left . ResultError) Right $ f apiErr
                 | otherwise -> pure $ Left UnexpectedStatus
@@ -1021,7 +1040,8 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
                                                       , headerOut = toHeader headerOut
                                                       }
             Left field -> pure $ Left (InputNotSetError field)
-        MkWebApiAction (SomeExceptionCall creq) -> ReaderT $ \_ -> do
+        MkWebApiAction (SomeExceptionCall creq) -> ReaderT $ \WebApiSessionsCxt {lastSent} -> do
+          liftIO (writeIORef lastSent (Just (Sent creq)))
           testClients creq >>= \case
             Failure (Right (OtherError e)) -> pure $ Right e
             Failure (Left (ApiError code _err hd _)) -> pure $ Left UnExpectedApiError
@@ -1044,8 +1064,10 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
         MkWebApiAction (XAction xact) -> ReaderT $ \_ -> do
           res <- liftIO $ perform xActionState xact lkp
           pure $ first (XActionError . AnyXActionError) res
-        -- a move's own allocation budget starts here ("Test.WebApi.Budget")
-        MkWebApiAction (MoveBegin {}) -> liftIO moveBegins >> pure (Right ())
+        -- a move's own allocation budget starts here ("Test.WebApi.Budget"),
+        -- and so do the steps its host is handed
+        MkWebApiAction (MoveBegin {}) -> ReaderT $ \WebApiSessionsCxt {openMove} ->
+          liftIO (moveBegins >> writeIORef openMove (Just [])) >> pure (Right ())
         MkWebApiAction (MoveSettle {}) -> pure (Right ())
 
   postcondition ss@(_, after) (MkWebApiAction act) lkp res = do
@@ -1068,9 +1090,11 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
       -- the observation, and the host's own checks run. What cannot be
       -- observed is inconclusive, as a move that does not settle is
       settleChecks :: MoveEnd -> PostconditionM (ReaderT WebApiSessionsCxt (WebApiSessions apps)) (Bool, [CheckRecord], [Text], SomeLookUp)
-      settleChecks me@MoveEnd {name, labels} = do
+      settleChecks me@MoveEnd {name, info, labels} = do
         let WebApiGlobalStateModel {appMoveHost = MoveHost {observe, hostChecks}} = reflect (Proxy @s)
-        observed <- lift (lift observe)
+        -- the move as its settle was handed it; the move is over
+        observed <- lift $ ReaderT $ \WebApiSessionsCxt {openMove} ->
+          liftIO (movePlayed name info openMove <* writeIORef openMove Nothing) >>= observe
         case observed of
           Left why -> do
             rec <- lift (asks (\WebApiSessionsCxt {traceRecorder} -> traceRecorder))
@@ -1140,6 +1164,48 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
     ErrorCall creq _ _ _ -> stepReport (show act) (requestReport lkp creq) ("error: " ++ show err)
     _ -> show act ++ "\n  error: " ++ show err
 
+-- | The move the case is in, as it was played so far: its steps oldest
+-- first. Read at its settle step, when its body has run.
+movePlayed :: Text -> StepInfo -> IORef (Maybe [MoveStep]) -> IO MovePlayed
+movePlayed name info openMove = do
+  taken <- readIORef openMove
+  pure MovePlayed {name, info, steps = reverse (fromMaybe [] taken)}
+
+-- | A step that ran, put on the move the case is in when it gave its
+-- value (no move open: nothing is kept). A call, an effect step or a
+-- fresh value is one of the move's steps; the engine's own (a context
+-- switch, a step that only moves the model, the model's extended actions,
+-- a move's begin and settle) are not. A call's request is the one it left
+-- as it went out.
+noteMoveStep :: StateModel xstate => IORef (Maybe [MoveStep]) -> IORef (Maybe Sent) -> Action (ApiState s c xstate apps) a -> Either ErrorState a -> IO ()
+noteMoveStep openMove lastSent (MkWebApiAction act) res = readIORef openMove >>= \case
+  Nothing -> pure ()
+  Just steps -> case res of
+    Left _ -> pure ()
+    Right x -> case act of
+      SuccessCall {} -> call steps (Answered x)
+      ErrorCall {} -> call steps (Answered x)
+      SomeExceptionCall {} -> call steps (Answered x)
+      FreshValue {} -> writeIORef openMove (Just (moveStep act Nothing (Answered x) : steps))
+      EffectCall {} -> writeIORef openMove (Just (moveStep act Nothing (Answered x) : steps))
+      SetContext {} -> pure ()
+      ClearContext {} -> pure ()
+      ModelOnly {} -> pure ()
+      XAction {} -> pure ()
+      MoveBegin {} -> pure ()
+      MoveSettle {} -> pure ()
+  where
+    call steps value = do
+      sent <- readIORef lastSent
+      writeIORef lastSent Nothing
+      writeIORef openMove (Just (moveStep act sent value : steps))
+
+-- | A step as a move's host is handed it: named as its record in the
+-- trace names it ('moveIdentity').
+moveStep :: StateModel xstate => WebApiAction s c xstate apps a -> Maybe Sent -> Answered -> MoveStep
+moveStep act sent value = case moveIdentity act of
+  (kind, info, operation) -> MoveStep {kind, info, operation, sent, value}
+
 -- | A step of the counterexample: the operation (and the rule it came
 -- from), the request as it went out, what came back.
 stepReport :: String -> [String] -> String -> String
@@ -1190,10 +1256,12 @@ bodyClip = 32768
 valueClip = 4000
 
 -- | The step that just ran, recorded: the request and the answer while
--- the session still holds them, the stage before it.
+-- the session still holds them, the stage before it. The action given
+-- runs with the record's push (a step put on its move, 'noteMoveStep'), so
+-- a recorded step takes no action more for it.
 recordPerformed :: forall s c xstate apps a. (Reifies s (WebApiGlobalStateModel c xstate apps), StateModel xstate)
-  => Recorder -> ApiState s c xstate apps -> Action (ApiState s c xstate apps) a -> LookUp -> Either ErrorState a -> WebApiSessions apps ()
-recordPerformed rec st (MkWebApiAction act) lkp res = do
+  => Recorder -> ApiState s c xstate apps -> Action (ApiState s c xstate apps) a -> LookUp -> Either ErrorState a -> IO () -> WebApiSessions apps ()
+recordPerformed rec st (MkWebApiAction act) lkp res andThen = do
   stageBefore <- liftIO (stageOfGuarded lkp st)
   let
     engineStep k op i shown = StepRecord
@@ -1231,7 +1299,7 @@ recordPerformed rec st (MkWebApiAction act) lkp res = do
     XAction xact -> pure (engineStep KindOther (T.pack (actionName xact)) Nothing (const Nothing))
     MoveBegin nm i -> pure (engineStep KindBegin nm (Just i) (const Nothing))
     MoveSettle MoveEnd {name, info} -> pure (engineStep KindSettle name (Just info) (const Nothing))
-  liftIO (pushStep rec record)
+  liftIO (pushStep rec record >> andThen)
   where
     expectedStatus = \case
       AnyFailure -> Nothing

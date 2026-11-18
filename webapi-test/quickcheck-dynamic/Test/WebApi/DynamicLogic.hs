@@ -153,7 +153,9 @@ propApiWithCase :: forall c xstate apps e s.
 propApiWithCase rec kept webapiRunner s =
   -- a move that did not settle stops the case: neither passed nor failed,
   -- so QuickCheck discards it (the trace says it was inconclusive)
-  monadic (\m -> ioProperty (webapiRunner (runReaderT m (maybe initWebApiSessionsCxt tracingCxt rec)) `catch` inconclusive)) $ do
+  -- each play of the case has a context of its own: the move it is in is
+  -- never another play's
+  monadic (\m -> ioProperty (newWebApiSessionsCxt rec >>= \cxt -> webapiRunner (runReaderT m cxt) `catch` inconclusive)) $ do
     mapM_ (\r -> QC.run (liftIO (beginCaseWith r kept))) rec
     monitor $ counterexample "\nExecution\n"
     (_anonSt, _env) <- runActions s

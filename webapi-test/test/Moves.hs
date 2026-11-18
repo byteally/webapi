@@ -2,6 +2,9 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeOperators #-}
 -- | A scenario's moves against a toy platform (zenbridge #2714): an
 -- order's 850 is acknowledged by an 855, and the buggy platform does not
 -- acknowledge a replacement (BEG01 05), as zenbridge #2698 did not.
@@ -10,6 +13,10 @@
 -- an acknowledged order and sends its replacement. The host observes the
 -- platform's documents; the track's @stageOf@ reads an order's stage off
 -- them, and a check at @855 sent@ holds one 855 per 850 the moves sent.
+--
+-- The last section has an app of its own, one route that echoes its path
+-- (zenbridge #2715): a move's own steps, as its host is handed them, with
+-- a call among them.
 module Main (main) where
 
 import           Control.Concurrent (threadDelay)
@@ -31,11 +38,13 @@ import           System.Timeout (timeout)
 import           Test.QuickCheck.DynamicLogic (DL, action)
 import           Test.QuickCheck.Random (mkQCGen)
 import           Test.QuickCheck.StateModel (Any (..), HasVariables (..), LookUp, initialState)
-import           Test.WebApi (emptyApp, runWebApis)
+import           Test.WebApi (ClientRequest (..), WebApiSessionsConfig, addApp, emptyApp, runWebApis)
 import           Test.WebApi.Case (CaseRecord)
 import           Test.WebApi.DynamicLogic
 import           Test.WebApi.Moves
 import           Test.WebApi.Trace
+import           WebApi.Contract
+import           WebApi.Server
 
 -- ---------------------------------------------------------------------------
 -- The platform under test
@@ -79,8 +88,8 @@ receiveNew pf@Platform {orderCount, stallAt, heavy} token = do
 
 host :: Platform -> MoveHost '[]
 host Platform {docs, settles, atSettle} = MoveHost
-  { settle = \_ -> liftIO atSettle >> pure (if settles then Right () else Left "the platform is still busy")
-  , observe = liftIO (Right . SomeObservation <$> readIORef docs)
+  { settle = \_ _ -> liftIO atSettle >> pure (if settles then Right () else Left "the platform is still busy")
+  , observe = \_ -> liftIO (Right . SomeObservation <$> readIORef docs)
   , hostChecks = const []
   }
 
@@ -218,6 +227,7 @@ main = do
     , budgetRuns
     , sinkRuns
     , sinkCut
+    , handedMoves
     ]
   unless (and (concat results)) exitFailure
 
@@ -453,3 +463,129 @@ sinkCut = do
         [(_, sts, CaseClose {outcome = Cut, at, why = Just w})] -> sts == cutSteps && not (null sts) && at == Just (length sts) && "time limit" `isInfixOf` T.unpack w
         _ -> False)
     ]
+
+-- ---------------------------------------------------------------------------
+-- A move as its host is handed it (zenbridge #2715)
+
+-- | An app of one route: it answers what its path names, echoed.
+data EchoApp
+
+type EchoR = EchoApp :// "echo" :/ Text
+
+instance WebApi EchoApp where
+  type Apis EchoApp = '[ Route '[GET] EchoR ]
+
+instance ApiContract EchoApp GET EchoR where
+  type ApiOut GET EchoR = Text
+  type ApiErr GET EchoR = Text
+  type OperationId GET EchoR = 'OpId EchoApp "echo"
+
+data EchoImpl = EchoImpl
+
+instance WebApiServer EchoImpl where
+  type HandlerM EchoImpl = IO
+  type ApiInterface EchoImpl = EchoApp
+
+instance ApiHandler EchoImpl GET EchoR where
+  handler _ req = respond ("echoed " <> pathParam req)
+
+echoSessions :: WebApiSessionsConfig '[EchoApp]
+echoSessions = addApp (serverAppTyped serverSettings EchoImpl) emptyApp
+
+type EchoSt s = ApiState s () NoXState '[EchoApp]
+
+-- | A glue step that gives the text.
+glue :: Text -> Text -> DL (EchoSt s) (Val Text)
+glue nm gives = fmap (Var id) $ action $ mkWebApiAction $
+  EffectCall (T.unpack nm) (Just (info nm)) Set.empty (\_ -> pure (Right gives))
+
+-- | A move that tracks nothing: only its steps matter here.
+bare :: Text -> DL (EchoSt s) () -> DL (EchoSt s) ()
+bare nm steps = move Move
+  { name = nm, info = info nm, picked = [], makes = []
+  , body = steps >> pure MoveBody {values = [], labels = Set.empty, uses = Set.empty}
+  , tracks = M.empty, judge = noJudge, budget = 1 }
+
+-- | A step before any move, then two moves: the first draws a fresh value,
+-- calls the app with it and runs a glue step; the second runs one glue
+-- step.
+handedScenario :: DL (EchoSt s) ()
+handedScenario = do
+  void (freshM "outside")
+  bare "first" $ do
+    token <- freshM "po"
+    void $ action $ successCall (ClientRequestVal
+      {query = pure (), form = pure (), header = pure (), path = token, body = pure (), file = pure ()} :: ClientRequestVal GET EchoR)
+    void (glue "stamp" "stamped")
+  bare "second" (void (glue "seal" "sealed"))
+
+-- | A step as the checks compare it: its kind, its operation, whether it
+-- has a request, its value shown.
+type StepShape = (StepKind, Text, Bool, String)
+
+shapeOf :: MovePlayed -> (Text, [StepShape])
+shapeOf MovePlayed {name, steps} =
+  (name, [ (kind, operation, maybe False (const True) sent, show value) | MoveStep {kind, operation, sent, value} <- steps ])
+
+-- | The scenario played once against a host that keeps the moves its
+-- settle and its observe were handed, oldest first.
+handedRun :: Bool -> IO (QC.Result, [MovePlayed], [MovePlayed])
+handedRun traced = do
+  toSettle <- newIORef []
+  toObserve <- newIORef []
+  let
+    keeping = defMoveHost
+      { settle = \mv _ -> liftIO (modifyIORef' toSettle (mv :)) >> pure (Right ())
+      , observe = \mv -> liftIO (modifyIORef' toObserve (mv :)) >> pure (Right (SomeObservation ()))
+      }
+    echoModel :: WebApiGlobalStateModel () NoXState '[EchoApp]
+    echoModel = WebApiGlobalStateModel
+      { appAribitaryAction = \_ _ -> pure (Some (mkWebApiAction (ModelOnly "nothing" id)))
+      , appInitState = ApiState
+          { apiState = mempty, namedEntityTyped = mempty, defaultContext = Nothing, currentContext = Nothing
+          , xActionState = initialState, generateFrom = Nothing, classTypes = mempty, prediction = emptyPrediction }
+      , appStageOf = noStage
+      , appRedraw = noRedraw
+      , appMoveHost = keeping
+      }
+    args = QC.stdArgs {QC.maxSuccess = 1, QC.chatty = False, QC.replay = Just (mkQCGen 7, 0)}
+  rec <- newRecorderFor "toy" "handed" []
+  res <- reify echoModel $ \(ps :: Proxy s) -> QC.quickCheckWithResult args $
+    if traced
+      then propDLTraced rec ps (runWebApis echoSessions) (handedScenario @s)
+      else propDL ps (runWebApis echoSessions) (handedScenario @s)
+  (,,) res <$> (reverse <$> readIORef toSettle) <*> (reverse <$> readIORef toObserve)
+
+-- | What a move's host is handed: the move by its name, with its own
+-- steps in the order they ran and nothing else; a call's request and its
+-- answer, read back by their types; and the same to its settle and to its
+-- observe, with a recorder listening or none.
+handedMoves :: IO [Bool]
+handedMoves = do
+  putStrLn "a move's own steps, handed to its host:"
+  (res, settled, observed) <- handedRun False
+  (resT, settledT, observedT) <- handedRun True
+  unless (QC.isSuccess res) (putStrLn (QC.output res))
+  let
+    shapes = map shapeOf settled
+    firstSteps = concat (take 1 [ steps | MovePlayed {name = "first", steps} <- settled ])
+    drawn = [ st | st@MoveStep {kind = KindFresh} <- firstSteps ]
+    calls = [ st | st@MoveStep {kind = KindCall} <- firstSteps ]
+    token = concat [ t | Just t <- map (fmap (: []) . answeredAs @Text) (take 1 drawn) ]
+    sentPaths = [ p | Just ClientRequest {path = p} <- map (sentAs @GET @EchoR) calls ]
+    answers = [ a | Just a <- map (answeredAs @Text) calls ]
+  sequence
+    [ check "the property passes, with a recorder and without" (QC.isSuccess res && QC.isSuccess resT)
+    , check ("each move is handed to its settle by its name: " <> show (map fst shapes)) (map fst shapes == ["first", "second"])
+    , check ("a move has its own steps in order, without its begin and settle or a step outside it: " <> show (map (\(k, op, _, _) -> (k, op)) (concatMap snd (take 1 shapes))))
+        (map (map (\(k, op, s, _) -> (k, op, s)) . snd) (take 1 shapes) == [[(KindFresh, "fresh po", False), (KindCall, "EchoApp/echo", True), (KindGlue, "stamp", False)]])
+    , check ("the second move has only its own: " <> show (map snd (drop 1 shapes))) (map snd (drop 1 shapes) == [[(KindGlue, "seal", False, show ("sealed" :: Text))]])
+    , check ("a call's request is read back as it went out: " <> show sentPaths) (not (null token) && sentPaths == token)
+    , check ("and its answer by its type: " <> show answers) (not (null token) && answers == map ("echoed " <>) token)
+    , check "a value of another type is not read" (all (\st -> answeredAs @Int st == Nothing) firstSteps && all (\st -> maybe True (const False) (sentAs @POST @EchoR st)) calls)
+    , check "its observe is handed the same move" (map shapeOf observed == shapes)
+    , check "a recorder listening changes nothing of it" (map strip (map shapeOf settledT) == map strip shapes && map strip (map shapeOf observedT) == map strip shapes)
+    ]
+  where
+    -- a play's tokens are its own: the moves compared by all but their values
+    strip (nm, sts) = (nm, [ (k, op, s) | (k, op, s, _) <- sts ])

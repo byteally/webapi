@@ -39,6 +39,13 @@ module Test.WebApi.Prediction
   , ThingCheck (..)
   , PredictionCheck (..)
   , SomeObservation (..)
+    -- * A move as it was played
+  , MovePlayed (..)
+  , MoveStep (..)
+  , Sent (..)
+  , Answered (..)
+  , sentAs
+  , answeredAs
     -- * The host
   , MoveHost (..)
   , defMoveHost
@@ -50,10 +57,10 @@ import qualified Data.Map.Strict as M
 import qualified Data.Set as Set
 import           Data.Text (Text)
 import qualified Data.Text as T
-import           Data.Typeable (Typeable)
+import           Data.Typeable (Typeable, cast)
 import           Test.QuickCheck.StateModel (Any, LookUp, Var)
-import           Test.WebApi (WebApiSessions)
-import           Test.WebApi.Trace (StepInfo)
+import           Test.WebApi (ClientRequest, WebApiSessions)
+import           Test.WebApi.Trace (StepInfo, StepKind)
 import           Test.WebApi.Val (AnyVal)
 
 -- ---------------------------------------------------------------------------
@@ -199,25 +206,91 @@ instance Show SomeObservation where
   show (SomeObservation o) = show o
 
 -- ---------------------------------------------------------------------------
+-- A move as it was played
+
+-- | A move as it was played (zenbridge #2715): its name, where it was
+-- written, and its own steps in the order they ran. The host is handed it
+-- with every call it gets about the move ('MoveHost'), so it can tell what
+-- the move did (what it wrote, and what came back) without keeping
+-- anything between those calls.
+data MovePlayed = MovePlayed
+  { name :: Text
+  , info :: StepInfo
+  , steps :: [MoveStep]
+    -- ^ every call, every effect step (a foreign transform, a host's own
+    -- step) and every fresh value the move's body ran, oldest first. The
+    -- move's begin and settle steps are not among them, nor are the
+    -- engine's own steps (one that only moves the model, a context switch,
+    -- a model's extended action), nor any step outside the move
+  }
+
+-- | One of a move's own steps, as the engine held it when it ran. Nothing
+-- is rendered, clipped or masked: these are the values themselves, read by
+-- a cast to the types the host knows ('sentAs', 'answeredAs'). A step that
+-- fails ends its case before the move's settle step, so every step here
+-- has its value.
+data MoveStep = MoveStep
+  { kind :: StepKind
+    -- ^ a call, an effect step (glue) or a fresh value
+  , info :: Maybe StepInfo
+    -- ^ where it was written, when a layer above the engine knows: its
+    -- rule, and the name that layer knows its operation by
+  , operation :: Text
+    -- ^ the operation id (a call), the effect's name, or the fresh value's
+    -- label, as the trace's record of the step names it
+  , sent :: Maybe Sent
+    -- ^ a call's request as it went out; none for any other step (the
+    -- engine never holds an effect step's input as a value)
+  , value :: Answered
+    -- ^ what the step gave: a call's result as its caller made it of the
+    -- answer (of the error, for a call that was expected to be refused),
+    -- an effect step's result, a fresh value's token
+  }
+
+-- | A call's request as it went out: its variables looked up, its fresh
+-- values and its files as the step made them.
+data Sent where
+  Sent :: Typeable (ClientRequest meth r) => ClientRequest meth r -> Sent
+
+-- | What a step gave, whatever its type.
+data Answered where
+  Answered :: (Typeable a, Show a) => a -> Answered
+
+instance Show Answered where
+  show (Answered a) = show a
+
+-- | The step's request, when it is a call of this method and route:
+-- @sentAs \@POST \@ItemsR step@.
+sentAs :: forall meth r. Typeable (ClientRequest meth r) => MoveStep -> Maybe (ClientRequest meth r)
+sentAs MoveStep {sent} = sent >>= \(Sent r) -> cast r
+
+-- | The step's value, when it is of this type.
+answeredAs :: forall a. Typeable a => MoveStep -> Maybe a
+answeredAs MoveStep {value = Answered a} = cast a
+
+-- ---------------------------------------------------------------------------
 -- The host
 
 -- | What the host does after a move: wait until what the move caused has
 -- settled, within the move's budget; observe; and the checks it makes
--- itself on every flow.
+-- itself on every flow. Each call about a move is handed the move as it
+-- was played, the same value each time.
 data MoveHost apps = MoveHost
-  { settle :: Int -> WebApiSessions apps (Either Text ())
+  { settle :: MovePlayed -> Int -> WebApiSessions apps (Either Text ())
     -- ^ 'Left' says why it did not settle within the budget (seconds):
     -- the move is inconclusive
-  , observe :: WebApiSessions apps (Either Text SomeObservation)
+  , observe :: MovePlayed -> WebApiSessions apps (Either Text SomeObservation)
     -- ^ 'Left': nothing could be observed, and the move is inconclusive
   , hostChecks :: SomeObservation -> [(Text, Either Text ())]
   }
 
--- | A host whose moves settle at once, that observes nothing.
+-- | A host whose moves settle at once, that observes nothing. Build a
+-- host from it (@defMoveHost {settle = …, observe = …}@), so that a field
+-- added later breaks nothing.
 defMoveHost :: MoveHost apps
 defMoveHost = MoveHost
-  { settle = \_ -> pure (Right ())
-  , observe = pure (Right (SomeObservation ()))
+  { settle = \_ _ -> pure (Right ())
+  , observe = \_ -> pure (Right (SomeObservation ()))
   , hostChecks = const []
   }
 
