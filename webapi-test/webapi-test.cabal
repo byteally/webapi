@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               webapi-test
-version:            0.6.0.0
+version:            0.7.0.0
 -- synopsis:
 -- description:
 license:            BSD-3-Clause
@@ -109,6 +109,7 @@ test-suite moves
     hs-source-dirs:   test
     build-depends:    webapi-test
                     , webapi-test:qc-dynamic
+                    , aeson
                     , QuickCheck >= 2.14
                     , quickcheck-dynamic >= 4.0.1.1 && < 4.1
                     , reflection >= 2.1

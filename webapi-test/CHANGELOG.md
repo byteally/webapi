@@ -1,5 +1,72 @@
 # Revision history for webapi-test
 
+## 0.7.0.0 -- 2026-11-19 (zenbridge #2715: what a move's host is told, and what it may say)
+
+Four things a scenario's host could not do, none of which names a host's
+own ideas. All are breaking for a host that builds its `MoveHost` with the
+constructor: build it from `defMoveHost` (`defMoveHost {settle = …,
+observe = …}`), and a field added later breaks nothing.
+
+* **The host is handed a move as it was played** (`MovePlayed`: its name,
+  where it was written, its own steps in order). `settle` and `observe`
+  take it as their first argument (breaking), and so does `verdict`.
+  * A step is a `MoveStep`: its kind, where it was written, its operation,
+    a call's request as it went out (`Sent`) and what the step gave
+    (`Answered`). These are the values the engine held, not the trace's
+    text: nothing is rendered, clipped or masked. A host reads them by a
+    cast to its own types, `sentAs @POST @SomeRoute step` and
+    `answeredAs @SomeAnswer step`.
+  * The steps are the move's calls, its effect steps (a foreign transform,
+    a host's own step: no request, the result as its value) and its fresh
+    values. Its begin and settle steps, a context switch, a step that only
+    moves the model and a model's extended action are not among them, nor
+    is any step outside the move.
+  * No recorder is needed. A step that fails ends its case before the
+    move's settle step, so every step handed over has its value.
+* **The host has its word on a move once the checks have run**
+  (`verdict :: MovePlayed -> SomeObservation -> [CheckRecord] ->
+  WebApiSessions apps MoveVerdict`): it sees the move, what was observed
+  and every check's record, and answers a reason the move is inconclusive
+  and the evidence it noted.
+  * **The engine keeps the order.** A check that failed fails the case, and
+    the host's reason stays with the failure. When every check held and
+    the host gave a reason, the move is inconclusive: its case is
+    discarded, as one that did not settle is.
+  * The settle step of such a move keeps what its checks left (each check,
+    the labels, the model and the stage after it) and is marked
+    `inconclusive`. A move inconclusive before its checks (`settle` or
+    `observe` answered `Left`) has no check of its own, as before.
+  * A regression case that ends this way on replay reads `inconclusive`,
+    with the reason: never `passed`.
+* **The host attaches evidence to a move** (`Evidence`: a `kind` of the
+  host's own, one line `what`, an optional JSON `detail` carried as it
+  is). Evidence changes no outcome.
+  * It is kept on the move's settle step (`StepRecord.evidence`, breaking:
+    a new field; `"evidence"` in its JSON), so it goes wherever the step
+    goes: a sink, the first failure, the narrowed case, a replay, a cut
+    case.
+  * A failing move's evidence is listed in the failure's text, under its
+    failed checks (`evidence, <kind>: <what>`). A reason the host gave
+    when a check failed is kept as one more item, of the engine's own kind
+    `otherwise inconclusive`.
+  * The run's trace counts it by kind over the generated cases that
+    counted (`RunTrace.evidence`, breaking: a new field): how many cases
+    and moves carried it, and the first three in full. An inconclusive or
+    discarded case counts nothing, as for the labels and the moves.
+  * The record bounds it (`boundEvidence`, `evidenceLimit`): a line is
+    clipped at 4,000 characters, a detail over 32,768 bytes as JSON is
+    replaced by `{"dropped": bytes}`, and a move keeps 100 items, the rest
+    counted in one last item of the kind `evidence not kept`.
+* **The host is told that a case begins** (`caseBegins`): once before the
+  first step of every play, a generated case, a narrowing try and a
+  regression case replayed alike.
+* `newWebApiSessionsCxt` replaces `initWebApiSessionsCxt` and `tracingCxt`
+  (breaking): a case's context holds the move it is in, so one is made for
+  each play.
+* A run that uses none of this costs what it did. The 0.6.0.0 `moves`
+  suite, its host ported by two lines, allocates +0.09% at -O0 and -0.11%
+  at -O2 against 0.6.0.0.
+
 ## 0.6.0.0 -- 2026-11-18 (zenbridge #2741: a recorder's sink)
 
 * **A recorder hands what it records to a sink, as it happens**
