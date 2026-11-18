@@ -173,7 +173,7 @@ import qualified Data.Text.Encoding.Error as TE
 import Test.WebApi.Trace
   ( StepInfo (..), stepLabel, StepKind (..), Expectation (..), RequestRecord (..), FileRecord (..)
   , AnswerRecord (..), CheckRecord (..), StageRecord (..), StepRecord (..), Recorder
-  , pushStep, amendStep, afterStep, markInconclusive, clipText, bodyText )
+  , pushStep, amendStep, sealStep, afterStep, markInconclusive, clipText, bodyText )
 import Test.WebApi.Prediction
 import Data.ByteString (ByteString)
 import Data.Text (Text)
@@ -961,7 +961,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
       case settled of
         Right () -> pure res
         Left why -> do
-          forM_ traceRecorder $ \rec -> liftIO (amendStep rec (markInconclusive why))
+          forM_ traceRecorder $ \rec -> liftIO (amendStep rec (markInconclusive why) >> sealStep rec)
           liftIO (throwIO MoveInconclusive {move = name, why})
     _ -> do
       res <- performIt
@@ -1060,6 +1060,8 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
       m <- renderModel lkp' after
       stageAfter <- stageOfGuarded lkp' after
       amendStep r (afterStep cs ls m stageAfter held)
+      -- the step is final: its checks have run
+      sealStep r
     pure held
     where
       -- a move's end: the host observes, then every thing is held against
@@ -1073,7 +1075,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
           Left why -> do
             rec <- lift (asks (\WebApiSessionsCxt {traceRecorder} -> traceRecorder))
             lift $ liftIO $ do
-              forM_ rec $ \r -> amendStep r (markInconclusive ("nothing could be observed: " <> why))
+              forM_ rec $ \r -> amendStep r (markInconclusive ("nothing could be observed: " <> why)) >> sealStep r
               throwIO MoveInconclusive {move = name, why = "nothing could be observed: " <> why}
           Right obs -> do
             let
@@ -1116,6 +1118,7 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
       m <- renderModel lkp after
       stageAfter <- stageOfGuarded lkp after
       amendStep r (afterStep [] [] m stageAfter held)
+      sealStep r
     pure held
     where
       held = case act of

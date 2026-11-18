@@ -19,6 +19,11 @@
 -- test, a generated case and each narrowing try alike, and
 -- 'P.PostFinalFailure' once, on the narrowed case. So the phases are told
 -- apart without reading any text.
+--
+-- A recorder may hand what it records to a sink as it happens (zenbridge
+-- #2741, 'newRecorderTo'): each step once it is final ('StepEnded') and
+-- each case as it closes ('CaseEnded'), so a run can be followed while it
+-- plays instead of read at its end.
 module Test.WebApi.Trace
   ( -- * The records
     StepInfo (..)
@@ -41,30 +46,39 @@ module Test.WebApi.Trace
   , ReplayOutcome (..)
   , ReplayRecord (..)
   , kindText
+    -- * As it happens
+  , Phase (..)
+  , CaseClose (..)
+  , TraceEvent (..)
     -- * Recording
   , Recorder
   , newRecorder
   , newRecorderFor
+  , newRecorderTo
   , recordedProperty
   , readRunTrace
   , closeCut
   , beginCase
   , beginCaseWith
+  , beginReplay
   , takeSteps
   , noteReplay
   , stepsFailure
   , pushStep
   , amendStep
+  , sealStep
   , afterStep
   , markInconclusive
   , caseMoves
+  , reached
     -- * Rendering helpers
   , clipText
   , bodyText
   ) where
 
 import           Control.Applicative ((<|>))
-import           Control.Monad (unless)
+import           Control.Exception (mask_)
+import           Control.Monad (forM_, unless)
 import           Data.Aeson (ToJSON (..), Value (..), object, (.=))
 import qualified Data.Aeson.Key as K
 import qualified Data.ByteString.Lazy as LBS
@@ -278,6 +292,9 @@ data ReplayOutcome
     -- type, …); 'why' says what
   | ReplayInconclusive
     -- ^ a move did not settle within its budget; 'why' says why
+  | ReplayCut
+    -- ^ the run was cut while it played ('closeCut'): its moves are the
+    -- ones it had made, 'replayAt' its last step
   deriving (Eq, Show)
 
 data ReplayRecord = ReplayRecord
@@ -324,6 +341,39 @@ data RunTrace = RunTrace
     -- ^ the case open when the run was cut ('closeCut'), its steps up to
     -- the move it reached
   }
+  deriving (Eq, Show)
+
+-- | Which play of its property a step belongs to: a regression case
+-- replayed (its number among the property's cases), a generated case (the
+-- number its line of the trace has; a case QuickCheck discards has the
+-- number of the case drawn in its place), or a narrowing try.
+data Phase = Replayed Int | Generated Int | Narrowing Int
+  deriving (Eq, Show)
+
+-- | How a play ended, as its line of the trace says it: the step it failed
+-- at (a cut one: the step it reached), why, the moves it made and the
+-- labels that held. A regression case the program no longer plays reads
+-- 'Discarded' here, with why (@cant_replay@ among the trace's replays).
+data CaseClose = CaseClose
+  { outcome :: CaseOutcome
+  , at :: Maybe Int
+  , why :: Maybe Text
+  , moves :: [Text]
+  , labels :: [Text]
+  }
+  deriving (Eq, Show)
+
+-- | What a recorder hands its sink as it happens (zenbridge #2741).
+--
+-- * 'StepEnded': a step, once, when it is final: as soon as its checks
+--   have run ('sealStep'), so with its checks, its labels, the model and
+--   the stage after it, or its inconclusive mark. A step whose checks
+--   never ran (it failed, or its case was cut) is handed over as its case
+--   closes. The steps of a case come in order.
+-- * 'CaseEnded': a play closed, after its last step.
+data TraceEvent
+  = StepEnded Phase StepRecord
+  | CaseEnded Phase CaseClose
   deriving (Eq, Show)
 
 -- ---------------------------------------------------------------------------
@@ -409,6 +459,7 @@ instance ToJSON ReplayOutcome where
     ReplayFailed -> "failed"
     CantReplay -> "cant_replay"
     ReplayInconclusive -> "inconclusive"
+    ReplayCut -> "cut"
 
 instance ToJSON ReplayRecord where
   toJSON ReplayRecord {..} = object
@@ -419,6 +470,29 @@ instance ToJSON LabelCount where
 
 instance ToJSON MoveCount where
   toJSON MoveCount {..} = object ["move" .= move, "played" .= timesPlayed]
+
+instance ToJSON CaseOutcome where
+  toJSON = String . outcomeText
+
+-- | @{"replay": 1}@, @{"case": 2}@ or @{"try": 3}@.
+instance ToJSON Phase where
+  toJSON = \case
+    Replayed k -> object ["replay" .= k]
+    Generated k -> object ["case" .= k]
+    Narrowing k -> object ["try" .= k]
+
+instance ToJSON CaseClose where
+  toJSON CaseClose {..} = object
+    [ "outcome" .= outcome, "at" .= at, "why" .= why, "moves" .= moves, "labels" .= labels ]
+
+-- | A step: @{"event": "step", "phase": …, "step": …}@; a case's close:
+-- @{"event": "case", "phase": …, "outcome": …, "at": …, "why": …, "moves": …, "labels": …}@.
+instance ToJSON TraceEvent where
+  toJSON = \case
+    StepEnded ph st -> object ["event" .= ("step" :: Text), "phase" .= ph, "step" .= st]
+    CaseEnded ph CaseClose {..} -> object
+      [ "event" .= ("case" :: Text), "phase" .= ph
+      , "outcome" .= outcome, "at" .= at, "why" .= why, "moves" .= moves, "labels" .= labels ]
 
 instance ToJSON RunTrace where
   toJSON RunTrace {..} = object
@@ -465,6 +539,12 @@ data Recorder = Recorder
   , origin :: (Text, Text)
     -- ^ the program's version and the property's name, for the cases it
     -- writes out
+  , sink :: Maybe (TraceEvent -> IO ())
+    -- ^ where what is recorded goes as it happens ('newRecorderTo')
+  , handed :: IORef Int
+    -- ^ how many of the open case's steps the sink has been handed
+  , replaying :: IORef (Maybe Int)
+    -- ^ the regression case being replayed ('beginReplay'), its number
   }
 
 data Gathered = Gathered
@@ -492,9 +572,26 @@ newRecorder = newRecorderFor "" ""
 -- | A recorder whose cases can be written out to be replayed: the
 -- program's version (the runner's hash of it) and the property's name.
 newRecorderFor :: Text -> Text -> [Text] -> IO Recorder
-newRecorderFor scenarioHash propertyName declaredLabels = do
+newRecorderFor = newRecorderWith Nothing
+
+-- | 'newRecorderFor', what it records handed to the sink as it happens
+-- (zenbridge #2741): see 'TraceEvent'.
+--
+-- The sink is called on the thread that plays the case (a cut case's last
+-- events on the thread that closes it, 'closeCut'), with asynchronous
+-- exceptions masked, so an event is handed over whole or not at all: it
+-- must neither block nor throw, and do no work to speak of (put the event
+-- on a queue; a thread of the host's own takes it from there). A case's
+-- allocation budget ("Test.WebApi.Budget") counts what it allocates.
+newRecorderTo :: (TraceEvent -> IO ()) -> Text -> Text -> [Text] -> IO Recorder
+newRecorderTo out = newRecorderWith (Just out)
+
+newRecorderWith :: Maybe (TraceEvent -> IO ()) -> Text -> Text -> [Text] -> IO Recorder
+newRecorderWith out scenarioHash propertyName declaredLabels = do
   cur <- newIORef Seq.empty
   curCase <- newIORef Nothing
+  handedRef <- newIORef 0
+  replayingRef <- newIORef Nothing
   g <- newIORef Gathered
     { narrowingStarted = False
     , caseCount = 0
@@ -511,11 +608,49 @@ newRecorderFor scenarioHash propertyName declaredLabels = do
     , replayLines = Seq.empty
     , cutCase = Nothing
     }
-  pure Recorder {current = cur, currentCase = curCase, gathered = g, declared = declaredLabels, origin = (scenarioHash, propertyName)}
+  pure Recorder
+    { current = cur, currentCase = curCase, gathered = g, declared = declaredLabels, origin = (scenarioHash, propertyName)
+    , sink = out, handed = handedRef, replaying = replayingRef }
+
+-- | The play the recorder is in: the regression case being replayed, else
+-- the narrowing try or the generated case its next close will number.
+phaseNow :: Recorder -> IO Phase
+phaseNow Recorder {gathered, replaying} = readIORef replaying >>= \case
+  Just k -> pure (Replayed k)
+  Nothing -> do
+    Gathered {narrowingStarted, caseCount, tryCount} <- readIORef gathered
+    pure (if narrowingStarted then Narrowing (tryCount + 1) else Generated (caseCount + 1))
+
+-- | The open case's steps the sink has not had yet, handed over in order,
+-- each once (an asynchronous exception cannot fall between a step's
+-- hand-over and its being marked handed over).
+handOver :: Recorder -> IO ()
+handOver rec@Recorder {sink, current, handed} = forM_ sink $ \out -> mask_ $ do
+  s <- readIORef current
+  k <- readIORef handed
+  unless (Seq.length s <= k) $ do
+    ph <- phaseNow rec
+    writeIORef handed (Seq.length s)
+    mapM_ (out . StepEnded ph) (drop k (toList s))
+
+-- | A case closed: its line handed to the sink.
+handClose :: Recorder -> Phase -> CaseClose -> IO ()
+handClose Recorder {sink} ph c = forM_ sink $ \out -> mask_ (out (CaseEnded ph c))
+
+-- | The step last pushed is final (its checks have run, or it was marked
+-- inconclusive): the sink is handed it now, not when the next step is
+-- pushed. Nothing may amend it afterwards.
+sealStep :: Recorder -> IO ()
+sealStep = handOver
 
 -- | A case starts: whatever an interrupted one left is dropped.
 beginCase :: Recorder -> IO ()
-beginCase Recorder {current} = writeIORef current Seq.empty
+beginCase Recorder {current, handed} = writeIORef current Seq.empty >> writeIORef handed 0
+
+-- | A regression case's replay starts: the steps played from here on are
+-- its ('Replayed'), until 'noteReplay' says how it fared.
+beginReplay :: Recorder -> Int -> IO ()
+beginReplay Recorder {replaying} k = writeIORef replaying (Just k)
 
 -- | A case starts, and this is how a regression case would keep it.
 beginCaseWith :: Recorder -> Maybe (Int, [CaseItem]) -> IO ()
@@ -524,19 +659,34 @@ beginCaseWith rec@Recorder {currentCase} c = beginCase rec >> writeIORef current
 -- | The steps played so far, taken (a replay's, which the runner closes
 -- itself).
 takeSteps :: Recorder -> IO [StepRecord]
-takeSteps Recorder {current, currentCase} = do
+takeSteps rec@Recorder {current, currentCase, handed} = do
+  handOver rec
   writeIORef currentCase Nothing
+  writeIORef handed 0
   toList <$> atomicModifyIORef' current (\s -> (Seq.empty, s))
 
 -- | A regression case was played: how it fared.
 noteReplay :: Recorder -> ReplayRecord -> IO ()
-noteReplay Recorder {gathered} r = modifyIORef' gathered $ \g@Gathered {replayLines} -> g {replayLines = replayLines |> r}
+noteReplay rec@Recorder {gathered, replaying} r@ReplayRecord {caseNumber, replayOutcome, replayAt, replayWhy, replaySteps} = do
+  modifyIORef' gathered $ \g@Gathered {replayLines} -> g {replayLines = replayLines |> r}
+  writeIORef replaying Nothing
+  handClose rec (Replayed caseNumber) CaseClose
+    { outcome = case replayOutcome of
+        ReplayPassed -> Passed
+        ReplayFailed -> Failed
+        CantReplay -> Discarded
+        ReplayInconclusive -> Inconclusive
+        ReplayCut -> Cut
+    , at = replayAt, why = replayWhy
+    , moves = map moveName (caseMoves replaySteps), labels = [] }
 
 -- | A step ran: append it, numbered, and with the scenario's move it
 -- belongs to: a begin step opens the case's next move, and every step
 -- after it up to its settle step is in it.
 pushStep :: Recorder -> StepRecord -> IO ()
-pushStep Recorder {current} StepRecord {..} =
+pushStep rec@Recorder {current} StepRecord {..} = do
+  -- a step before it that was never sealed is final now
+  handOver rec
   modifyIORef' current $ \s ->
     let
       marks = [ (k, m) | StepRecord {kind = k, inMove = m} <- toList s, k == KindBegin || k == KindSettle ]
@@ -549,7 +699,8 @@ pushStep Recorder {current} StepRecord {..} =
         _ -> open
     in s |> StepRecord {n = Seq.length s + 1, inMove = inMove', ..}
 
--- | Change the step last pushed (its postcondition ran).
+-- | Change the step last pushed (its postcondition ran). The last change
+-- to a step is followed by 'sealStep'.
 amendStep :: Recorder -> (StepRecord -> StepRecord) -> IO ()
 amendStep Recorder {current} f = modifyIORef' current $ \s -> case Seq.viewr s of
   Seq.EmptyR -> s
@@ -584,8 +735,12 @@ recordedProperty rec =
     . P.callback (P.PostTest P.NotCounterexample (\_ res -> closeCase rec res))
 
 closeCase :: Recorder -> P.Result -> IO ()
-closeCase Recorder {current, currentCase, gathered, origin = (scenarioHash, propertyName)} res = do
+closeCase rec@Recorder {current, currentCase, gathered, handed, origin = (scenarioHash, propertyName)} res = do
+  -- a step whose checks never ran (it failed) is final now
+  handOver rec
+  phase <- phaseNow rec
   stepList <- toList <$> atomicModifyIORef' current (\s -> (Seq.empty, s))
+  writeIORef handed 0
   caseKept <- atomicModifyIORef' currentCase (\c -> (Nothing, c))
   let
     unsettled = find (\StepRecord {inconclusive} -> inconclusive /= Nothing) stepList
@@ -634,6 +789,8 @@ closeCase Recorder {current, currentCase, gathered, origin = (scenarioHash, prop
              , tryLines = tryLines |> line'
              , lastTaken = if taken then Just CaseTrace {from = "try " <> tshow k, steps = stepList, replayable} else lastTaken
              }
+  -- the labels its line of the trace counts: none for a case that did not count
+  handClose rec phase CaseClose {outcome, at, why, moves = moveList, labels = if outcome == Passed || outcome == Failed then held else []}
   where
     stepWhy StepRecord {checks, answer} =
       case [ w | CheckRecord {held = False, why = Just w} <- checks ] of
@@ -658,35 +815,68 @@ stepsFailure stepList = case find (\StepRecord {ok} -> not ok) stepList of
 -- closes a case only when QuickCheck finishes it): the case is closed from
 -- the steps already pushed, as 'Cut', at its last step, with why. Its
 -- moves are the ones it played and, last, the one it was in (begun, never
--- settled). A recorder with no open case is left as it is. Call it once the
--- run has stopped, before 'readRunTrace'.
+-- settled). A regression case cut while it replayed is noted among the
+-- replays, as 'ReplayCut'. A recorder with no open case is left as it is.
+-- Call it once the run has stopped, before 'readRunTrace': the sink is
+-- handed the steps the case had made, then its close.
 closeCut :: Recorder -> Text -> IO ()
-closeCut Recorder {current, currentCase, gathered, origin = (scenarioHash, propertyName)} why = do
+closeCut rec@Recorder {current, currentCase, gathered, handed, replaying, origin = (scenarioHash, propertyName)} why = do
+  -- the steps it had made are final now
+  handOver rec
+  phase <- phaseNow rec
   stepList <- toList <$> atomicModifyIORef' current (\s -> (Seq.empty, s))
+  writeIORef handed 0
   caseKept <- atomicModifyIORef' currentCase (\c -> (Nothing, c))
-  unless (null stepList) $ modifyIORef' gathered $ \g@Gathered {..} ->
-    let
-      reached = case reverse stepList of
-        StepRecord {n} : _ -> Just n
-        [] -> Nothing
-      settled = [ m | StepRecord {kind = KindSettle, inMove = m} <- stepList ]
-      openMove = case reverse [ st | st@StepRecord {kind = KindBegin} <- stepList ] of
-        st@StepRecord {inMove = m} : _ | m `notElem` settled -> [moveName st]
-        _ -> []
-      moveList = map moveName (caseMoves stepList) <> openMove
-      replayable = (\(sz, its) -> CaseRecord {format = caseFormat, scenario = scenarioHash, property = propertyName, size = sz, items = its}) <$> caseKept
-      traced from = Just CaseTrace {from, steps = stepList, replayable}
-    in if narrowingStarted
-      then
-        let k = tryCount + 1
-        in g { tryCount = k
-             , tryLines = tryLines |> TrySummary {number = k, played = True, moves = moveList, outcome = Cut, at = reached, why = Just why, taken = False}
-             , cutCase = traced ("try " <> tshow k) }
-      else
-        let k = caseCount + 1
-        in g { caseCount = k
-             , caseLines = caseLines |> CaseSummary {number = k, played = True, moves = moveList, outcome = Cut, at = reached, why = Just why, labels = []}
-             , cutCase = traced ("case " <> tshow k) }
+  replayed <- atomicModifyIORef' replaying (\r -> (Nothing, r))
+  let
+    (at, _) = reached stepList
+    moveList = movesReached stepList
+    replayable = (\(sz, its) -> CaseRecord {format = caseFormat, scenario = scenarioHash, property = propertyName, size = sz, items = its}) <$> caseKept
+    traced from = Just CaseTrace {from, steps = stepList, replayable}
+    closed = handClose rec phase CaseClose {outcome = Cut, at, why = Just why, moves = moveList, labels = []}
+  case replayed of
+    -- a regression case cut while it replayed: among the replays, as cut,
+    -- whether or not it had made a step
+    Just k -> do
+      modifyIORef' gathered $ \g@Gathered {replayLines} -> g
+        { replayLines = replayLines |> ReplayRecord {caseNumber = k, replayOutcome = ReplayCut, replayAt = at, replayWhy = Just why, replaySteps = stepList}
+        , cutCase = Just CaseTrace {from = "replay " <> tshow k, steps = stepList, replayable = Nothing} }
+      closed
+    Nothing -> unless (null stepList) $ do
+      modifyIORef' gathered $ \g@Gathered {..} ->
+        if narrowingStarted
+          then
+            let k = tryCount + 1
+            in g { tryCount = k
+                 , tryLines = tryLines |> TrySummary {number = k, played = True, moves = moveList, outcome = Cut, at, why = Just why, taken = False}
+                 , cutCase = traced ("try " <> tshow k) }
+          else
+            let k = caseCount + 1
+            in g { caseCount = k
+                 , caseLines = caseLines |> CaseSummary {number = k, played = True, moves = moveList, outcome = Cut, at, why = Just why, labels = []}
+                 , cutCase = traced ("case " <> tshow k) }
+      closed
+
+-- | The moves a case stopped while it was open had made: the ones it
+-- played and, last, the one it was in (begun, never settled).
+movesReached :: [StepRecord] -> [Text]
+movesReached stepList = map moveName (caseMoves stepList) <> openMove
+  where
+    settled = [ m | StepRecord {kind = KindSettle, inMove = m} <- stepList ]
+    openMove = case reverse [ st | st@StepRecord {kind = KindBegin} <- stepList ] of
+      st@StepRecord {inMove = m} : _ | m `notElem` settled -> [moveName st]
+      _ -> []
+
+-- | Where a case stopped while it was open got to: its last step, and the
+-- move it was in (else the last it made).
+reached :: [StepRecord] -> (Maybe Int, Maybe Text)
+reached stepList =
+  ( case reverse stepList of
+      StepRecord {n} : _ -> Just n
+      [] -> Nothing
+  , case reverse (movesReached stepList) of
+      m : _ -> Just m
+      [] -> Nothing )
 
 finalFailure :: Recorder -> IO ()
 finalFailure Recorder {gathered} = modifyIORef' gathered $ \g@Gathered {lastTaken, firstFailing} ->

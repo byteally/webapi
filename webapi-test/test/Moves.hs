@@ -54,6 +54,8 @@ data Platform = Platform
     -- ^ the order whose 850 the platform takes a long while over
   , heavy :: Bool
     -- ^ every 850 costs its sender a lot of allocation
+  , atSettle :: IO ()
+    -- ^ run as a move's settle step begins
   }
 
 -- | An 850 arrives; the platform acknowledges it, except a replacement
@@ -76,8 +78,8 @@ receiveNew pf@Platform {orderCount, stallAt, heavy} token = do
   pure p
 
 host :: Platform -> MoveHost '[]
-host Platform {docs, settles} = MoveHost
-  { settle = \_ -> pure (if settles then Right () else Left "the platform is still busy")
+host Platform {docs, settles, atSettle} = MoveHost
+  { settle = \_ -> liftIO atSettle >> pure (if settles then Right () else Left "the platform is still busy")
   , observe = liftIO (Right . SomeObservation <$> readIORef docs)
   , hostChecks = const []
   }
@@ -178,12 +180,16 @@ newPlatform :: Bool -> Bool -> IO Platform
 newPlatform b s = do
   r <- newIORef []
   c <- newIORef 0
-  pure Platform {docs = r, orderCount = c, buggy = b, settles = s, stallAt = Nothing, heavy = False}
+  pure Platform {docs = r, orderCount = c, buggy = b, settles = s, stallAt = Nothing, heavy = False, atSettle = pure ()}
 
 -- | The scenario run, traced: QuickCheck's result and the run's trace.
 run :: Platform -> Double -> Int -> IO (QC.Result, RunTrace)
-run pf w n = do
-  rec <- newRecorderFor "toy" "orders" ["rush"]
+run = runTo Nothing
+
+-- | 'run', what is recorded handed to a sink as it happens.
+runTo :: Maybe (TraceEvent -> IO ()) -> Platform -> Double -> Int -> IO (QC.Result, RunTrace)
+runTo out pf w n = do
+  rec <- maybe newRecorderFor newRecorderTo out "toy" "orders" ["rush"]
   res <- reify (model pf) $ \(ps :: Proxy s) ->
     QC.quickCheckWithResult QC.stdArgs {QC.maxSuccess = n, QC.chatty = False, QC.replay = Just (mkQCGen 7, 0), QC.maxDiscardRatio = 3}
       (propDLTraced rec ps (runWebApis emptyApp) (scenario @s pf w))
@@ -210,6 +216,8 @@ main = do
     , unsettledPlatform
     , cutRun
     , budgetRuns
+    , sinkRuns
+    , sinkCut
     ]
   unless (and (concat results)) exitFailure
 
@@ -332,3 +340,116 @@ budgetRun pf b = do
   either (const (closeCut rec "the allocation budget")) (const (pure ())) r
   RunTrace {cut} <- readRunTrace rec
   pure (r, cut)
+
+-- ---------------------------------------------------------------------------
+-- The sink (zenbridge #2741)
+
+-- | A sink that keeps what it is handed, in order.
+collecting :: IO (TraceEvent -> IO (), IO [TraceEvent])
+collecting = do
+  ref <- newIORef []
+  pure (\e -> modifyIORef' ref (e :), reverse <$> readIORef ref)
+
+-- | The events as plays: each play's phase, its steps in the order handed
+-- over, and its close; 'Left' when a step is out of place.
+plays :: [TraceEvent] -> Either String [(Phase, [StepRecord], CaseClose)]
+plays = go Nothing []
+  where
+    go open acc = \case
+      [] -> case open of
+        Nothing -> Right (reverse acc)
+        Just (ph, _) -> Left ("a play is left open: " <> show ph)
+      StepEnded ph st@StepRecord {n} : rest -> case open of
+        Nothing | n == 1 -> go (Just (ph, [st])) acc rest
+        Just (ph', sts) | ph' == ph && n == length sts + 1 -> go (Just (ph, sts ++ [st])) acc rest
+        _ -> Left ("step " <> show n <> " of " <> show ph <> " is out of place")
+      CaseEnded ph c : rest -> case open of
+        Nothing -> go Nothing ((ph, [], c) : acc) rest
+        Just (ph', sts) | ph' == ph -> go Nothing ((ph, sts, c) : acc) rest
+        Just (ph', _) -> Left (show ph <> " closes while " <> show ph' <> " is open")
+
+-- | What a recorder hands its sink: every step of every play once, in
+-- order, as its checks left it; each play's close after its last step;
+-- the narrowing tries and a replay by their phase; and each step as soon as
+-- its checks have run, before the next step begins.
+sinkRuns :: IO [Bool]
+sinkRuns = do
+  putStrLn "a recorder's sink, as the run plays:"
+  -- a sound platform: every case passes
+  (out, handedOver) <- collecting
+  sound0 <- newPlatform False True
+  -- what the sink had been handed last, each time a move's settle step began
+  atSettles <- newIORef []
+  let sound = sound0 {atSettle = handedOver >>= \es -> modifyIORef' atSettles (take 1 (reverse es) :)}
+  (_, RunTrace {cases, discarded}) <- runTo (Just out) sound 1 30
+  evs <- handedOver
+  (_, RunTrace {cases = casesBare}) <- run sound0 1 30
+  seen <- readIORef atSettles
+  let ps = plays evs
+      closes = [ c | Right xs <- [ps], (Generated _, _, c) <- xs ]
+      passed = length [ () | CaseClose {outcome = Passed} <- closes ]
+      dropped = length [ () | CaseClose {outcome = Discarded} <- closes ]
+      settles' = [ st | StepEnded _ st@StepRecord {kind = KindSettle} <- evs ]
+      amended StepRecord {checks, model = m} = not (null checks) && m /= Nothing
+      line CaseSummary {outcome, moves = ms} = (outcome, ms)
+      sendBeforeSettle = \case
+        [StepEnded _ StepRecord {kind = KindGlue}] -> True
+        _ -> False
+  -- a buggy platform: a case fails, and is narrowed
+  (outB, handedB) <- collecting
+  buggy <- newPlatform True True
+  (_, RunTrace {firstFailure, narrowed, narrowing}) <- runTo (Just outB) buggy 1 30
+  evsB <- handedB
+  let psB = either (const []) id (plays evsB)
+      firstFailed = take 1 [ sts | (Generated _, sts, CaseClose {outcome = Failed}) <- psB ]
+      tries = [ (k, sts, c) | (Narrowing k, sts, c) <- psB ]
+      lastTaken = take 1 (reverse [ sts | (_, sts, CaseClose {outcome = Failed}) <- tries ])
+      stepsOf = maybe [] (\CaseTrace {steps} -> steps)
+  -- the narrowed case replayed
+  (outR, handedR) <- collecting
+  recR <- newRecorderTo outR "toy" "orders" []
+  reify (model buggy) $ \(ps' :: Proxy s) ->
+    replayCasesDL recR ps' (runWebApis emptyApp) (scenario @s buggy 1) (maybe [] pure (narrowed >>= \CaseTrace {replayable} -> replayable))
+  evsR <- handedR
+  sequence
+    [ check ("every step comes once, in order, each play closed after its last step" <> either (": " <>) (const "") ps) (either (const False) (not . null) ps)
+    , check ("a close per generated case: " <> show (passed, length cases)) (passed == length cases && passed > 0)
+    , check ("a discarded case closes too: " <> show (dropped, discarded)) (dropped == discarded)
+    , check "a step is handed over as its checks left it" (not (null settles') && all amended settles')
+    , check ("a move's own step is handed over before its settle step begins: " <> show (length seen)) (not (null seen) && all sendBeforeSettle seen)
+    , check "the trace is the same with a sink and without" (map line cases == map line casesBare)
+    , check "the first failing case's steps are the trace's" (firstFailed == [stepsOf firstFailure] && not (null (stepsOf firstFailure)))
+    , check ("the narrowing tries come as tries, one close each: " <> show (length tries, length narrowing)) (length tries == length narrowing && map (\(k, _, _) -> k) tries == [1 .. length tries] && not (null tries))
+    , check "the last try that still failed is the narrowed case" (lastTaken == [stepsOf narrowed])
+    , check "a replayed case comes as a replay, closed as it fared" (case plays evsR of
+        Right [(Replayed 1, sts, CaseClose {outcome = Failed, at})] -> map shape sts == map shape (stepsOf narrowed) && at == Just (length sts) && not (null sts)
+        _ -> False)
+    ]
+  where
+    -- a replay's tokens are new: its steps are the narrowed case's by kind and operation
+    shape StepRecord {kind, operation, ok} = (kind, operation, ok)
+
+-- | A cut run: the steps the cut case had made reach the sink as the case
+-- is closed, then its close, as cut.
+sinkCut :: IO [Bool]
+sinkCut = do
+  putStrLn "a recorder's sink, a run cut:"
+  pf0 <- newPlatform False True
+  let pf = pf0 {stallAt = Just 2}
+  (out, handedOver) <- collecting
+  rec <- newRecorderTo out "toy" "orders" []
+  _ <- timeout 1000000 $ reify (model pf) $ \(ps :: Proxy s) ->
+    QC.quickCheckWithResult QC.stdArgs {QC.maxSuccess = 30, QC.chatty = False, QC.replay = Just (mkQCGen 7, 0), QC.maxDiscardRatio = 3}
+      (propDLTraced rec ps (runWebApis emptyApp) (scenario @s pf 1))
+  before <- handedOver
+  closeCut rec "the run passed its time limit of 1 s"
+  after <- handedOver
+  RunTrace {cut} <- readRunTrace rec
+  let cutSteps = maybe [] (\CaseTrace {steps} -> steps) cut
+      lastPlay = either (const []) (take 1 . reverse) (plays after)
+  sequence
+    [ check "the cut case is open until it is closed" (either (const True) (const False) (plays before))
+    , check ("its steps reach the sink, then its close, as cut: " <> show (length cutSteps)) (case lastPlay of
+        [(_, sts, CaseClose {outcome = Cut, at, why = Just w})] -> sts == cutSteps && not (null sts) && at == Just (length sts) && "time limit" `isInfixOf` T.unpack w
+        _ -> False)
+    ]
