@@ -14,9 +14,11 @@
 -- platform's documents; the track's @stageOf@ reads an order's stage off
 -- them, and a check at @855 sent@ holds one 855 per 850 the moves sent.
 --
--- The last section has an app of its own, one route that echoes its path
+-- One section has an app of its own, one route that echoes its path
 -- (zenbridge #2715): a move's own steps, as its host is handed them, with
--- a call among them.
+-- a call among them. The last three are the host's word on a move once
+-- its checks have run, the evidence it attaches to a move, and its being
+-- told that a case begins.
 module Main (main) where
 
 import           Control.Concurrent (threadDelay)
@@ -25,6 +27,7 @@ import           Control.Monad (unless, void, when)
 import           System.Mem (getAllocationCounter)
 import           Test.WebApi.Budget
 import           Control.Monad.IO.Class (liftIO)
+import           Data.Aeson (object, toJSON, (.=))
 import           Data.IORef
 import           Data.List (isInfixOf)
 import qualified Data.Map.Strict as M
@@ -87,7 +90,7 @@ receiveNew pf@Platform {orderCount, stallAt, heavy} token = do
   pure p
 
 host :: Platform -> MoveHost '[]
-host Platform {docs, settles, atSettle} = MoveHost
+host Platform {docs, settles, atSettle} = defMoveHost
   { settle = \_ _ -> liftIO atSettle >> pure (if settles then Right () else Left "the platform is still busy")
   , observe = \_ -> liftIO (Right . SomeObservation <$> readIORef docs)
   , hostChecks = const []
@@ -172,14 +175,18 @@ scenario :: Platform -> Double -> DL (St s) ()
 scenario pf replaceWeight = anyMoves 6 [(3, send850 pf), (replaceWeight, replace850 pf)]
 
 model :: Platform -> WebApiGlobalStateModel () NoXState '[]
-model pf = WebApiGlobalStateModel
+model pf = modelOf (host pf)
+
+-- | The toy model, its moves settled, observed and judged by the host given.
+modelOf :: MoveHost '[] -> WebApiGlobalStateModel () NoXState '[]
+modelOf h = WebApiGlobalStateModel
   { appAribitaryAction = \_ _ -> pure (Some (mkWebApiAction (ModelOnly "nothing" id)))
   , appInitState = ApiState
       { apiState = mempty, namedEntityTyped = mempty, defaultContext = Nothing, currentContext = Nothing
       , xActionState = initialState, generateFrom = Nothing, classTypes = mempty, prediction = emptyPrediction }
   , appStageOf = noStage
   , appRedraw = noRedraw
-  , appMoveHost = host pf
+  , appMoveHost = h
   }
 
 -- ---------------------------------------------------------------------------
@@ -197,18 +204,26 @@ run = runTo Nothing
 
 -- | 'run', what is recorded handed to a sink as it happens.
 runTo :: Maybe (TraceEvent -> IO ()) -> Platform -> Double -> Int -> IO (QC.Result, RunTrace)
-runTo out pf w n = do
+runTo out pf = runHost (host pf) out pf
+
+-- | 'runTo', against a host of the test's own.
+runHost :: MoveHost '[] -> Maybe (TraceEvent -> IO ()) -> Platform -> Double -> Int -> IO (QC.Result, RunTrace)
+runHost h out pf w n = do
   rec <- maybe newRecorderFor newRecorderTo out "toy" "orders" ["rush"]
-  res <- reify (model pf) $ \(ps :: Proxy s) ->
+  res <- reify (modelOf h) $ \(ps :: Proxy s) ->
     QC.quickCheckWithResult QC.stdArgs {QC.maxSuccess = n, QC.chatty = False, QC.replay = Just (mkQCGen 7, 0), QC.maxDiscardRatio = 3}
       (propDLTraced rec ps (runWebApis emptyApp) (scenario @s pf w))
   (,) res <$> readRunTrace rec
 
 -- | The cases replayed against a platform.
 replay :: Platform -> [CaseRecord] -> IO [ReplayRecord]
-replay pf cases = do
+replay pf = replayHost (host pf) pf
+
+-- | 'replay', against a host of the test's own.
+replayHost :: MoveHost '[] -> Platform -> [CaseRecord] -> IO [ReplayRecord]
+replayHost h pf cases = do
   rec <- newRecorderFor "toy" "orders" []
-  reify (model pf) $ \(ps :: Proxy s) -> replayCasesDL rec ps (runWebApis emptyApp) (scenario @s pf 1) cases
+  reify (modelOf h) $ \(ps :: Proxy s) -> replayCasesDL rec ps (runWebApis emptyApp) (scenario @s pf 1) cases
   RunTrace {replays} <- readRunTrace rec
   pure replays
 
@@ -228,6 +243,9 @@ main = do
     , sinkRuns
     , sinkCut
     , handedMoves
+    , hostWord
+    , evidenceRuns
+    , caseBeginsRuns
     ]
   unless (and (concat results)) exitFailure
 
@@ -589,3 +607,177 @@ handedMoves = do
   where
     -- a play's tokens are its own: the moves compared by all but their values
     strip (nm, sts) = (nm, [ (k, op, s) | (k, op, s, _) <- sts ])
+
+-- ---------------------------------------------------------------------------
+-- The host's word after the checks, its evidence, a case's beginning
+-- (zenbridge #2715)
+
+-- | The host's word on a move once its checks have run. The host here
+-- doubts every replacement. On a sound platform every check holds, so a
+-- case that replaces an order is inconclusive, its settle step keeping
+-- what its checks left. On the buggy platform the replacement's check
+-- fails, so the case fails, and the host's reason stays with the failure.
+-- The narrowed case, replayed where its checks hold, is inconclusive:
+-- never passed.
+hostWord :: IO [Bool]
+hostWord = do
+  putStrLn "a host's word after the checks:"
+  let
+    reason = "its directive never fired" :: Text
+    doubting pf seen = (host pf)
+      { verdict = \MovePlayed {name} _ cs -> do
+          liftIO (modifyIORef' seen ((name, cs) :))
+          pure (if name == "replace850" then MoveVerdict {inconclusive = Just reason, evidence = []} else noVerdict) }
+    allHeld cs = not (null cs) && all (\CheckRecord {held} -> held) cs
+  -- a sound platform
+  sound <- newPlatform False True
+  seenS <- newIORef []
+  (out, handedOver) <- collecting
+  (resS, RunTrace {cases = casesS}) <- runHost (doubting sound seenS) (Just out) sound 1 30
+  evs <- handedOver
+  handedS <- readIORef seenS
+  let
+    undecided = [ st | StepEnded (Generated _) st@StepRecord {inconclusive = Just _} <- evs ]
+    asChecksLeft StepRecord {kind, operation, checks, model = m, ok, inconclusive} =
+      kind == KindSettle && operation == "replace850" && allHeld checks && m /= Nothing && not ok && inconclusive == Just reason
+    replaced CaseSummary {moves = ms} = "orders.partner.replace850" `elem` ms
+  -- a platform that never settles: inconclusive before any check ran
+  (outU, handedU) <- collecting
+  busy <- newPlatform False False
+  _ <- runTo (Just outU) busy 1 5
+  evsU <- handedU
+  let unsettled = [ checks | StepEnded _ StepRecord {inconclusive = Just _, checks} <- evsU ]
+  -- the buggy platform
+  buggy <- newPlatform True True
+  seenB <- newIORef []
+  (resB, RunTrace {narrowed}) <- runHost (doubting buggy seenB) Nothing buggy 1 30
+  handedB <- readIORef seenB
+  let
+    failing = [ st | Just CaseTrace {steps} <- [narrowed], st@StepRecord {ok = False} <- steps ]
+    kept = [ c | Just CaseTrace {replayable = Just c} <- [narrowed] ]
+    failedStage = [ () | ("replace850", cs) <- handedB, CheckRecord {check = "stage", held = False} <- cs ]
+  -- the narrowed case, replayed where its checks hold
+  sound2 <- newPlatform False True
+  seenR <- newIORef []
+  again <- replayHost (doubting sound2 seenR) sound2 kept
+  sequence
+    [ check "the property does not fail" (case resS of QC.Failure {} -> False; _ -> True)
+    , check ("a case that replaced an order is inconclusive, saying the host's reason: " <> show (length (filter replaced casesS)))
+        (any replaced casesS && all (\c@CaseSummary {outcome, why} -> if replaced c then outcome == Inconclusive && why == Just reason else outcome == Passed) casesS)
+    , check ("its settle step keeps what its checks left, and is marked: " <> show (length undecided)) (not (null undecided) && all asChecksLeft undecided)
+    , check ("a move that did not settle has no check of its own: " <> show (length unsettled)) (not (null unsettled) && all null unsettled)
+    , check "the host is handed every check's record" (not (null handedS) && all (allHeld . snd) handedS)
+    , check "on the buggy platform the property fails" (not (QC.isSuccess resB) && case resB of QC.Failure {} -> True; _ -> False)
+    , check ("the host saw the check that failed: " <> show (length failedStage)) (not (null failedStage))
+    , check "the failing step is not inconclusive, and keeps the host's reason as evidence"
+        (map (\StepRecord {kind, operation, inconclusive, evidence} -> (kind, operation, inconclusive, evidence)) failing
+          == [(KindSettle, "replace850", Nothing, [Evidence {kind = "otherwise inconclusive", what = reason, detail = Nothing}])])
+    , check "the failure's text names the reason" (("evidence, otherwise inconclusive: " <> T.unpack reason) `isInfixOf` QC.output resB)
+    , check ("the narrowed case replayed where its checks hold is inconclusive, never passed: " <> show (map (\ReplayRecord {replayOutcome} -> replayOutcome) again))
+        (map (\ReplayRecord {replayOutcome, replayWhy} -> (replayOutcome, replayWhy)) again == [(ReplayInconclusive, Just reason)])
+    ]
+
+-- | The evidence a host attaches to a move: on the move's settle step and
+-- on no other, handed to a sink with the step; counted by kind over the
+-- cases that counted, the first three in full; listed with a failure; and
+-- bounded.
+evidenceRuns :: IO [Bool]
+evidenceRuns = do
+  putStrLn "the evidence a host attaches to a move:"
+  let
+    noted nm = Evidence {kind = "noted", what = "seen after " <> nm, detail = Just (toJSON nm)}
+    replacement = Evidence {kind = "replacement", what = "a replacement went out", detail = Nothing}
+    of' nm = noted nm : [ replacement | nm == "replace850" ]
+    noting pf = (host pf) {verdict = \MovePlayed {name} _ _ -> pure MoveVerdict {inconclusive = Nothing, evidence = of' name}}
+    moveOf StepRecord {info = i, operation} = maybe operation (\StepInfo {trail} -> T.intercalate "." trail) i
+  -- a sound platform: every case passes
+  sound <- newPlatform False True
+  (out, handedOver) <- collecting
+  (res, RunTrace {evidence = counted}) <- runHost (noting sound) (Just out) sound 1 30
+  evs <- handedOver
+  let
+    passedPlays = [ (k, sts) | Right ps <- [plays evs], (Generated k, sts, CaseClose {outcome = Passed}) <- ps ]
+    carried = [ (kind, operation, evidence) | StepEnded _ StepRecord {kind, operation, evidence} <- evs ]
+    seenOf kd = [ (k, st, e) | (k, sts) <- passedPlays, st@StepRecord {evidence} <- sts, e@Evidence {kind = kd'} <- evidence, kd' == kd ]
+    expected kd = EvidenceCount
+      { kind = kd
+      , cases = Set.size (Set.fromList [ k | (k, _, _) <- seenOf kd ])
+      , moves = length (seenOf kd)
+      , first = take 3 [ EvidenceSeen {caseNumber = k, move = moveOf st, what, detail} | (k, st, Evidence {what, detail}) <- seenOf kd ] }
+  -- the buggy platform: the failure lists the failing move's evidence
+  buggy <- newPlatform True True
+  (resB, RunTrace {firstFailure}) <- runHost (noting buggy) Nothing buggy 1 30
+  let failing = [ evidence | Just CaseTrace {steps} <- [firstFailure], StepRecord {ok = False, evidence} <- steps ]
+  -- a host that attaches too much
+  let
+    long = T.replicate 5000 "x"
+    big = toJSON (T.replicate 40000 "y")
+    flooding pf = (host pf)
+      { verdict = \_ _ _ -> pure MoveVerdict {inconclusive = Nothing, evidence =
+          Evidence {kind = "many", what = long, detail = Just big}
+            : [ Evidence {kind = "many", what = T.pack (show k), detail = Just (toJSON k)} | k <- [2 .. 150 :: Int] ]} }
+  flooded <- newPlatform False True
+  (outF, handedF) <- collecting
+  _ <- runHost (flooding flooded) (Just outF) flooded 1 5
+  evsF <- handedF
+  let keptF = concat (take 1 [ evidence | StepEnded _ StepRecord {kind = KindSettle, evidence} <- evsF ])
+  -- a host that doubts every move: its cases count nothing
+  doubted <- newPlatform False True
+  (outD, handedD) <- collecting
+  (_, RunTrace {evidence = countedD}) <- runHost ((noting doubted) {verdict = \MovePlayed {name} _ _ -> pure MoveVerdict {inconclusive = Just "never sure", evidence = of' name}}) (Just outD) doubted 1 5
+  evsD <- handedD
+  let carriedD = [ evidence | StepEnded _ StepRecord {kind = KindSettle, evidence} <- evsD ]
+  sequence
+    [ check "the property passes" (QC.isSuccess res)
+    , check "a move's settle step carries its evidence, and no other step carries any"
+        (not (null carried) && all (\(k, op, ev) -> if k == KindSettle then ev == of' op else null ev) carried)
+    , check ("the run counts it by kind, over its cases and moves: " <> show (map (\EvidenceCount {kind, cases, moves} -> (kind, cases, moves)) counted))
+        (counted == [expected "noted", expected "replacement"] && all (\EvidenceCount {cases, moves} -> cases > 0 && moves >= cases) counted)
+    , check "with the first three of a kind in full: where each was seen, its line and its detail"
+        (map (\EvidenceCount {first} -> length first) counted == [3, 3] && take 1 [ d | EvidenceCount {kind = "noted", first} <- counted, EvidenceSeen {detail = d} <- first ] == [Just (toJSON ("send850" :: Text))])
+    , check "a failure's text lists the failing move's evidence" (not (QC.isSuccess resB) && "evidence, noted: seen after replace850" `isInfixOf` QC.output resB && "evidence, replacement: a replacement went out" `isInfixOf` QC.output resB)
+    , check "and its step carries it" (failing == [of' "replace850"])
+    , check ("a move keeps a hundred items and counts the rest: " <> show (length keptF))
+        (length keptF == 101 && map (\Evidence {kind, what} -> (kind, what)) (drop 100 keptF) == [("evidence not kept", "50 more items (a move keeps 100)")])
+    , check "an item's line is clipped" (take 1 [ T.length what | Evidence {what} <- keptF ] == [4001])
+    , check "a detail over the limit is replaced by a note of its size, a small one kept"
+        (map (\Evidence {detail} -> detail) (take 2 keptF) == [Just (object ["dropped" .= (40002 :: Int)]), Just (toJSON (2 :: Int))])
+    , check ("an inconclusive case counts no evidence, though its step carries it: " <> show (length carriedD)) (null countedD && not (null carriedD) && all (not . null) carriedD)
+    ]
+
+-- | The host is told that a case begins: once for every play (a generated
+-- case, a narrowing try, a regression case replayed), before its first
+-- step.
+caseBeginsRuns :: IO [Bool]
+caseBeginsRuns = do
+  putStrLn "a host told that a case begins:"
+  let
+    -- each telling noted with what the sink had been handed last
+    telling pf told handedOver = (host pf) {caseBegins = liftIO (handedOver >>= \es -> modifyIORef' told (take 1 (reverse es) :))}
+    betweenPlays = all (\case [] -> True; [CaseEnded {}] -> True; _ -> False)
+    closes es = length [ () | CaseEnded {} <- es ]
+  sound <- newPlatform False True
+  toldS <- newIORef []
+  (out, handedOver) <- collecting
+  _ <- runHost (telling sound toldS handedOver) (Just out) sound 1 30
+  evs <- handedOver
+  beganS <- readIORef toldS
+  buggy <- newPlatform True True
+  toldB <- newIORef []
+  (outB, handedB) <- collecting
+  (_, RunTrace {narrowed, narrowing}) <- runHost (telling buggy toldB handedB) (Just outB) buggy 1 30
+  evsB <- handedB
+  beganB <- readIORef toldB
+  toldR <- newIORef []
+  (outR, handedR) <- collecting
+  recR <- newRecorderTo outR "toy" "orders" []
+  reify (modelOf (telling buggy toldR handedR)) $ \(ps :: Proxy s) ->
+    replayCasesDL recR ps (runWebApis emptyApp) (scenario @s buggy 1) [ c | Just CaseTrace {replayable = Just c} <- [narrowed] ]
+  beganR <- readIORef toldR
+  sequence
+    [ check ("once for every generated case: " <> show (length beganS, closes evs)) (length beganS == closes evs && not (null beganS))
+    , check "before the case's first step" (betweenPlays beganS)
+    , check ("and for every narrowing try: " <> show (length beganB, closes evsB, length narrowing)) (length beganB == closes evsB && not (null narrowing) && betweenPlays beganB)
+    , check ("and for a regression case replayed: " <> show (length beganR)) (length beganR == 1)
+    ]
+

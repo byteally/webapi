@@ -20,6 +20,10 @@
 -- 'P.PostFinalFailure' once, on the narrowed case. So the phases are told
 -- apart without reading any text.
 --
+-- A move's settle step also carries the /evidence/ its host attached to
+-- the move (zenbridge #2715, 'Evidence'): what the host noted about it,
+-- which changes no outcome. The run's trace counts it by kind.
+--
 -- A recorder may hand what it records to a sink as it happens (zenbridge
 -- #2741, 'newRecorderTo'): each step once it is final ('StepEnded') and
 -- each case as it closes ('CaseEnded'), so a run can be followed while it
@@ -34,6 +38,9 @@ module Test.WebApi.Trace
   , FileRecord (..)
   , AnswerRecord (..)
   , CheckRecord (..)
+  , Evidence (..)
+  , boundEvidence
+  , evidenceLimit
   , StageRecord (..)
   , StepRecord (..)
   , CaseOutcome (..)
@@ -42,6 +49,8 @@ module Test.WebApi.Trace
   , CaseTrace (..)
   , LabelCount (..)
   , MoveCount (..)
+  , EvidenceSeen (..)
+  , EvidenceCount (..)
   , RunTrace (..)
   , ReplayOutcome (..)
   , ReplayRecord (..)
@@ -68,6 +77,7 @@ module Test.WebApi.Trace
   , amendStep
   , sealStep
   , afterStep
+  , withEvidence
   , markInconclusive
   , caseMoves
   , reached
@@ -79,7 +89,7 @@ module Test.WebApi.Trace
 import           Control.Applicative ((<|>))
 import           Control.Exception (mask_)
 import           Control.Monad (forM_, unless)
-import           Data.Aeson (ToJSON (..), Value (..), object, (.=))
+import           Data.Aeson (ToJSON (..), Value (..), encode, object, (.=))
 import qualified Data.Aeson.Key as K
 import qualified Data.ByteString.Lazy as LBS
 import           Data.Foldable (toList)
@@ -183,6 +193,43 @@ data CheckRecord = CheckRecord
   }
   deriving (Eq, Show)
 
+-- | Something a host noted about a move (zenbridge #2715): a fact that
+-- explains what happened and changes no outcome. The engine names no
+-- host, so what the kinds are is the host's own.
+data Evidence = Evidence
+  { kind :: Text
+    -- ^ the host's own word for what sort of evidence this is. The engine
+    -- counts by it ('EvidenceCount') and never reads it
+  , what :: Text
+    -- ^ one line a person reads
+  , detail :: Maybe Value
+    -- ^ the host's own data, carried as it is: whatever a reader of the
+    -- trace needs to follow the evidence up (an id, a link)
+  }
+  deriving (Eq, Show)
+
+-- | How much evidence a record keeps: the items of one move, the
+-- characters of an item's line, and the bytes of an item's detail as JSON.
+evidenceLimit :: (Int, Int, Int)
+evidenceLimit = (100, 4000, 32768)
+
+-- | A move's evidence as its record keeps it: each line clipped, a detail
+-- over the limit replaced by a note of its size (@{"dropped": bytes}@),
+-- and the items past the limit counted in one last item of the engine's
+-- own kind, @evidence not kept@.
+boundEvidence :: [Evidence] -> [Evidence]
+boundEvidence items = map bound kept ++ [ Evidence {kind = "evidence not kept", what = tshow (length rest) <> " more items (a move keeps " <> tshow maxItems <> ")", detail = Nothing} | not (null rest) ]
+  where
+    (maxItems, maxLine, maxDetail) = evidenceLimit
+    (kept, rest) = splitAt maxItems items
+    bound Evidence {kind, what, detail} = Evidence
+      { kind
+      , what = clipText maxLine what
+      , detail = detail >>= \d ->
+          let size = LBS.length (encode d)
+          in Just (if size > fromIntegral maxDetail then object ["dropped" .= size] else d)
+      }
+
 data StageRecord = StageRecord
   { before :: Maybe Text
   , after :: Maybe Text
@@ -213,8 +260,13 @@ data StepRecord = StepRecord
     -- ^ the scenario's move the step belongs to (its begin and settle
     -- steps included), numbered from 1 in its case
   , inconclusive :: Maybe Text
-    -- ^ a move's settle step that did not settle, or could not observe:
-    -- why. Neither passed nor failed
+    -- ^ a move's settle step that did not settle, or could not observe, or
+    -- that its host held inconclusive once every check had held: why.
+    -- Neither passed nor failed. One marked before its checks ran has no
+    -- check of its own; one marked after them has them all, held
+  , evidence :: [Evidence]
+    -- ^ what the host attached to the move (a settle step's; none on any
+    -- other step), as 'boundEvidence' keeps it
   }
   deriving (Eq, Show)
 
@@ -325,6 +377,28 @@ data MoveCount = MoveCount
   }
   deriving (Eq, Show)
 
+-- | One piece of evidence where it was seen: the generated case, the move
+-- (as the case's summary lists it), and the item.
+data EvidenceSeen = EvidenceSeen
+  { caseNumber :: Int
+  , move :: Text
+  , what :: Text
+  , detail :: Maybe Value
+  }
+  deriving (Eq, Show)
+
+-- | The evidence of one kind over the generated cases that counted: in how
+-- many cases and on how many moves it was attached, and the first three
+-- in full. A passing case keeps no step, so this is where its evidence is
+-- read.
+data EvidenceCount = EvidenceCount
+  { kind :: Text
+  , cases :: Int
+  , moves :: Int
+  , first :: [EvidenceSeen]
+  }
+  deriving (Eq, Show)
+
 data RunTrace = RunTrace
   { cases :: [CaseSummary]
   , discarded :: Int
@@ -335,6 +409,10 @@ data RunTrace = RunTrace
   , narrowed :: Maybe CaseTrace
   , labels :: [LabelCount]
   , moves :: [MoveCount]
+  , evidence :: [EvidenceCount]
+    -- ^ what the hosts attached to the moves of the generated cases that
+    -- counted, by kind (an inconclusive or discarded case counts nothing,
+    -- as for the labels and the moves)
   , replays :: [ReplayRecord]
     -- ^ the regression cases the run played first, before it drew any
   , cut :: Maybe CaseTrace
@@ -412,6 +490,15 @@ instance ToJSON AnswerRecord where
 instance ToJSON CheckRecord where
   toJSON CheckRecord {..} = object ["check" .= check, "held" .= held, "why" .= why, "subject" .= subject]
 
+instance ToJSON Evidence where
+  toJSON Evidence {..} = object ["kind" .= kind, "what" .= what, "detail" .= detail]
+
+instance ToJSON EvidenceSeen where
+  toJSON EvidenceSeen {..} = object ["case" .= caseNumber, "move" .= move, "what" .= what, "detail" .= detail]
+
+instance ToJSON EvidenceCount where
+  toJSON EvidenceCount {..} = object ["kind" .= kind, "cases" .= cases, "moves" .= moves, "first" .= first]
+
 instance ToJSON StageRecord where
   toJSON StageRecord {..} = case (before, after) of
     (Nothing, Nothing) -> Null
@@ -438,6 +525,7 @@ instance ToJSON StepRecord where
                       Just _ -> "inconclusive"
                       Nothing -> if ok then "ok" else "failed" :: Text)
     , "inconclusive" .= inconclusive
+    , "evidence" .= evidence
     ]
 
 instance ToJSON CaseSummary where
@@ -503,6 +591,7 @@ instance ToJSON RunTrace where
     , "narrowed" .= narrowed
     , "labels" .= labels
     , "moves" .= moves
+    , "evidence" .= evidence
     , "replays" .= replays
     , "cut" .= cut
     ]
@@ -560,6 +649,7 @@ data Gathered = Gathered
   , countedCases :: Int
   , labelCounts :: M.Map Text Int
   , moveCounts :: M.Map Text Int
+  , evidenceCounts :: M.Map Text EvidenceCount
   , replayLines :: Seq ReplayRecord
   , cutCase :: Maybe CaseTrace
   }
@@ -605,6 +695,7 @@ newRecorderWith out scenarioHash propertyName declaredLabels = do
     , countedCases = 0
     , labelCounts = M.empty
     , moveCounts = M.empty
+    , evidenceCounts = M.empty
     , replayLines = Seq.empty
     , cutCase = Nothing
     }
@@ -727,6 +818,29 @@ afterStep cs ls m stageAfter held StepRecord {checks, stage = StageRecord {befor
   , ..
   }
 
+-- | What a move's host attached to it, onto its settle step.
+withEvidence :: [Evidence] -> StepRecord -> StepRecord
+withEvidence ev StepRecord {..} = StepRecord {evidence = ev, ..}
+
+-- | A counted case's evidence added to the run's counts: each kind once
+-- for the case, once for every move that carries it, and its instances
+-- while fewer than three are kept.
+tallyEvidence :: Int -> [StepRecord] -> M.Map Text EvidenceCount -> M.Map Text EvidenceCount
+tallyEvidence k stepList counts
+  | all (\StepRecord {evidence} -> null evidence) stepList = counts
+  | otherwise = M.unionWith merge counts (M.fromListWith (flip merge) (concatMap ofStep stepList))
+  where
+    -- a move's kinds, each with its instances on that move
+    ofStep st@StepRecord {evidence} =
+      [ (kd, EvidenceCount {kind = kd, cases = 1, moves = 1, first = [ EvidenceSeen {caseNumber = k, move = moveName st, what, detail} | Evidence {kind = kd', what, detail} <- evidence, kd' == kd ]})
+      | kd <- Set.toList (Set.fromList [ kd | Evidence {kind = kd} <- evidence ]) ]
+    -- within the case the kind counts its case once; across cases they add
+    merge EvidenceCount {kind, cases = c1, moves = m1, first = f1} EvidenceCount {cases = c2, moves = m2, first = f2} =
+      EvidenceCount {kind, cases = if sameCase f1 f2 then c1 else c1 + c2, moves = m1 + m2, first = take 3 (f1 ++ f2)}
+    sameCase f1 f2 = case (f1, f2) of
+      (EvidenceSeen {caseNumber = a} : _, EvidenceSeen {caseNumber = b} : _) -> a == b
+      _ -> False
+
 -- | The property, its cases closed into the recorder as QuickCheck
 -- finishes each one.
 recordedProperty :: Recorder -> Property -> Property
@@ -778,6 +892,7 @@ closeCase rec@Recorder {current, currentCase, gathered, handed, origin = (scenar
                , countedCases = countedCases + 1
                , labelCounts = M.unionWith (+) labelCounts (M.fromList [ (l, 1) | l <- held ])
                , moveCounts = M.unionWith (+) moveCounts (M.fromListWith (+) [ (m, 1) | m <- countKeys ])
+               , evidenceCounts = tallyEvidence k stepList evidenceCounts
                , firstFailing = if outcome == Failed then Just CaseTrace {from = "case " <> tshow k, steps = stepList, replayable} else firstFailing
                , narrowingStarted = outcome == Failed
                }
@@ -898,6 +1013,7 @@ readRunTrace Recorder {gathered, declared} = do
     , narrowed = final <|> (if narrowingStarted then lastTaken <|> firstFailing else Nothing)
     , labels = [ LabelCount {label = l, cases = M.findWithDefault 0 l labelCounts, outOf = countedCases} | l <- labelOrder ]
     , moves = [ MoveCount {move = m, timesPlayed = c} | (m, c) <- M.toList moveCounts ]
+    , evidence = M.elems evidenceCounts
     , replays = toList replayLines
     , cut = cutCase
     }

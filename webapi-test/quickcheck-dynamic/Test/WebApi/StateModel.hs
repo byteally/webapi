@@ -23,6 +23,8 @@ module Test.WebApi.StateModel
   , WebApiGlobalStateModel (..)
   , MoveHost (..)
   , defMoveHost
+  , MoveVerdict (..)
+  , noVerdict
   , MovePlayed (..)
   , MoveStep (..)
   , Sent (..)
@@ -157,7 +159,7 @@ import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString as SB
 import System.Directory (getTemporaryDirectory)
 import System.IO (openBinaryTempFile, hClose)
-import Control.Monad (forM)
+import Control.Monad (forM, unless)
 import qualified Data.ByteString.Lazy.Char8 as LBC
 import Data.Char (toLower)
 import Data.List (intercalate, isInfixOf)
@@ -177,7 +179,8 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TE
 import Test.WebApi.Trace
   ( StepInfo (..), stepLabel, StepKind (..), Expectation (..), RequestRecord (..), FileRecord (..)
-  , AnswerRecord (..), CheckRecord (..), StageRecord (..), StepRecord (..), Recorder
+  , AnswerRecord (..), StageRecord (..), StepRecord (..), Recorder
+  , boundEvidence, withEvidence
   , pushStep, amendStep, sealStep, afterStep, markInconclusive, clipText, bodyText )
 import Test.WebApi.Prediction
 import Data.ByteString (ByteString)
@@ -1070,45 +1073,71 @@ instance ( Reifies s (WebApiGlobalStateModel c xstate apps)
           liftIO (moveBegins >> writeIORef openMove (Just [])) >> pure (Right ())
         MkWebApiAction (MoveSettle {}) -> pure (Right ())
 
-  postcondition ss@(_, after) (MkWebApiAction act) lkp res = do
-    (held, cs, ls, SomeLookUp lkp') <- case act of
-      SuccessCall creq model _ _ -> withChecks creq model res
-      ErrorCall creq _ model _ -> withChecks creq model res
-      EffectCall {} -> pure (True, [], [], SomeLookUp (extendLookUp lkp res))
-      MoveSettle me -> settleChecks me
-      _ -> pure (True, [], [], SomeLookUp lkp)
-    rec <- lift (asks (\WebApiSessionsCxt {traceRecorder} -> traceRecorder))
-    forM_ rec $ \r -> lift $ liftIO $ do
-      m <- renderModel lkp' after
-      stageAfter <- stageOfGuarded lkp' after
-      amendStep r (afterStep cs ls m stageAfter held)
-      -- the step is final: its checks have run
-      sealStep r
-    pure held
+  postcondition ss@(_, after) (MkWebApiAction act) lkp res = case act of
+    -- a move's end has a path of its own: the host observes it and has
+    -- its word on it, and no other step pays for either
+    MoveSettle me -> settled me
+    _ -> do
+      (held, cs, ls, SomeLookUp lkp') <- case act of
+        SuccessCall creq model _ _ -> withChecks creq model res
+        ErrorCall creq _ model _ -> withChecks creq model res
+        EffectCall {} -> pure (True, [], [], SomeLookUp (extendLookUp lkp res))
+        _ -> pure (True, [], [], SomeLookUp lkp)
+      rec <- lift (asks (\WebApiSessionsCxt {traceRecorder} -> traceRecorder))
+      forM_ rec $ \r -> lift $ liftIO $ do
+        m <- renderModel lkp' after
+        stageAfter <- stageOfGuarded lkp' after
+        amendStep r (afterStep cs ls m stageAfter held)
+        -- the step is final: its checks have run
+        sealStep r
+      pure held
     where
-      -- a move's end: the host observes, then every thing is held against
-      -- the observation, and the host's own checks run. What cannot be
-      -- observed is inconclusive, as a move that does not settle is
-      settleChecks :: MoveEnd -> PostconditionM (ReaderT WebApiSessionsCxt (WebApiSessions apps)) (Bool, [CheckRecord], [Text], SomeLookUp)
-      settleChecks me@MoveEnd {name, info, labels} = do
-        let WebApiGlobalStateModel {appMoveHost = MoveHost {observe, hostChecks}} = reflect (Proxy @s)
+      -- a move's end. The host observes; what cannot be observed is
+      -- inconclusive, as a move that does not settle is, and no check
+      -- runs. Then every thing is held against the observation and the
+      -- host's own checks run, and the host has its word on the move
+      -- ('MoveVerdict'). A check that failed fails the step, the host's
+      -- evidence listed with it (and its reason, had it one). When every
+      -- check held and the host gave a reason, the move is inconclusive:
+      -- the step keeps what its checks left and is marked, and the case
+      -- stops. The step's record carries the evidence either way.
+      settled :: MoveEnd -> PostconditionM (ReaderT WebApiSessionsCxt (WebApiSessions apps)) Bool
+      settled me@MoveEnd {name, info, labels} = do
+        let WebApiGlobalStateModel {appMoveHost = MoveHost {observe, hostChecks, verdict}} = reflect (Proxy @s)
         -- the move as its settle was handed it; the move is over
-        observed <- lift $ ReaderT $ \WebApiSessionsCxt {openMove} ->
-          liftIO (movePlayed name info openMove <* writeIORef openMove Nothing) >>= observe
-        case observed of
-          Left why -> do
-            rec <- lift (asks (\WebApiSessionsCxt {traceRecorder} -> traceRecorder))
-            lift $ liftIO $ do
-              forM_ rec $ \r -> amendStep r (markInconclusive ("nothing could be observed: " <> why)) >> sealStep r
-              throwIO MoveInconclusive {move = name, why = "nothing could be observed: " <> why}
-          Right obs -> do
+        (rec, word) <- lift $ ReaderT $ \WebApiSessionsCxt {traceRecorder, openMove} -> do
+          played <- liftIO (movePlayed name info openMove <* writeIORef openMove Nothing)
+          observe played >>= \case
+            Left why -> pure (traceRecorder, Left why)
+            Right obs -> do
+              let judged = judgeMove lkp me ss obs
+                    ++ [ CheckRecord {check = nm, held = isRight r, why = either Just (const Nothing) r, subject = Nothing} | (nm, r) <- hostChecks obs ]
+              said <- verdict played obs judged
+              pure (traceRecorder, Right (judged, said))
+        case word of
+          Left why -> lift $ liftIO $ do
+            forM_ rec $ \r -> amendStep r (markInconclusive ("nothing could be observed: " <> why)) >> sealStep r
+            throwIO MoveInconclusive {move = name, why = "nothing could be observed: " <> why}
+          Right (judged, MoveVerdict {inconclusive = doubt, evidence = noted}) -> do
             let
-              judged = judgeMove lkp me ss obs
-                ++ [ CheckRecord {check = nm, held = isRight r, why = either Just (const Nothing) r, subject = Nothing} | (nm, r) <- hostChecks obs ]
               failed = [ (c, w) | CheckRecord {check = c, held = False, why = w} <- judged ]
+              held = null failed
+              -- the host's reason, had it one, stays with a failure
+              kept = boundEvidence (noted ++ [ Evidence {kind = "otherwise inconclusive", what = why, detail = Nothing} | Just why <- [doubt], not held ])
+              undecided = if held then doubt else Nothing
+              ls = Set.toList labels
             forM_ failed $ \(c, w) -> counterexamplePost ("  check " ++ T.unpack c ++ " failed: " ++ maybe "" T.unpack w)
-            forM_ (Set.toList labels) $ \l -> monitorPost (QC.classify True (T.unpack l))
-            pure (null failed, judged, Set.toList labels, SomeLookUp lkp)
+            unless held $ forM_ kept $ \Evidence {kind = k, what = w} -> counterexamplePost ("  evidence, " ++ T.unpack k ++ ": " ++ T.unpack w)
+            forM_ ls $ \l -> monitorPost (QC.classify True (T.unpack l))
+            lift $ liftIO $ do
+              forM_ rec $ \r -> do
+                m <- renderModel lkp after
+                stageAfter <- stageOfGuarded lkp after
+                amendStep r (maybe id markInconclusive undecided . withEvidence kept . afterStep judged ls m stageAfter held)
+                -- the step is final: its checks have run
+                sealStep r
+              forM_ undecided $ \why -> throwIO MoveInconclusive {move = name, why}
+            pure held
       -- the request as it went out: the step's fresh tokens are still those.
       -- Every check runs; each failure is reported, and the trace lists
       -- each check with whether it held, and the labels that held. The
@@ -1265,7 +1294,7 @@ recordPerformed rec st (MkWebApiAction act) lkp res andThen = do
   stageBefore <- liftIO (stageOfGuarded lkp st)
   let
     engineStep k op i shown = StepRecord
-      { n = 0, kind = k, info = i, operation = op, method = Nothing, expect = Nothing, request = Nothing, inMove = Nothing, inconclusive = Nothing
+      { n = 0, kind = k, info = i, operation = op, method = Nothing, expect = Nothing, request = Nothing, inMove = Nothing, inconclusive = Nothing, evidence = []
       , answer = Just AnswerRecord
           { httpStatus = Nothing
           , body = Nothing
@@ -1285,7 +1314,7 @@ recordPerformed rec st (MkWebApiAction act) lkp res andThen = do
       let (req, meth) = requestRecordOf creq
       pure StepRecord
         { n = 0, kind = KindCall, info = Nothing, operation = T.pack (getOpIdFromRequest creq), method = Just meth
-        , expect = Nothing, request = Just req, inMove = Nothing, inconclusive = Nothing
+        , expect = Nothing, request = Just req, inMove = Nothing, inconclusive = Nothing, evidence = []
         , answer = Just AnswerRecord {httpStatus = H.statusCode . fst <$> raw, body = bodyMay >>= bodyText bodyClip, value = Nothing, failure = either (Just . shownText) (const Nothing) res}
         , checks = [], labels = [], model = Nothing
         , stage = StageRecord {before = stageBefore, after = Nothing}
@@ -1345,6 +1374,7 @@ callRecord lkp creq i expectation res stageBefore = do
     , request = Just req
     , inMove = Nothing
     , inconclusive = Nothing
+    , evidence = []
     , answer = Just AnswerRecord
         { httpStatus = (H.statusCode . fst <$> raw) <|> either errorStatus (const Nothing) res
         , body = bodyMay >>= bodyText bodyClip
